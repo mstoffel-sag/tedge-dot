@@ -24,6 +24,7 @@ class MqttClient:
         self._lock = threading.Lock()
         # topic -> list of (recv_time, payload)
         self._messages = {}
+        self._broker = None
 
     # -- connection management ------------------------------------------------
 
@@ -38,6 +39,7 @@ class MqttClient:
         client.connect(host, int(port), keepalive=30)
         client.loop_start()
         self._client = client
+        self._broker = (host, int(port))
         logger.info(f"connected to mqtt broker {host}:{port}")
 
     @keyword
@@ -109,6 +111,36 @@ class MqttClient:
                 return entry[1]
             time.sleep(0.1)
         raise AssertionError(f"timed out waiting for a message on topic {topic}")
+
+    @keyword
+    def fetch_retained(self, topic, timeout=10):
+        """Return the message the broker currently retains on the topic, read by a short-lived
+        client of its own.
+
+        Unlike `Wait For Retained`, this does not depend on the recorded history: a retained
+        message is delivered once per subscription, so after `Clear Messages` it is seen again
+        only if it is republished — and state published on change (a twin fragment) may not be.
+        """
+        received = threading.Event()
+        payloads = []
+
+        def on_message(_client, _userdata, msg):
+            if msg.retain and not received.is_set():
+                payloads.append(msg.payload.decode("utf-8", errors="replace"))
+                received.set()
+
+        client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
+        client.on_message = on_message
+        client.connect(*self._broker, keepalive=30)
+        client.subscribe(topic, qos=1)
+        client.loop_start()
+        try:
+            if not received.wait(timestr_to_secs(timeout)):
+                raise AssertionError(f"no retained message on topic {topic}")
+        finally:
+            client.loop_stop()
+            client.disconnect()
+        return payloads[0]
 
     @keyword
     def wait_for_sample(self, topic, timeout=10):

@@ -517,7 +517,10 @@ A Parameter Removed On Reload Leaves The Twin
     ...                republishes the link status with the configured points, and the flow drops
     ...                the ones it no longer lists.
     [Tags]    flows
-    Wait For Message Containing    ${PARAM_TWIN}    "twin_only_u16":    timeout=${FLOWS_TIMEOUT}
+    # Read from the broker, not the recorded history: the previous test cleared it, and the twin is
+    # republished only when a value in the set changes, which its read-only point does not do.
+    ${before}=    Fetch Retained    ${PARAM_TWIN}
+    Should Contain    ${before}    "twin_only_u16":
     DeviceLibrary.Execute Command
     ...    cmd=sed -i '/^ *id *= *"twin_only_u16"/s/twin_only_u16/renamed_u16/' /etc/connector.toml
     Clear Messages
