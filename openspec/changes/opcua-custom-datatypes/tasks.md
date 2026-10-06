@@ -34,4 +34,4 @@
 - [x] 5.3 Add an example to `flows/README.md` of decoding a raw structure body in a flow (hex → DataView), for servers without definitions.
 - [x] 5.4 Add the `opcua-structures` gap to the parity table in `impl/c/README.md` (task 3.2) and TODO.md entries for the deferred items: the C port, writes, whole and runtime-length arrays, matrices, 1.03 servers, optional `datatype` and `inspect`, the automatic flow (D9), and the upstream draft.
 - [x] 5.5 Add a release-note entry to `packaging/release-notes.md`.
-- [ ] 5.6 Reply on thin-edge/tedge-dot#57 with the design summary, including the answer to the flow question (outward-facing: only with the user's go-ahead).
+- [x] 5.6 Reply on thin-edge/tedge-dot#57 with the design summary, including the answer to the flow question (outward-facing: only with the user's go-ahead).
