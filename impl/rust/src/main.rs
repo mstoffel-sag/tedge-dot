@@ -173,9 +173,10 @@ struct DescribeArgs {
     /// device. Default: every device.
     #[arg(short, long)]
     device: Option<String>,
-    /// One parameter set for every point that does not name an absolute one, instead of the
-    /// derived <type-or-protocol>_<group>_parameters. Must match the ot-parameter-state flow
-    /// setting.
+    /// Put every point that does not name an absolute set (meta.parameter.set) into ONE set
+    /// called NAME, instead of the derived <type-or-protocol>_<group>_parameters. Not a filter:
+    /// the points of every derived set end up in NAME. Must match the ot-parameter-state
+    /// flow's `default_set`.
     #[arg(long, value_name = "NAME")]
     set: Option<String>,
     /// Print compact JSON (one document per line) instead of pretty-printed.
