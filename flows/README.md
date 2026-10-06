@@ -220,6 +220,43 @@ fragment (`twin_fragment`, e.g. `c8y_ModbusDevice`).
  samples + write results ─▶ ot-parameter-state ─▶ te/device/<device>///twin/<set> ─▶ Parameters tab
 ```
 
+## Decoding an OPC UA structure in a flow
+
+Prefer field points: the OPC UA connector reads a structure's layout from the server and
+publishes each selected field as an ordinary sample (see
+[the connector spec, §3.7](../doc/connectors/opcua-connector-spec.md)), which every flow here
+already handles. A flow is the fallback for a server that does not describe its types (OPC UA
+1.03, no `DataTypeDefinition`). Read the variable with a `mode = "raw"` point: its sample carries
+the encoded body as `raw`, and the type in `addr.data_type` (namespace-URI form, stable across
+server restarts). The flow then decodes the fields it knows, little-endian as OPC UA Part 6
+encodes them, and emits a measurement:
+
+```js
+// A flow of your own (flow.toml: input.mqtt.topics = ["te/+/+/ot/opcua/sample/pump_raw"]).
+const decoder = new TextDecoder();
+
+function hexToView(hex) {
+  const clean = hex.replace(/\s+/g, "");
+  const bytes = new Uint8Array(clean.length / 2);
+  for (let i = 0; i < bytes.length; i++) bytes[i] = parseInt(clean.substr(2 * i, 2), 16);
+  return new DataView(bytes.buffer);
+}
+
+export function onMessage(message) {
+  const sample = JSON.parse(decoder.decode(message.payload));
+  if (sample.quality !== "good" || !sample.addr.data_type.endsWith(";i=3003")) return [];
+  const v = hexToView(sample.raw);
+  let o = 4; // UInt32 EncodingMask: this type has an optional field
+  const running = v.getUint8(o) !== 0; o += 1;
+  const speed = v.getFloat64(o, true); o += 8;
+  const current = v.getFloat32(o, true); o += 4;
+  const payload = { time: sample.ts, pump: { running: running ? 1 : 0, speed, current } };
+  return [{ topic: `te/device/${sample.device}///m/pump`, payload: JSON.stringify(payload) }];
+}
+```
+
+The layout is the flow's own knowledge: a field added on the server shifts every field after it.
+
 ## Configure
 
 Each flow ships a `params.toml.template` documenting its settings. To customise, copy it to

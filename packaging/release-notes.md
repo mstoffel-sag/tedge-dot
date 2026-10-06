@@ -118,6 +118,25 @@ and an edit from the *Parameters* tab carrying the bare value is written to the 
   one name cannot be both a literal and a set. `describe` refuses either.
 - Configurations without `fragment` are unchanged.
 
+### OPC UA structured values (`tedge-dot-rs` only)
+
+The OPC UA connector reads **custom data types** (structures) from any server without compiled-in
+type definitions. Give a point `address.field` (`"Speed"`, `"Motor.Current"`,
+`"Items[1].Value"`): the connector reads the type's `DataTypeDefinition` from the server once per
+session and publishes that field as an ordinary sample, so `map`, `report` and every flow apply.
+Several fields of one node share one read. Also new:
+
+- `address.index` selects one element of an array variable.
+- A `mode = "raw"` point on a structure publishes its encoded body, with the type named in
+  `addr`, for a flow to decode (servers that do not describe their types).
+- DateTime, LocalizedText, StatusCode, Guid, NodeId, QualifiedName and ByteString values can be
+  read; the point's `datatype` picks the form, e.g. DateTime as RFC 3339 text or Unix ms.
+
+Field and element points are read-only. A point without `field` or `index` is unchanged, except
+that a raw point on a structure now publishes good samples where it published bad ones. The C
+package does not support this yet. See `doc/connectors/opcua-connector-spec.md` §3.7 and the
+`demo-sim-structures` point library.
+
 ### Notes
 
 - On a fresh install the service starts with **no devices configured**. Add

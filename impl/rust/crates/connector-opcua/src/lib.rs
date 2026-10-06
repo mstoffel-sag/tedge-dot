@@ -15,6 +15,8 @@ mod config;
 pub mod pki;
 pub mod pki_cli;
 mod privilege;
+mod resolve;
+pub mod structure;
 pub mod security;
 
 pub use config::{
@@ -40,9 +42,9 @@ use opcua::client::{
 };
 use opcua::crypto::{CertificateStore, PrivateKey, SecurityPolicy, X509};
 use opcua::types::{
-    AttributeId, DataValue, MessageSecurityMode, MonitoredItemCreateRequest, MonitoringMode,
-    MonitoringParameters, NodeId, ReadValueId, StatusCode, TimestampsToReturn, UAString,
-    UserTokenPolicy, Variant, WriteValue,
+    AttributeId, BinaryEncodable, DataValue, MessageSecurityMode, MonitoredItemCreateRequest,
+    MonitoringMode, MonitoringParameters, NodeId, NumericRange, ReadValueId, StatusCode,
+    TimestampsToReturn, UAString, UserTokenPolicy, Variant, WriteValue,
 };
 use pki::{OwnCertificate, Pki};
 use tracing::warn;
@@ -59,6 +61,10 @@ const MAX_SAFE_INT: i64 = 9_007_199_254_740_991;
 #[derive(Clone)]
 struct OpcuaPoint {
     node_id: NodeId,
+    /// `address.field`: the path into a structured value (openspec `opcua-custom-datatypes`).
+    field: Option<Vec<structure::Segment>>,
+    /// `address.index`: one element of an array value.
+    index: Option<u32>,
     mode: Mode,
     datatype: Option<DataType>,
     access: Access,
@@ -82,6 +88,8 @@ struct SessionHandle {
     session: Arc<Session>,
     health: Arc<Mutex<SessionHealth>>,
     event_loop: AbortOnDrop,
+    /// What this session resolved for structured values; replaced at every connect.
+    types: Arc<resolve::SessionTypes>,
 }
 
 /// A spawned task aborted when its handle is dropped. The runtime cancels a module call that
@@ -163,7 +171,8 @@ impl OpcuaConnector {
         };
         let (result, info) = attempt.connect().await;
         match result {
-            Ok(handle) => {
+            Ok(mut handle) => {
+                handle.types = Arc::new(self.resolve_types(name, &handle.session).await);
                 self.sessions.insert(name.to_string(), handle);
                 LinkReport {
                     device: name.to_string(),
@@ -178,6 +187,43 @@ impl OpcuaConnector {
                 reason: Some(reason),
                 info: Some(info),
             },
+        }
+    }
+
+    /// Resolve, for a new session, what the device's structure and raw points need: the
+    /// namespace array and the data type definitions (design D3, D6). Bounded, so a server that
+    /// stops answering cannot stall the connect; its field points then report why.
+    async fn resolve_types(&self, name: &str, session: &Session) -> resolve::SessionTypes {
+        let wanted: Vec<resolve::Wanted> = self.devices[name]
+            .points
+            .iter()
+            .filter(|(_, p)| p.field.is_some() || p.mode == Mode::Raw)
+            .map(|(id, p)| resolve::Wanted {
+                point: id.clone(),
+                node: p.node_id.clone(),
+                field: p.field.clone(),
+                index: p.index,
+                datatype: p.datatype,
+            })
+            .collect();
+        let timeout = Duration::from_secs(self.conn.request_timeout_s.max(1) * 4);
+        match tokio::time::timeout(timeout, resolve::resolve(session, &wanted)).await {
+            Ok(types) => {
+                for (point, plan) in &types.plans {
+                    if let Err(e) = plan {
+                        warn!("device '{name}' point '{point}': {e}");
+                    }
+                }
+                types
+            }
+            Err(_) => {
+                let reason = format!("{}: timed out after {}s", resolve::UNAVAILABLE, timeout.as_secs());
+                warn!("device '{name}': {reason}");
+                resolve::SessionTypes {
+                    plans: wanted.iter().map(|w| (w.point.clone(), Err(reason.clone()))).collect(),
+                    ..Default::default()
+                }
+            }
         }
     }
 
@@ -272,13 +318,34 @@ impl Connector for OpcuaConnector {
                         p.id
                     )));
                 }
+                let field = match &addr.field {
+                    Some(path) => Some(structure::parse_path(path).map_err(|e| {
+                        ConfigError::Invalid(format!("point '{}' address: {e}", p.id))
+                    })?),
+                    None => None,
+                };
+                if field.is_some() && mode == Mode::Raw {
+                    return Err(ConfigError::Invalid(format!(
+                        "point '{}': address.field selects a typed value; a raw point reads the whole structure body",
+                        p.id
+                    )));
+                }
+                let access = Access::parse(p.access.as_deref());
+                if (field.is_some() || addr.index.is_some()) && access != Access::Read {
+                    return Err(ConfigError::Invalid(format!(
+                        "point '{}': points with address.field or address.index are read-only",
+                        p.id
+                    )));
+                }
                 points.insert(
                     p.id.clone(),
                     OpcuaPoint {
                         node_id,
+                        field,
+                        index: addr.index,
                         mode,
                         datatype: p.datatype,
-                        access: Access::parse(p.access.as_deref()),
+                        access,
                         unit: p.unit.clone(),
                         transform: p.transform.unwrap_or_default(),
                     },
@@ -328,6 +395,7 @@ impl Connector for OpcuaConnector {
                 DataType::Float32,
                 DataType::Float64,
                 DataType::String,
+                DataType::Bytes,
             ],
             point_kinds: vec!["variable".into()],
             command_verbs: vec!["write".into()],
@@ -360,8 +428,8 @@ impl Connector for OpcuaConnector {
             None => points.iter().map(|p| (p.id.clone(), None)).collect(),
         };
 
-        let session = match self.sessions.get(device) {
-            Some(h) => h.session.clone(),
+        let (session, types) = match self.sessions.get(device) {
+            Some(h) => (h.session.clone(), h.types.clone()),
             None => {
                 return Ok(models
                     .into_iter()
@@ -373,19 +441,24 @@ impl Connector for OpcuaConnector {
         };
 
         // Build the read request for the known points (skip unknown ones, reported separately).
-        let mut known: Vec<(String, OpcuaPoint)> = Vec::new();
+        // Points on the same node and element share one read (design D5).
+        let mut known: Vec<(String, OpcuaPoint, usize)> = Vec::new();
         let mut reads: Vec<ReadValueId> = Vec::new();
+        let mut slots: HashMap<(NodeId, Option<u32>), usize> = HashMap::new();
         let mut out: Vec<Sample> = Vec::new();
         for (id, model) in models {
             match model {
                 Some(m) => {
-                    reads.push(ReadValueId {
-                        node_id: m.node_id.clone(),
-                        attribute_id: AttributeId::Value as u32,
-                        index_range: Default::default(),
-                        data_encoding: Default::default(),
+                    let slot = *slots.entry((m.node_id.clone(), m.index)).or_insert_with(|| {
+                        reads.push(ReadValueId {
+                            node_id: m.node_id.clone(),
+                            attribute_id: AttributeId::Value as u32,
+                            index_range: index_range(m.index),
+                            data_encoding: Default::default(),
+                        });
+                        reads.len() - 1
                     });
-                    known.push((id, m));
+                    known.push((id, m, slot));
                 }
                 None => out.push(bad_sample(&id, None, "unknown point")),
             }
@@ -403,8 +476,12 @@ impl Connector for OpcuaConnector {
             .await
             {
                 Ok(Ok(values)) => {
-                    for ((id, model), dv) in known.iter().zip(values) {
-                        let mut sample = build_sample(id, model, &dv);
+                    for (id, model, slot) in &known {
+                        let Some(dv) = values.get(*slot) else {
+                            out.push(bad_sample(id, Some(model), "no value returned"));
+                            continue;
+                        };
+                        let mut sample = build_sample(id, model, dv, &types);
                         // Contract §5: polled samples carry the read-completion time. Servers
                         // may return a (stale) source timestamp even for TimestampsToReturn::
                         // Neither; only the push path reports event time.
@@ -413,14 +490,14 @@ impl Connector for OpcuaConnector {
                     }
                 }
                 Ok(Err(status)) => {
-                    for (id, model) in &known {
+                    for (id, model, _) in &known {
                         out.push(bad_sample(id, Some(model), &format!("read failed: {status}")));
                     }
                 }
                 Err(_) => {
                     let reason =
                         format!("read timed out after {}s (transport down?)", timeout.as_secs());
-                    for (id, model) in &known {
+                    for (id, model, _) in &known {
                         out.push(bad_sample(id, Some(model), &reason));
                     }
                 }
@@ -459,20 +536,23 @@ impl Connector for OpcuaConnector {
             ));
         }
 
-        let session = self
+        let handle = self
             .sessions
             .get(device)
-            .ok_or_else(|| ConnectorError::NotConnected(device.clone()))?
-            .session
-            .clone();
+            .ok_or_else(|| ConnectorError::NotConnected(device.clone()))?;
+        let (session, types) = (handle.session.clone(), handle.types.clone());
 
-        // Notifications are matched back to points by node id (several points may share one).
-        let mut by_node: HashMap<NodeId, Vec<(String, OpcuaPoint)>> = HashMap::new();
-        for (id, model, _) in &items {
-            by_node
-                .entry(model.node_id.clone())
-                .or_default()
-                .push((id.clone(), model.clone()));
+        // Notifications are matched back to points by node id and element: several points may
+        // share one monitored item (design D5).
+        let mut by_node: HashMap<(NodeId, Option<u32>), Vec<(String, OpcuaPoint)>> = HashMap::new();
+        let mut monitored: Vec<(NodeId, Option<u32>, Duration)> = Vec::new();
+        for (id, model, interval) in &items {
+            let key = (model.node_id.clone(), model.index);
+            match monitored.iter_mut().find(|(n, i, _)| (n, i) == (&key.0, &key.1)) {
+                Some(item) => item.2 = item.2.min(*interval),
+                None => monitored.push((key.0.clone(), key.1, *interval)),
+            }
+            by_node.entry(key).or_default().push((id.clone(), model.clone()));
         }
 
         // The data-change callback is synchronous, so it forwards through an unbounded channel
@@ -480,11 +560,16 @@ impl Connector for OpcuaConnector {
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Sample>();
         let device_name = device.clone();
         let callback = DataChangeCallback::new(move |dv, item| {
-            let node_id = &item.item_to_monitor().node_id;
+            let watched = item.item_to_monitor();
+            let node_id = &watched.node_id;
             tracing::trace!(%node_id, "data change notification");
-            if let Some(models) = by_node.get(node_id) {
+            let index = match watched.index_range {
+                NumericRange::Index(i) => Some(i),
+                _ => None,
+            };
+            if let Some(models) = by_node.get(&(node_id.clone(), index)) {
                 for (id, model) in models {
-                    let mut sample = build_sample(id, model, &dv);
+                    let mut sample = build_sample(id, model, &dv, &types);
                     sample.device = device_name.clone();
                     // Ignore send errors: the forwarder has already shut down.
                     let _ = tx.send(sample);
@@ -505,12 +590,15 @@ impl Connector for OpcuaConnector {
             .await
             .map_err(|s| ConnectorError::Transport(format!("create_subscription failed: {s}")))?;
 
-        // One monitored item per point, sampled at the point's resolved poll interval.
-        let requests: Vec<MonitoredItemCreateRequest> = items
+        // One monitored item per node and element, sampled at the fastest interval of its
+        // points.
+        let requests: Vec<MonitoredItemCreateRequest> = monitored
             .iter()
-            .map(|(_, model, interval)| {
+            .map(|(node_id, index, interval)| {
+                let mut watch: ReadValueId = node_id.clone().into();
+                watch.index_range = index_range(*index);
                 MonitoredItemCreateRequest::new(
-                    model.node_id.clone().into(),
+                    watch,
                     MonitoringMode::Reporting,
                     MonitoringParameters {
                         sampling_interval: interval.as_millis() as f64,
@@ -535,11 +623,18 @@ impl Connector for OpcuaConnector {
         };
         // All-or-nothing per device: on any rejected item, drop the subscription so the runtime
         // keeps every point of this device on the polling schedule.
-        let failed: Vec<String> = items
+        let failed: Vec<String> = monitored
             .iter()
             .zip(&results)
             .filter(|(_, r)| !r.result.status_code.is_good())
-            .map(|((id, _, _), r)| format!("{id}: {}", r.result.status_code))
+            .map(|((node, index, _), r)| {
+                let ids: Vec<&str> = items
+                    .iter()
+                    .filter(|(_, m, _)| (&m.node_id, &m.index) == (node, index))
+                    .map(|(id, _, _)| id.as_str())
+                    .collect();
+                format!("{}: {}", ids.join(", "), r.result.status_code)
+            })
             .collect();
         if !failed.is_empty() {
             let _ = session.delete_subscription(subscription_id).await;
@@ -565,7 +660,8 @@ impl Connector for OpcuaConnector {
         let replaced = self.subscriptions.insert(
             device.clone(),
             SubscriptionHandle {
-                items: items.len(),
+                // Monitored items, not points: points on one node and element share an item.
+                items: monitored.len(),
                 forwarder,
             },
         );
@@ -921,6 +1017,7 @@ impl Attempt<'_> {
                     session,
                     health,
                     event_loop: handle,
+                    types: Arc::default(),
                 })
             }
             Ok(false) => {
@@ -1227,26 +1324,43 @@ fn opcua_datetime_to_ts(dt: &opcua::types::DateTime) -> Option<OffsetDateTime> {
 
 /// Build a contract sample from an OPC-UA `DataValue`. Shared by the polling path
 /// (`read_points`) and the push path (`subscribe`) so both decode identically.
-fn build_sample(id: &str, model: &OpcuaPoint, dv: &DataValue) -> Sample {
+fn build_sample(id: &str, model: &OpcuaPoint, dv: &DataValue, types: &resolve::SessionTypes) -> Sample {
     let status = dv.status.unwrap_or(StatusCode::Good);
+    if let (Some(index), StatusCode::BadIndexRangeNoData) = (model.index, status) {
+        return bad_sample(id, Some(model), &format!("index {index} out of range (the server reports {status})"));
+    }
     if !status.is_good() {
         return bad_sample(id, Some(model), &format!("bad status: {status}"));
     }
-    let variant = match &dv.value {
+    let mut variant = match &dv.value {
         Some(v) => v,
         None => return bad_sample(id, Some(model), "no value returned"),
     };
-    let (value, native_dt, raw) = match variant_to_value(variant) {
-        Some(parts) => parts,
-        None => return bad_sample(id, Some(model), "unsupported OPC-UA value type"),
+    // A read with an IndexRange returns an array holding just the selected element. A server
+    // that ignores the range (python-asyncua does) returns the whole array instead: select the
+    // element here. Only a one-element array cannot be told apart, and is taken as the answer.
+    if let (Some(index), Variant::Array(array)) = (model.index, variant) {
+        match array.values.as_slice() {
+            [element] => variant = element,
+            [] => return bad_sample(id, Some(model), &format!("index {index} out of range (no element returned)")),
+            all => match all.get(index as usize) {
+                Some(element) => variant = element,
+                None => {
+                    let len = all.len();
+                    return bad_sample(id, Some(model), &format!("index {index} out of range (length {len})"));
+                }
+            },
+        }
+    }
+    let decoded = match decode_value(id, model, variant, types) {
+        Ok(d) => d,
+        Err(e) => return bad_sample(id, Some(model), &e),
     };
     let (out_value, datatype) = match model.mode {
         Mode::Raw => (None, model.datatype),
-        Mode::Typed => (
-            Some(model.transform.apply(value)),
-            Some(model.datatype.unwrap_or(native_dt)),
-        ),
+        Mode::Typed => (Some(model.transform.apply(decoded.value)), Some(decoded.datatype)),
     };
+    let raw = decoded.raw;
     Sample {
         source_value: None,
         ts: data_value_ts(dv),
@@ -1260,10 +1374,125 @@ fn build_sample(id: &str, model: &OpcuaPoint, dv: &DataValue) -> Sample {
         raw_group: 1,
         quality: Quality::Good,
         unit: model.unit.clone(),
-        addr: addr_echo(model),
+        addr: decoded.addr,
         seq: None,
         error: None,
     }
+}
+
+/// A value read from the server, before the point's mode and transform are applied.
+struct Decoded {
+    value: Value,
+    datatype: DataType,
+    raw: Vec<u8>,
+    addr: serde_json::Value,
+}
+
+/// Decode a value as the point selects it: a structure field, a raw structure body, a
+/// primitive, or one of the built-in types rendered as an SDK datatype (design D3, D4, D8).
+fn decode_value(
+    id: &str,
+    model: &OpcuaPoint,
+    variant: &Variant,
+    types: &resolve::SessionTypes,
+) -> Result<Decoded, String> {
+    let mut addr = addr_echo(model);
+    let ns = &types.namespaces;
+    if model.field.is_some() {
+        let plan = match types.plans.get(id) {
+            Some(Ok(plan)) => plan,
+            Some(Err(e)) => return Err(e.clone()),
+            None => return Err(format!("{}: not resolved", resolve::UNAVAILABLE)),
+        };
+        let Variant::ExtensionObject(eo) = variant else {
+            return Err(format!("value is {}, not a structure", variant_type_name(variant)));
+        };
+        let (encoding, body) = structure::split_extension_object(&eo.encode_to_vec(&encoding_context()))?;
+        if let Some(expected) = &plan.encoding {
+            let expected = ua_node_id_text(expected, ns);
+            let got = structure::node_id_text(&encoding, ns);
+            if got != expected {
+                return Err(format!("value is encoded as {got}, expected the structure's encoding {expected}"));
+            }
+        }
+        let datatype = model.datatype.unwrap_or(DataType::Float64);
+        let (value, raw) = structure::decode(&plan.plan, &types.types, &body, ns)?;
+        return Ok(Decoded { value, datatype, raw, addr });
+    }
+    if let Variant::ExtensionObject(eo) = variant {
+        if model.mode == Mode::Typed {
+            return Err("value is a structure; select one of its fields with address.field".into());
+        }
+        let (encoding, body) = structure::split_extension_object(&eo.encode_to_vec(&encoding_context()))?;
+        addr["encoding_id"] = structure::node_id_text(&encoding, ns).into();
+        if let Some(dt) = types.data_types.get(&model.node_id) {
+            addr["data_type"] = ua_node_id_text(dt, ns).into();
+        }
+        // A raw sample carries no value; `build_sample` drops it.
+        return Ok(Decoded { value: Value::Text(String::new()), datatype: DataType::Bytes, raw: body, addr });
+    }
+    if let Some((value, native_dt, raw)) = variant_to_value(variant) {
+        let datatype = model.datatype.unwrap_or(native_dt);
+        return Ok(Decoded { value, datatype, raw, addr });
+    }
+    if let Variant::Array(_) = variant {
+        return Err("value is an array; select one element with address.index".into());
+    }
+    // A built-in type with no SDK primitive of its own: decode its binary form like a field.
+    let bytes = variant.encode_to_vec(&encoding_context());
+    let builtin = bytes
+        .first()
+        .and_then(|mask| structure::Builtin::from_id((mask & 0x3F) as u32))
+        .ok_or("unsupported OPC-UA value type")?;
+    let datatype = match (model.mode, model.datatype) {
+        (Mode::Typed, Some(dt)) => dt,
+        _ => structure::accepted(&structure::Leaf::Builtin(builtin))
+            .first()
+            .copied()
+            .ok_or_else(|| format!("value is {}, which a point cannot read", builtin.name()))?,
+    };
+    let (value, raw) = structure::decode_builtin(builtin, &bytes[1..], datatype, ns)?;
+    Ok(Decoded { value, datatype, raw, addr })
+}
+
+/// A context to re-encode values the client has decoded; encoding needs no server state.
+pub(crate) fn encoding_context() -> opcua::types::Context<'static> {
+    static CONTEXT: std::sync::OnceLock<opcua::types::ContextOwned> = std::sync::OnceLock::new();
+    CONTEXT
+        .get_or_init(|| {
+            opcua::types::ContextOwned::new_default(
+                opcua::types::NamespaceMap::new(),
+                opcua::types::DecodingOptions::default(),
+            )
+        })
+        .context()
+}
+
+/// A node id in the text form samples use, with `nsu=` for namespaces the server lists.
+fn ua_node_id_text(id: &NodeId, namespaces: &[String]) -> String {
+    match structure::read_node_id(&id.encode_to_vec(&encoding_context())) {
+        Ok(n) => structure::node_id_text(&n, namespaces),
+        Err(_) => id.to_string(),
+    }
+}
+
+fn variant_type_name(v: &Variant) -> String {
+    match v {
+        Variant::Array(_) => "an array".into(),
+        Variant::Empty => "empty".into(),
+        other => {
+            let bytes = other.encode_to_vec(&encoding_context());
+            bytes
+                .first()
+                .and_then(|mask| structure::Builtin::from_id((mask & 0x3F) as u32))
+                .map_or_else(|| "of an unknown type".into(), |b| b.name().to_string())
+        }
+    }
+}
+
+/// The `IndexRange` that selects one array element, or none.
+fn index_range(index: Option<u32>) -> NumericRange {
+    index.map_or(NumericRange::None, NumericRange::Index)
 }
 
 /// Build a `bad` quality sample carrying the error reason. A point we know nothing about
@@ -1290,7 +1519,21 @@ fn bad_sample(id: &str, model: Option<&OpcuaPoint>, error: &str) -> Sample {
 
 /// Echo the node id (textual form) for the sample `addr` field.
 fn addr_echo(model: &OpcuaPoint) -> serde_json::Value {
-    serde_json::json!({ "node_id": model.node_id.to_string() })
+    let mut addr = serde_json::json!({ "node_id": model.node_id.to_string() });
+    if let Some(field) = &model.field {
+        let path: Vec<String> = field
+            .iter()
+            .map(|s| match s.index {
+                Some(i) => format!("{}[{i}]", s.name),
+                None => s.name.clone(),
+            })
+            .collect();
+        addr["field"] = path.join(".").into();
+    }
+    if let Some(index) = model.index {
+        addr["index"] = index.into();
+    }
+    addr
 }
 
 #[cfg(test)]
@@ -1303,6 +1546,8 @@ mod tests {
             node_id: Some("ns=2;s=Temperature".into()),
             namespace: None,
             identifier: None,
+                   field: None,
+            index: None,
         };
         let nid = node_id_from(&addr).unwrap();
         assert_eq!(nid.namespace, 2);
@@ -1314,6 +1559,8 @@ mod tests {
             node_id: None,
             namespace: Some(3),
             identifier: Some(serde_json::json!(1001)),
+                   field: None,
+            index: None,
         };
         let nid = node_id_from(&addr).unwrap();
         assert_eq!(nid.namespace, 3);

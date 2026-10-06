@@ -39,8 +39,11 @@ address space above:
 import asyncio
 import math
 import os
+import uuid
+from datetime import datetime, timezone
 
 from asyncua import Server, ua
+from asyncua.common.structures104 import new_enum, new_struct, new_struct_field
 from asyncua.crypto import uacrypto
 from asyncua.server.user_managers import UserManager
 from asyncua.crypto.permission_rules import User, UserRole
@@ -129,7 +132,72 @@ async def build_server(port, policies, user_manager=None, cert=None, key=None):
         ua.QualifiedName("Ticks", idx),
         ua.Variant(0, ua.VariantType.UInt32),
     )
-    return server, {"idx": idx, "temperature": temperature, "count": count, "ticks": ticks}
+    nodes = {"idx": idx, "temperature": temperature, "count": count, "ticks": ticks}
+    nodes.update(await add_structures(server, plc, idx))
+    return server, nodes
+
+
+# The structured values read by the `opc3` device of connector.toml (openspec change
+# opcua-custom-datatypes). Every type is created with new_struct / new_enum, which publish its
+# DataTypeDefinition: what the connector reads to decode a field without compiled-in types.
+STAMP = datetime(2026, 10, 6, 8, 15, 30, 250000, tzinfo=timezone.utc)
+UID = uuid.UUID("72962b91-fa75-4ae6-8d28-b404dc7daf63")
+
+
+async def add_structures(server, plc, idx):
+    motor, _ = await new_struct(server, idx, "SimMotor", [
+        new_struct_field("Current", ua.VariantType.Float),
+        new_struct_field("Temp", ua.VariantType.Float),
+    ])
+    mode = await new_enum(server, idx, "SimMode", ["Stopped", "Running", "Fault"])
+    item, _ = await new_struct(server, idx, "SimItem", [
+        new_struct_field("Name", ua.VariantType.String),
+        new_struct_field("Value", ua.VariantType.Double),
+    ])
+    await new_struct(server, idx, "SimPumpStatus", [
+        new_struct_field("Running", ua.VariantType.Boolean),
+        new_struct_field("Speed", ua.VariantType.Double),
+        new_struct_field("Motor", motor),
+        new_struct_field("Label", ua.VariantType.String),
+        new_struct_field("Mode", mode),
+        new_struct_field("Samples", ua.VariantType.Double, array=True),
+        new_struct_field("Stamp", ua.VariantType.DateTime),
+        new_struct_field("Items", item, array=True),
+        new_struct_field("Comment", ua.VariantType.String, optional=True),
+        new_struct_field("Tail", ua.VariantType.UInt16),
+    ])
+    await new_struct(server, idx, "SimChoice", [
+        new_struct_field("Name", ua.VariantType.String),
+        new_struct_field("Count", ua.VariantType.UInt32),
+    ], is_union=True)
+    await server.load_data_type_definitions()
+
+    async def add(name, value, variant_type=None, data_type=None):
+        variant = ua.Variant(value, variant_type) if variant_type else ua.Variant(value)
+        kwargs = {"datatype": data_type} if data_type else {}
+        return await plc.add_variable(ua.NodeId(name, idx), ua.QualifiedName(name, idx), variant, **kwargs)
+
+    pump = ua.SimPumpStatus(
+        Running=True, Speed=1450.0, Motor=ua.SimMotor(Current=3.25, Temp=41.5), Label="P1",
+        Mode=ua.SimMode.Running, Samples=[1.0, 2.0, 4.5], Stamp=STAMP,
+        Items=[ua.SimItem(Name="first", Value=1.5), ua.SimItem(Name="second", Value=7.0)],
+        Comment=None, Tail=7,
+    )
+    await add("Pump", pump, ua.VariantType.ExtensionObject, ua.SimPumpStatus.data_type)
+    choice = ua.SimChoice()
+    choice.Count = 5
+    await add("Choice", choice, ua.VariantType.ExtensionObject, ua.SimChoice.data_type)
+    drive = await add("Drive", ua.SimMotor(Current=0.0, Temp=40.0), ua.VariantType.ExtensionObject,
+                      ua.SimMotor.data_type)
+    await add("Temperatures", [20.0, 21.0, 22.5, 23.0], ua.VariantType.Double)
+    levels = await add("Levels", [0.0, 0.0, 0.0], ua.VariantType.Double)
+    await add("Serviced", STAMP, ua.VariantType.DateTime)
+    await add("State", ua.LocalizedText("Betrieb", "de-DE"), ua.VariantType.LocalizedText)
+    await add("LastError", ua.StatusCode(0x80340000), ua.VariantType.StatusCode)
+    await add("DeviceUid", UID, ua.VariantType.Guid)
+    await add("Ref", ua.NodeId("Pump", idx), ua.VariantType.NodeId)
+    await add("Blob", b"\xde\xad\xbe\xef", ua.VariantType.ByteString)
+    return {"drive": drive, "levels": levels}
 
 
 def secured_servers():
@@ -194,6 +262,11 @@ async def main():
             n += 1
             for _server, nodes in servers:
                 await nodes["ticks"].write_value(ua.Variant(n, ua.VariantType.UInt32))
+                # Structured values that change, for the push tests of the `opc3` device.
+                await nodes["drive"].write_value(
+                    ua.Variant(ua.SimMotor(Current=float(n), Temp=40.0), ua.VariantType.ExtensionObject)
+                )
+                await nodes["levels"].write_value(ua.Variant([0.0, float(n), 0.0], ua.VariantType.Double))
                 if DYNAMIC:
                     drift = 2.5 * math.sin(2 * math.pi * n / 300)
                     await nodes["temperature"].write_value(round(TEMPERATURE + drift, 2))

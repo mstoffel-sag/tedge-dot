@@ -25,6 +25,7 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=build /usr/local/bin/tedge-dot /usr/bin/tedge-dot
 COPY connectors/opcua/connector.toml /etc/connector.toml
+COPY connectors/opcua/connector-structures.toml /etc/connector-structures.toml
 COPY connectors/opcua/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 ENV RUST_LOG=info

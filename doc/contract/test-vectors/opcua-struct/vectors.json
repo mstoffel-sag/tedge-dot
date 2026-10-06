@@ -1,0 +1,1006 @@
+{
+ "namespaces": [
+  "http://opcfoundation.org/UA/",
+  "urn:tedge-dot:sim",
+  "urn:acme:types"
+ ],
+ "types": {
+  "Mode": {
+   "enum": [
+    "Stopped",
+    "Running",
+    "Fault"
+   ]
+  },
+  "Motor": {
+   "structure_type": "Structure",
+   "fields": [
+    {
+     "name": "Current",
+     "type": "Float"
+    },
+    {
+     "name": "Temp",
+     "type": "Float"
+    }
+   ]
+  },
+  "PumpStatus": {
+   "structure_type": "Structure",
+   "fields": [
+    {
+     "name": "Running",
+     "type": "Boolean"
+    },
+    {
+     "name": "Speed",
+     "type": "Double"
+    },
+    {
+     "name": "Motor",
+     "type": "Motor"
+    },
+    {
+     "name": "Label",
+     "type": "String"
+    },
+    {
+     "name": "Mode",
+     "type": "Mode"
+    }
+   ]
+  },
+  "Batch": {
+   "structure_type": "Structure",
+   "fields": [
+    {
+     "name": "Label",
+     "type": "String"
+    },
+    {
+     "name": "Samples",
+     "type": "Double",
+     "array": true
+    },
+    {
+     "name": "Count",
+     "type": "UInt32"
+    }
+   ]
+  },
+  "Item": {
+   "structure_type": "Structure",
+   "fields": [
+    {
+     "name": "Name",
+     "type": "String"
+    },
+    {
+     "name": "Value",
+     "type": "Double"
+    }
+   ]
+  },
+  "Order": {
+   "structure_type": "Structure",
+   "fields": [
+    {
+     "name": "Items",
+     "type": "Item",
+     "array": true
+    },
+    {
+     "name": "Total",
+     "type": "Double"
+    }
+   ]
+  },
+  "Note": {
+   "structure_type": "StructureWithOptionalFields",
+   "fields": [
+    {
+     "name": "Id",
+     "type": "UInt16"
+    },
+    {
+     "name": "Comment",
+     "type": "String",
+     "optional": true
+    },
+    {
+     "name": "Level",
+     "type": "Int32",
+     "optional": true
+    },
+    {
+     "name": "Tail",
+     "type": "Byte"
+    }
+   ]
+  },
+  "Choice": {
+   "structure_type": "Union",
+   "fields": [
+    {
+     "name": "Name",
+     "type": "String"
+    },
+    {
+     "name": "Count",
+     "type": "UInt32"
+    }
+   ]
+  },
+  "DiagHolder": {
+   "structure_type": "Structure",
+   "fields": [
+    {
+     "name": "Diag",
+     "type": "DiagnosticInfo"
+    },
+    {
+     "name": "Marker",
+     "type": "UInt32"
+    }
+   ]
+  },
+  "Skippers": {
+   "structure_type": "Structure",
+   "fields": [
+    {
+     "name": "Flag",
+     "type": "Boolean"
+    },
+    {
+     "name": "I8",
+     "type": "SByte"
+    },
+    {
+     "name": "U64",
+     "type": "UInt64"
+    },
+    {
+     "name": "Text",
+     "type": "String"
+    },
+    {
+     "name": "Stamp",
+     "type": "DateTime"
+    },
+    {
+     "name": "Id",
+     "type": "Guid"
+    },
+    {
+     "name": "Blob",
+     "type": "ByteString"
+    },
+    {
+     "name": "Xml",
+     "type": "XmlElement"
+    },
+    {
+     "name": "Node",
+     "type": "NodeId"
+    },
+    {
+     "name": "XNode",
+     "type": "ExpandedNodeId"
+    },
+    {
+     "name": "Status",
+     "type": "StatusCode"
+    },
+    {
+     "name": "QName",
+     "type": "QualifiedName"
+    },
+    {
+     "name": "LText",
+     "type": "LocalizedText"
+    },
+    {
+     "name": "Ext",
+     "type": "ExtensionObject"
+    },
+    {
+     "name": "DValue",
+     "type": "DataValue"
+    },
+    {
+     "name": "Var",
+     "type": "Variant"
+    },
+    {
+     "name": "Diag",
+     "type": "DiagnosticInfo"
+    },
+    {
+     "name": "Nodes",
+     "type": "NodeId",
+     "array": true
+    },
+    {
+     "name": "Texts",
+     "type": "LocalizedText",
+     "array": true
+    },
+    {
+     "name": "Vars",
+     "type": "Variant",
+     "array": true
+    },
+    {
+     "name": "Marker",
+     "type": "UInt32"
+    }
+   ]
+  },
+  "Builtins": {
+   "structure_type": "Structure",
+   "fields": [
+    {
+     "name": "Stamp",
+     "type": "DateTime"
+    },
+    {
+     "name": "LText",
+     "type": "LocalizedText"
+    },
+    {
+     "name": "Status",
+     "type": "StatusCode"
+    },
+    {
+     "name": "Id",
+     "type": "Guid"
+    },
+    {
+     "name": "Node",
+     "type": "NodeId"
+    },
+    {
+     "name": "XNode",
+     "type": "ExpandedNodeId"
+    },
+    {
+     "name": "QName",
+     "type": "QualifiedName"
+    },
+    {
+     "name": "Blob",
+     "type": "ByteString"
+    },
+    {
+     "name": "Stamps",
+     "type": "DateTime",
+     "array": true
+    }
+   ]
+  }
+ },
+ "read": [
+  {
+   "name": "top-level Double field",
+   "root": "PumpStatus",
+   "body": "010000000000a89640000050400000264202000000503101000000",
+   "path": "Speed",
+   "datatype": "float64",
+   "out": {
+    "num": 1450.0
+   },
+   "raw": "4096a80000000000"
+  },
+  {
+   "name": "top-level Boolean field",
+   "root": "PumpStatus",
+   "body": "010000000000a89640000050400000264202000000503101000000",
+   "path": "Running",
+   "datatype": "bool",
+   "out": {
+    "bool": true
+   },
+   "raw": "01"
+  },
+  {
+   "name": "nested field",
+   "root": "PumpStatus",
+   "body": "010000000000a89640000050400000264202000000503101000000",
+   "path": "Motor.Current",
+   "datatype": "float32",
+   "out": {
+    "num": 3.25
+   },
+   "raw": "40500000"
+  },
+  {
+   "name": "nested field after a nested field",
+   "root": "PumpStatus",
+   "body": "010000000000a89640000050400000264202000000503101000000",
+   "path": "Motor.Temp",
+   "datatype": "float32",
+   "out": {
+    "num": 41.5
+   },
+   "raw": "42260000"
+  },
+  {
+   "name": "String field after a nested structure",
+   "root": "PumpStatus",
+   "body": "010000000000a89640000050400000264202000000503101000000",
+   "path": "Label",
+   "datatype": "string",
+   "out": {
+    "str": "P1"
+   },
+   "raw": "5031"
+  },
+  {
+   "name": "Enumeration field as int32",
+   "root": "PumpStatus",
+   "body": "010000000000a89640000050400000264202000000503101000000",
+   "path": "Mode",
+   "datatype": "int32",
+   "out": {
+    "num": 1
+   },
+   "raw": "00000001"
+  },
+  {
+   "name": "field after a String and an array",
+   "root": "Batch",
+   "body": "050000006c6f742d3704000000000000000000f03f00000000000000400000000000000840000000000000124011000000",
+   "path": "Count",
+   "datatype": "uint32",
+   "out": {
+    "num": 17
+   },
+   "raw": "00000011"
+  },
+  {
+   "name": "field after a null String and a null array",
+   "root": "Batch",
+   "body": "ffffffffffffffff09000000",
+   "path": "Count",
+   "datatype": "uint32",
+   "out": {
+    "num": 9
+   },
+   "raw": "00000009"
+  },
+  {
+   "name": "every built-in type skipped",
+   "root": "Skippers",
+   "body": "01fb010000000000008004000000c3a46263a0a2f3d96a55dd01912b967275fae64a8d28b404dc7daf6303000000000102040000003c612f3e0005c3000001000000780900000075726e3a6f7468657203000000000034800200050000005370656564030500000064652d444507000000426574726965620102d10701080000000000803f000000403f0b000000000000f83f00000000a0a2f3d96a55dd01a0a2f3d96a55dd0107000900c604000000010000000200000003000000040000000200000002000000020000003f01000000020000000300000004000000040000006d6f7265000001800500000001002c01020100701101000302000100000073040300912b967275fae64a8d28b404dc7daf6305040002000000ff00030000000201000000610102000000656e00050000000c01000000738b02000000000000000000f03f0000000000000040160102d407010d000000010000006e000000000000f03f00050300eeffc000",
+   "path": "Marker",
+   "datatype": "uint32",
+   "out": {
+    "num": 12648430
+   },
+   "raw": "00c0ffee"
+  },
+  {
+   "name": "every built-in type skipped, null and alternative encodings",
+   "root": "Skippers",
+   "body": "00000000000000000000ffffffff000000000000000000000000000000000000000000000000ffffffffffffffff022c01701101000007000000000000ffffffff000000000300000000000000ffffffff00000000ffffffff2a000000",
+   "path": "Marker",
+   "datatype": "uint32",
+   "out": {
+    "num": 42
+   },
+   "raw": "0000002a"
+  },
+  {
+   "name": "nested DiagnosticInfo skipped",
+   "root": "DiagHolder",
+   "body": "41010000005002000000696e21070000000000ac8005000000",
+   "path": "Marker",
+   "datatype": "uint32",
+   "out": {
+    "num": 5
+   },
+   "raw": "00000005"
+  },
+  {
+   "name": "element of an array field",
+   "root": "Batch",
+   "body": "050000006c6f742d3704000000000000000000f03f00000000000000400000000000000840000000000000124011000000",
+   "path": "Samples[3]",
+   "datatype": "float64",
+   "out": {
+    "num": 4.5
+   },
+   "raw": "4012000000000000"
+  },
+  {
+   "name": "first element of an array field",
+   "root": "Batch",
+   "body": "050000006c6f742d3704000000000000000000f03f00000000000000400000000000000840000000000000124011000000",
+   "path": "Samples[0]",
+   "datatype": "float64",
+   "out": {
+    "num": 1.0
+   },
+   "raw": "3ff0000000000000"
+  },
+  {
+   "name": "field of a structure element",
+   "root": "Order",
+   "body": "02000000050000006669727374000000000000f83f060000007365636f6e640000000000001c400000000000002140",
+   "path": "Items[1].Value",
+   "datatype": "float64",
+   "out": {
+    "num": 7.0
+   },
+   "raw": "401c000000000000"
+  },
+  {
+   "name": "String field of a structure element",
+   "root": "Order",
+   "body": "02000000050000006669727374000000000000f83f060000007365636f6e640000000000001c400000000000002140",
+   "path": "Items[1].Name",
+   "datatype": "string",
+   "out": {
+    "str": "second"
+   },
+   "raw": "7365636f6e64"
+  },
+  {
+   "name": "field after an array of structures",
+   "root": "Order",
+   "body": "02000000050000006669727374000000000000f83f060000007365636f6e640000000000001c400000000000002140",
+   "path": "Total",
+   "datatype": "float64",
+   "out": {
+    "num": 8.5
+   },
+   "raw": "4021000000000000"
+  },
+  {
+   "name": "index out of range",
+   "root": "Batch",
+   "body": "0000000002000000000000000000f03f000000000000004000000000",
+   "path": "Samples[5]",
+   "datatype": "float64",
+   "error": "index 5 out of range for \"Samples\" (length 2)"
+  },
+  {
+   "name": "index into a null array",
+   "root": "Batch",
+   "body": "00000000ffffffff00000000",
+   "path": "Samples[0]",
+   "datatype": "float64",
+   "error": "index 0 out of range for \"Samples\" (length 0)"
+  },
+  {
+   "name": "array without an index",
+   "root": "Batch",
+   "body": "050000006c6f742d3704000000000000000000f03f00000000000000400000000000000840000000000000124011000000",
+   "path": "Samples",
+   "datatype": "float64",
+   "error": "field \"Samples\" is an array of Double; select one element, e.g. \"Samples[0]\""
+  },
+  {
+   "name": "index on a scalar",
+   "root": "Batch",
+   "body": "050000006c6f742d3704000000000000000000f03f00000000000000400000000000000840000000000000124011000000",
+   "path": "Count[0]",
+   "datatype": "uint32",
+   "error": "field \"Count\" is not an array"
+  },
+  {
+   "name": "present optional field",
+   "root": "Note",
+   "body": "01000000010002000000686907",
+   "path": "Comment",
+   "datatype": "string",
+   "out": {
+    "str": "hi"
+   },
+   "raw": "6869"
+  },
+  {
+   "name": "absent optional field",
+   "root": "Note",
+   "body": "020000000100fdffffff07",
+   "path": "Comment",
+   "datatype": "string",
+   "error": "optional field \"Comment\" is absent"
+  },
+  {
+   "name": "field after absent optional fields",
+   "root": "Note",
+   "body": "00000000010007",
+   "path": "Tail",
+   "datatype": "uint8",
+   "out": {
+    "num": 7
+   },
+   "raw": "07"
+  },
+  {
+   "name": "present optional after absent optional",
+   "root": "Note",
+   "body": "020000000100fdffffff07",
+   "path": "Level",
+   "datatype": "int32",
+   "out": {
+    "num": -3
+   },
+   "raw": "fffffffd"
+  },
+  {
+   "name": "active union member",
+   "root": "Choice",
+   "body": "0200000005000000",
+   "path": "Count",
+   "datatype": "uint32",
+   "out": {
+    "num": 5
+   },
+   "raw": "00000005"
+  },
+  {
+   "name": "inactive union member",
+   "root": "Choice",
+   "body": "010000000100000078",
+   "path": "Count",
+   "datatype": "uint32",
+   "error": "union field \"Count\" is not set (active: \"Name\")"
+  },
+  {
+   "name": "empty union",
+   "root": "Choice",
+   "body": "00000000",
+   "path": "Name",
+   "datatype": "string",
+   "error": "union field \"Name\" is not set (active: none)"
+  },
+  {
+   "name": "unknown field",
+   "root": "PumpStatus",
+   "body": "010000000000a89640000050400000264202000000503101000000",
+   "path": "Sped",
+   "datatype": "float64",
+   "error": "field \"Sped\" not found in PumpStatus (fields: Running, Speed, Motor, Label, Mode)"
+  },
+  {
+   "name": "unknown nested field",
+   "root": "PumpStatus",
+   "body": "010000000000a89640000050400000264202000000503101000000",
+   "path": "Motor.Volts",
+   "datatype": "float32",
+   "error": "field \"Volts\" not found in Motor (fields: Current, Temp)"
+  },
+  {
+   "name": "structure selected",
+   "root": "PumpStatus",
+   "body": "010000000000a89640000050400000264202000000503101000000",
+   "path": "Motor",
+   "datatype": "float64",
+   "error": "field \"Motor\" is a structure (Motor); select one of its fields, e.g. \"Motor.Current\""
+  },
+  {
+   "name": "descending into a scalar",
+   "root": "PumpStatus",
+   "body": "010000000000a89640000050400000264202000000503101000000",
+   "path": "Speed.Value",
+   "datatype": "float64",
+   "error": "field \"Speed\" is Double, not a structure"
+  },
+  {
+   "name": "declared type mismatch",
+   "root": "PumpStatus",
+   "body": "010000000000a89640000050400000264202000000503101000000",
+   "path": "Speed",
+   "datatype": "int32",
+   "error": "field \"Speed\" is Double, point declares int32 (accepted: float64)"
+  },
+  {
+   "name": "non-selectable built-in type",
+   "root": "Skippers",
+   "body": "01fb010000000000008004000000c3a46263a0a2f3d96a55dd01912b967275fae64a8d28b404dc7daf6303000000000102040000003c612f3e0005c3000001000000780900000075726e3a6f7468657203000000000034800200050000005370656564030500000064652d444507000000426574726965620102d10701080000000000803f000000403f0b000000000000f83f00000000a0a2f3d96a55dd01a0a2f3d96a55dd0107000900c604000000010000000200000003000000040000000200000002000000020000003f01000000020000000300000004000000040000006d6f7265000001800500000001002c01020100701101000302000100000073040300912b967275fae64a8d28b404dc7daf6305040002000000ff00030000000201000000610102000000656e00050000000c01000000738b02000000000000000000f03f0000000000000040160102d407010d000000010000006e000000000000f03f0005030001000000",
+   "path": "Var",
+   "datatype": "string",
+   "error": "field \"Var\" is Variant, which a point cannot read"
+  },
+  {
+   "name": "truncated body",
+   "root": "PumpStatus",
+   "body": "010000000000a8964000005040000026420200000050310100",
+   "path": "Mode",
+   "datatype": "int32",
+   "error": "structure body truncated while reading \"Mode\""
+  },
+  {
+   "name": "truncated in a skipped field",
+   "root": "Batch",
+   "body": "050000006c6f742d37040000000000",
+   "path": "Count",
+   "datatype": "uint32",
+   "error": "structure body truncated while reading \"Samples\""
+  },
+  {
+   "name": "length prefix beyond the body",
+   "root": "Batch",
+   "body": "e80300006c6f74",
+   "path": "Count",
+   "datatype": "uint32",
+   "error": "structure body truncated while reading \"Label\""
+  },
+  {
+   "name": "negative length prefix",
+   "root": "Batch",
+   "body": "fbffffff",
+   "path": "Count",
+   "datatype": "uint32",
+   "error": "invalid length -5 while reading \"Label\""
+  },
+  {
+   "name": "trailing bytes are ignored",
+   "root": "Motor",
+   "body": "0000803f00000040ff",
+   "path": "Temp",
+   "datatype": "float32",
+   "out": {
+    "num": 2.0
+   },
+   "raw": "40000000"
+  },
+  {
+   "name": "DateTime as string",
+   "root": "Builtins",
+   "body": "a0a2f3d96a55dd01030500000064652d4445070000004265747269656200003480912b967275fae64a8d28b404dc7daf630102e903c3000001000000780900000075726e3a6f7468657203000000020005000000537065656404000000deadbeef0200000000803ed5deb19d01a0a2f3d96a55dd01",
+   "path": "Stamp",
+   "datatype": "string",
+   "out": {
+    "str": "2026-10-06T08:15:30.25Z"
+   },
+   "raw": "323032362d31302d30365430383a31353a33302e32355a"
+  },
+  {
+   "name": "DateTime as int64",
+   "root": "Builtins",
+   "body": "a0a2f3d96a55dd01030500000064652d4445070000004265747269656200003480912b967275fae64a8d28b404dc7daf630102e903c3000001000000780900000075726e3a6f7468657203000000020005000000537065656404000000deadbeef0200000000803ed5deb19d01a0a2f3d96a55dd01",
+   "path": "Stamp",
+   "datatype": "int64",
+   "out": {
+    "num": 1791274530250
+   },
+   "raw": "01dd556ad9f3a2a0"
+  },
+  {
+   "name": "DateTime array element",
+   "root": "Builtins",
+   "body": "a0a2f3d96a55dd01030500000064652d4445070000004265747269656200003480912b967275fae64a8d28b404dc7daf630102e903c3000001000000780900000075726e3a6f7468657203000000020005000000537065656404000000deadbeef0200000000803ed5deb19d01a0a2f3d96a55dd01",
+   "path": "Stamps[0]",
+   "datatype": "string",
+   "out": {
+    "str": "1970-01-01T00:00:00Z"
+   },
+   "raw": "313937302d30312d30315430303a30303a30305a"
+  },
+  {
+   "name": "DateTime not accepted as float64",
+   "root": "Builtins",
+   "body": "a0a2f3d96a55dd01030500000064652d4445070000004265747269656200003480912b967275fae64a8d28b404dc7daf630102e903c3000001000000780900000075726e3a6f7468657203000000020005000000537065656404000000deadbeef0200000000803ed5deb19d01a0a2f3d96a55dd01",
+   "path": "Stamp",
+   "datatype": "float64",
+   "error": "field \"Stamp\" is DateTime, point declares float64 (accepted: string, int64)"
+  },
+  {
+   "name": "LocalizedText",
+   "root": "Builtins",
+   "body": "a0a2f3d96a55dd01030500000064652d4445070000004265747269656200003480912b967275fae64a8d28b404dc7daf630102e903c3000001000000780900000075726e3a6f7468657203000000020005000000537065656404000000deadbeef0200000000803ed5deb19d01a0a2f3d96a55dd01",
+   "path": "LText",
+   "datatype": "string",
+   "out": {
+    "str": "Betrieb"
+   },
+   "raw": "42657472696562"
+  },
+  {
+   "name": "StatusCode as uint32",
+   "root": "Builtins",
+   "body": "a0a2f3d96a55dd01030500000064652d4445070000004265747269656200003480912b967275fae64a8d28b404dc7daf630102e903c3000001000000780900000075726e3a6f7468657203000000020005000000537065656404000000deadbeef0200000000803ed5deb19d01a0a2f3d96a55dd01",
+   "path": "Status",
+   "datatype": "uint32",
+   "out": {
+    "num": 2150891520
+   },
+   "raw": "80340000"
+  },
+  {
+   "name": "StatusCode as string",
+   "root": "Builtins",
+   "body": "a0a2f3d96a55dd01030500000064652d4445070000004265747269656200003480912b967275fae64a8d28b404dc7daf630102e903c3000001000000780900000075726e3a6f7468657203000000020005000000537065656404000000deadbeef0200000000803ed5deb19d01a0a2f3d96a55dd01",
+   "path": "Status",
+   "datatype": "string",
+   "out": {
+    "str": "BadNodeIdUnknown"
+   },
+   "raw": "4261644e6f64654964556e6b6e6f776e"
+  },
+  {
+   "name": "Guid",
+   "root": "Builtins",
+   "body": "a0a2f3d96a55dd01030500000064652d4445070000004265747269656200003480912b967275fae64a8d28b404dc7daf630102e903c3000001000000780900000075726e3a6f7468657203000000020005000000537065656404000000deadbeef0200000000803ed5deb19d01a0a2f3d96a55dd01",
+   "path": "Id",
+   "datatype": "string",
+   "out": {
+    "str": "72962b91-fa75-4ae6-8d28-b404dc7daf63"
+   },
+   "raw": "37323936326239312d666137352d346165362d386432382d623430346463376461663633"
+  },
+  {
+   "name": "NodeId with namespace URI",
+   "root": "Builtins",
+   "body": "a0a2f3d96a55dd01030500000064652d4445070000004265747269656200003480912b967275fae64a8d28b404dc7daf630102e903c3000001000000780900000075726e3a6f7468657203000000020005000000537065656404000000deadbeef0200000000803ed5deb19d01a0a2f3d96a55dd01",
+   "path": "Node",
+   "datatype": "string",
+   "out": {
+    "str": "nsu=urn:acme:types;i=1001"
+   },
+   "raw": "6e73753d75726e3a61636d653a74797065733b693d31303031"
+  },
+  {
+   "name": "ExpandedNodeId with server index",
+   "root": "Builtins",
+   "body": "a0a2f3d96a55dd01030500000064652d4445070000004265747269656200003480912b967275fae64a8d28b404dc7daf630102e903c3000001000000780900000075726e3a6f7468657203000000020005000000537065656404000000deadbeef0200000000803ed5deb19d01a0a2f3d96a55dd01",
+   "path": "XNode",
+   "datatype": "string",
+   "out": {
+    "str": "svr=3;nsu=urn:other;s=x"
+   },
+   "raw": "7376723d333b6e73753d75726e3a6f746865723b733d78"
+  },
+  {
+   "name": "QualifiedName",
+   "root": "Builtins",
+   "body": "a0a2f3d96a55dd01030500000064652d4445070000004265747269656200003480912b967275fae64a8d28b404dc7daf630102e903c3000001000000780900000075726e3a6f7468657203000000020005000000537065656404000000deadbeef0200000000803ed5deb19d01a0a2f3d96a55dd01",
+   "path": "QName",
+   "datatype": "string",
+   "out": {
+    "str": "2:Speed"
+   },
+   "raw": "323a5370656564"
+  },
+  {
+   "name": "ByteString as bytes",
+   "root": "Builtins",
+   "body": "a0a2f3d96a55dd01030500000064652d4445070000004265747269656200003480912b967275fae64a8d28b404dc7daf630102e903c3000001000000780900000075726e3a6f7468657203000000020005000000537065656404000000deadbeef0200000000803ed5deb19d01a0a2f3d96a55dd01",
+   "path": "Blob",
+   "datatype": "bytes",
+   "out": {
+    "hex": "deadbeef"
+   },
+   "raw": "deadbeef"
+  },
+  {
+   "name": "DateTime zero (not set)",
+   "root": "DateTime",
+   "body": "0000000000000000",
+   "datatype": "string",
+   "out": {
+    "str": "1601-01-01T00:00:00Z"
+   },
+   "raw": "313630312d30312d30315430303a30303a30305a"
+  },
+  {
+   "name": "DateTime zero as int64",
+   "root": "DateTime",
+   "body": "0000000000000000",
+   "datatype": "int64",
+   "out": {
+    "num": -11644473600000
+   },
+   "raw": "0000000000000000"
+  },
+  {
+   "name": "DateTime negative clamps to zero",
+   "root": "DateTime",
+   "body": "fbffffffffffffff",
+   "datatype": "string",
+   "out": {
+    "str": "1601-01-01T00:00:00Z"
+   },
+   "raw": "313630312d30312d30315430303a30303a30305a"
+  },
+  {
+   "name": "DateTime full precision",
+   "root": "DateTime",
+   "body": "875651d5deb19d01",
+   "datatype": "string",
+   "out": {
+    "str": "1970-01-01T00:00:00.1234567Z"
+   },
+   "raw": "313937302d30312d30315430303a30303a30302e313233343536375a"
+  },
+  {
+   "name": "DateTime int64 rounds towards negative infinity",
+   "root": "DateTime",
+   "body": "786c3ed5deb19d01",
+   "datatype": "int64",
+   "out": {
+    "num": -1
+   },
+   "raw": "019db1ded53e6c78"
+  },
+  {
+   "name": "DateTime beyond year 9999 clamps",
+   "root": "DateTime",
+   "body": "ffffffffffffff7f",
+   "datatype": "string",
+   "out": {
+    "str": "9999-12-31T23:59:59.9999999Z"
+   },
+   "raw": "393939392d31322d33315432333a35393a35392e393939393939395a"
+  },
+  {
+   "name": "DateTime maximum as int64",
+   "root": "DateTime",
+   "body": "ffffffffffffff7f",
+   "datatype": "int64",
+   "out": {
+    "num": 253402300799999
+   },
+   "raw": "24c85a5ed1c03fff"
+  },
+  {
+   "name": "LocalizedText without text",
+   "root": "LocalizedText",
+   "body": "0102000000656e",
+   "datatype": "string",
+   "out": {
+    "str": ""
+   },
+   "raw": ""
+  },
+  {
+   "name": "null String",
+   "root": "String",
+   "body": "ffffffff",
+   "datatype": "string",
+   "out": {
+    "str": ""
+   },
+   "raw": ""
+  },
+  {
+   "name": "null ByteString",
+   "root": "ByteString",
+   "body": "ffffffff",
+   "datatype": "bytes",
+   "out": {
+    "hex": ""
+   },
+   "raw": ""
+  },
+  {
+   "name": "StatusCode Good by name",
+   "root": "StatusCode",
+   "body": "00000000",
+   "datatype": "string",
+   "out": {
+    "str": "Good"
+   },
+   "raw": "476f6f64"
+  },
+  {
+   "name": "StatusCode without a name",
+   "root": "StatusCode",
+   "body": "0000ff80",
+   "datatype": "string",
+   "out": {
+    "str": "0x80FF0000"
+   },
+   "raw": "30783830464630303030"
+  },
+  {
+   "name": "StatusCode with info bits has no name",
+   "root": "StatusCode",
+   "body": "00043480",
+   "datatype": "string",
+   "out": {
+    "str": "0x80340400"
+   },
+   "raw": "30783830333430343030"
+  },
+  {
+   "name": "NodeId numeric in namespace 0",
+   "root": "NodeId",
+   "body": "0100cd08",
+   "datatype": "string",
+   "out": {
+    "str": "i=2253"
+   },
+   "raw": "693d32323533"
+  },
+  {
+   "name": "NodeId string",
+   "root": "NodeId",
+   "body": "0301000c00000050756d70312e537461747573",
+   "datatype": "string",
+   "out": {
+    "str": "nsu=urn:tedge-dot:sim;s=Pump1.Status"
+   },
+   "raw": "6e73753d75726e3a74656467652d646f743a73696d3b733d50756d70312e537461747573"
+  },
+  {
+   "name": "NodeId guid",
+   "root": "NodeId",
+   "body": "040200912b967275fae64a8d28b404dc7daf63",
+   "datatype": "string",
+   "out": {
+    "str": "nsu=urn:acme:types;g=72962b91-fa75-4ae6-8d28-b404dc7daf63"
+   },
+   "raw": "6e73753d75726e3a61636d653a74797065733b673d37323936326239312d666137352d346165362d386432382d623430346463376461663633"
+  },
+  {
+   "name": "NodeId opaque",
+   "root": "NodeId",
+   "body": "05020003000000ff0010",
+   "datatype": "string",
+   "out": {
+    "str": "nsu=urn:acme:types;b=/wAQ"
+   },
+   "raw": "6e73753d75726e3a61636d653a74797065733b623d2f774151"
+  },
+  {
+   "name": "NodeId with unknown namespace index",
+   "root": "NodeId",
+   "body": "01090700",
+   "datatype": "string",
+   "out": {
+    "str": "ns=9;i=7"
+   },
+   "raw": "6e733d393b693d37"
+  },
+  {
+   "name": "ExpandedNodeId local",
+   "root": "ExpandedNodeId",
+   "body": "01020700",
+   "datatype": "string",
+   "out": {
+    "str": "nsu=urn:acme:types;i=7"
+   },
+   "raw": "6e73753d75726e3a61636d653a74797065733b693d37"
+  },
+  {
+   "name": "QualifiedName in namespace 0",
+   "root": "QualifiedName",
+   "body": "0000040000004e616d65",
+   "datatype": "string",
+   "out": {
+    "str": "Name"
+   },
+   "raw": "4e616d65"
+  }
+ ],
+ "invalid_paths": [
+  {
+   "path": "",
+   "error": "field path is empty"
+  },
+  {
+   "path": "Motor..Current",
+   "error": "field path \"Motor..Current\" has an empty segment"
+  },
+  {
+   "path": "Samples[]",
+   "error": "field path \"Samples[]\" has an invalid index"
+  },
+  {
+   "path": "Samples[-1]",
+   "error": "field path \"Samples[-1]\" has an invalid index"
+  },
+  {
+   "path": "Samples[1",
+   "error": "field path \"Samples[1\" has an invalid index"
+  },
+  {
+   "path": "Samples[1]x",
+   "error": "field path \"Samples[1]x\" has an invalid index"
+  }
+ ]
+}

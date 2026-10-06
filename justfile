@@ -25,7 +25,7 @@ MANIFEST := "--manifest-path impl/rust/Cargo.toml"
 # Every capability name a `requires:<capability>` tag may use. Declaring the vocabulary in one
 # place is what turns a mistyped tag into an error instead of a test that quietly runs against
 # a build that cannot pass it (see `just check-capability-tags`).
-KNOWN_CAPABILITIES := "subscribe canbus-fd profibus-serial snmpv3-sha2 opcua-basic128rsa15"
+KNOWN_CAPABILITIES := "subscribe canbus-fd profibus-serial snmpv3-sha2 opcua-basic128rsa15 opcua-structures"
 
 # This list is the single source of truth for what the C build still lacks. Keep it in sync
 # with the parity table in impl/c/README.md. Adding a capability here is a deliberate act:
@@ -33,7 +33,7 @@ KNOWN_CAPABILITIES := "subscribe canbus-fd profibus-serial snmpv3-sha2 opcua-bas
 #
 # NOTE: a capability listed here only becomes ENFORCED once a test is tagged with it;
 # `just check-capability-tags` reports the ones that are still inert.
-C_MISSING_CAPABILITIES := "canbus-fd profibus-serial snmpv3-sha2 opcua-basic128rsa15"
+C_MISSING_CAPABILITIES := "canbus-fd profibus-serial snmpv3-sha2 opcua-basic128rsa15 opcua-structures"
 
 # Create/refresh the single Python virtualenv used by every system test (and by the editor,
 # see .vscode/settings.json).
@@ -108,10 +108,11 @@ check-linux target=TARGET:
 fuzz target="decode_primitive" seconds="60":
     cd impl/rust/crates/sdk && cargo +nightly fuzz run {{target}} -- -max_total_time={{seconds}}
 
-# Fuzz every SDK target briefly (CI smoke; ~2 min total).
+# Fuzz every SDK target briefly, plus the OPC UA structure walker (CI smoke; ~3 min total).
 fuzz-all seconds="30":
     cd impl/rust/crates/sdk && for t in decode_primitive config_toml transform sample_envelope value_map; do \
         cargo +nightly fuzz run $t -- -max_total_time={{seconds}} || exit 1; done
+    cd impl/rust/crates/connector-opcua && cargo +nightly fuzz run structure_walk -- -max_total_time={{seconds}}
 
 # Cross-check the `requires:<capability>` test tags against the declared capability lists.
 check-capability-tags:

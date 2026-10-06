@@ -51,6 +51,28 @@ Unsecured Channel Connects And Reads Every Datatype
     Sample Should Be    plain    int32     ${-100000}
     Sample String Should Be    plain    string    Hello OPC UA
 
+Structured Values Are Decoded From The Reference Server
+    [Documentation]    Fields of the server's own structure types (TestPointXYZ, TestRangeStruct),
+    ...                found through the values' encodings and decoded from the DataTypeDefinition
+    ...                the server publishes; the raw body; and an array element by IndexRange.
+    [Tags]    requires:opcua-structures
+    Wait For Link Status    structures    connected
+    Sample Should Be    structures    point_x    1.5
+    Sample Should Be    structures    point_z    3.5
+    Sample Should Be    structures    range_high    100
+    Sample Should Be    structures    range_value    42.5
+    Sample Should Be    structures    double_array_2    3.33
+    ${bad}=    Wait For Sample    te/device/structures/ot/${PROTOCOL}/sample/range_max
+    ...    timeout=${SAMPLE_TIMEOUT}
+    ${error}=    Get Json Field    ${bad}    error
+    Should Be Equal    ${error}    field "Max" not found in TestRangeStruct (fields: Low, High, Value)
+    ${raw}=    Wait For Sample    te/device/structures/ot/${PROTOCOL}/sample/point_raw
+    ...    timeout=${SAMPLE_TIMEOUT}
+    ${bytes}=    Get Json Field    ${raw}    raw
+    Should Be Equal    ${bytes}    00 00 00 00 00 00 f8 3f 00 00 00 00 00 00 04 40 00 00 00 00 00 00 0c 40
+    ${encoding}=    Get Json Field    ${raw}    addr.encoding_id
+    Should Start With    ${encoding}    nsu=urn:opcua:test-server:custom-types;
+
 Deprecated Basic256 Connects With The Opt-In
     [Documentation]    Basic256 had only ever been covered by configuration-validation unit
     ...                tests; here it runs against a server that really offers it. The refusal

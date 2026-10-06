@@ -1,0 +1,60 @@
+# Point library: the structured values of the demo OPC UA simulator (contract §3.4,
+# doc/connectors/opcua-connector-spec.md §3.7). Rust build only: the C build does not decode
+# OPC UA structures yet (capability `opcua-structures`, impl/c/README.md).
+#
+# The simulator's `Pump` variable holds a custom structure, SimPumpStatus, which the connector
+# knows nothing about at build time. It reads the type's DataTypeDefinition from the server once
+# per session and decodes the fields these points select. Several fields of one node cost one
+# read per poll cycle.
+#
+# Reference it from a device with:
+#
+#   points_from = ["demo-sim-structures"]
+
+[library]
+protocol    = "opcua"
+type        = "opcua-demo-sim-structures"
+description = "Structured values of the demo OPC UA server (opcua-sim in demo/docker-compose.yaml)"
+version     = "1"
+
+[[point]]
+id          = "pump_speed"
+name        = "Pump speed"
+datatype    = "float64"
+unit        = "rpm"
+address     = { node_id = "ns=2;s=Pump", field = "Speed" }
+
+[[point]]
+id          = "pump_motor_current"
+name        = "Pump motor current"
+datatype    = "float32"
+unit        = "A"
+address     = { node_id = "ns=2;s=Pump", field = "Motor.Current" }
+
+# An Enumeration field: an int32 with a map to its names.
+[[point]]
+id          = "pump_mode"
+name        = "Pump mode"
+datatype    = "int32"
+address     = { node_id = "ns=2;s=Pump", field = "Mode" }
+map         = { cases = [{ eq = 0, to = "stopped" }, { eq = 1, to = "running" }, { eq = 2, to = "fault" }] }
+
+# An element of an array field, and a field of a structure element.
+[[point]]
+id          = "pump_last_sample"
+name        = "Pump sample 3"
+datatype    = "float64"
+address     = { node_id = "ns=2;s=Pump", field = "Samples[2]" }
+
+[[point]]
+id          = "pump_second_item"
+name        = "Pump second item value"
+datatype    = "float64"
+address     = { node_id = "ns=2;s=Pump", field = "Items[1].Value" }
+
+# A DateTime field, published as RFC 3339 text.
+[[point]]
+id          = "pump_stamp"
+name        = "Pump timestamp"
+datatype    = "string"
+address     = { node_id = "ns=2;s=Pump", field = "Stamp" }

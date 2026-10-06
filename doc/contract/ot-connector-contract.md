@@ -436,9 +436,15 @@ Decoding semantics:
   scaling, offset, or rounding. The declared value map (`point.map`, §4.3) is the non-linear
   counterpart; the **SDK runtime** applies it, never the driver.
 - Bit-field extraction (start bit / bit count within a word) MAY be supported by a connector
-  as a `typed` refinement and, if so, MUST be declared in that connector's spec. It is the
-  one decoding refinement allowed beyond whole-primitive decode, because doing it in JS is
-  error-prone.
+  as a `typed` refinement and, if so, MUST be declared in that connector's spec. Doing it in JS
+  is error-prone.
+- Selecting **one primitive out of a structured value** MAY likewise be supported, and MUST
+  then be declared in the connector's spec: a field of a structure, or one element of an array,
+  addressed by the point (for OPC UA, `address.field` and `address.index`). The selected
+  primitive is decoded and published like any other typed value, so `value` stays a number,
+  boolean or string and the point carries one value per sample. A structured value is never
+  published whole in `typed` mode. Bit-field extraction and this selection are the only
+  decoding refinements allowed beyond whole-primitive decode.
 
 ### 4.1 64-bit integers
 
@@ -621,7 +627,7 @@ native address so flows can route or debug). The example below uses Modbus to ma
 | `datatype` | string | when `typed` | The primitive type decoded. |
 | `value` | number \| boolean \| string | when `quality = good` | Decoded value (`typed`) — absent for `raw`. |
 | `value_repr` | `"number"` \| `"boolean"` \| `"string"` | when `value` present | Tells flows how to interpret `value`. For a mapped point (§4.3) it is the map's output type, while `datatype` still names the device primitive. |
-| `raw` | string (hex, space-grouped per word) | yes | The bytes read; always present in both modes. |
+| `raw` | string (hex, space-grouped per word) | yes | The bytes read; always present in both modes. For a structured value read in `raw` mode it is the encoded body, and the connector's spec says how `addr` identifies its type. |
 | `quality` | `"good"` \| `"bad"` \| `"stale"` | yes | See §5.1. |
 | `unit` | string | no | Echo of the point's `unit` hint. |
 | `access` | `"read"` \| `"write"` \| `"read_write"` | no | Echo of the point's declared `access` (SDK runtimes always set it). Lets consumers tell writable points apart without the configuration file (§5.2). |

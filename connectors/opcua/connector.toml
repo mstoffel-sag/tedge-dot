@@ -162,3 +162,4 @@ default_mode     = "typed"
   id       = "ticks"
   datatype = "uint32"
   address  = { node_id = "ns=2;s=Ticks" }
+

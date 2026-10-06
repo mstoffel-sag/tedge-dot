@@ -153,6 +153,12 @@ pub struct NodeAddress {
     /// String identifier (`s=`) or numeric identifier (`i=`); a JSON string or number.
     #[serde(default)]
     pub identifier: Option<serde_json::Value>,
+    /// One field of a structured value, as a dotted path (`Motor.Current`, `Items[1].Value`).
+    #[serde(default)]
+    pub field: Option<String>,
+    /// One element of an array value, selected on the server through `IndexRange`.
+    #[serde(default)]
+    pub index: Option<u32>,
 }
 
 /// A password. Its `Debug` is redacted, it has no `Display`, a wrong type is reported without
