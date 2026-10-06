@@ -92,6 +92,16 @@ points_from      = ["plc-sim", "./points.d/modbus/plc-sim-extra.toml"]
   address  = { table = "holding", address = 3, count = 1 }
   map      = { cases = [{ eq = 1234, to = "running" }, { eq = 17001, to = "idle" }], default = "other" }
 
+  # A literal parameter (§5.2 meta.parameter.fragment): its value IS the twin fragment
+  # `plc_sim_pump_enabled` (`true`, not `{"pump_enabled": true}`), and it is in no set. Coil 769 is
+  # bit 1 of register 48, next to coil_rw's bit 0, so writing it leaves coil_rw alone.
+  [[device.point]]
+  id       = "pump_enabled"
+  datatype = "bool"
+  access   = "read_write"
+  address  = { table = "coil", address = 769, count = 1 }
+  meta     = { parameter = { fragment = "plc_sim_pump_enabled", title = "Pump enabled" } }
+
   # Points switched off (§3.3). spare_u16 comes from the path-referenced library, and this bare
   # `enabled = false` leaves it out of plc1 without editing that file: it is never read, written
   # or described. draft_u16 is incomplete (no datatype, no address) and loads only because it is

@@ -7,6 +7,7 @@
 //        te/device/<device>/ot/<protocol>/status/link            (retained: type and point list)
 //        te/device/main/service/<service>/ot/capabilities        (retained: parameter_keys)
 //   out: te/device/<device>///twin/<set>                         (retained: { <key>: value })
+//        te/device/<device>///twin/<fragment>                    (retained: value, for a literal)
 //
 // A *parameter* is a point whose `access` (echoed in every sample) permits writes, or that opts
 // in via meta.parameter (meta.parameter = false opts a writable point out). Parameters are
@@ -35,6 +36,14 @@
 // writes. Two points of a device sharing a key in a set is a configuration `describe` refuses;
 // here the first to claim the key keeps it. Once that point leaves the set or is removed, the key is
 // free, and the other point takes it at its own next sample, write, descriptor or link status.
+//
+// A *literal* parameter (meta.parameter.fragment = "<name>") is published as the fragment itself:
+// `twin/pump_speed` carries `42`, not `{ "<key>": 42 }`. Internally it is a set named after the
+// fragment holding one reserved key, "" — which no configured key can be, since a key is a
+// non-empty identifier — so it is claimed, placed, pruned and released exactly like a key. A set
+// never holds both shapes: whichever point claims the name first keeps it (`describe` refuses the
+// configuration). Its fragment comes from the descriptor's parameter_keys ({ point, fragment }) and
+// from its samples, like a declared key.
 //
 // Where values come from:
 //   * readable parameters: every good sample (so the twin follows the device, including
@@ -68,17 +77,18 @@
 //   "ot-protocol:<device>"                -> protocol segment seen for the device
 //                                            (read by ot-command-forward)
 //   "ot-device-type:<device>"             -> declared device type, when the connector reports one
-//   "ot-parameter-values:<device>:<set>"  -> { <key>: value }
+//   "ot-parameter-values:<device>:<set>"  -> { <key>: value } ({ "": value } for a literal)
 //   "ot-parameter-sets:<device>"          -> [set names] this flow has put values in
 //   "ot-parameter-set:<device>:<point>"   -> [set names], or false for opted-out points
 //                                            (from the point's samples or declared key, else from
 //                                            the parameter_update request that wrote it)
-//   "ot-parameter-key:<device>:<point>"   -> the point's key (absent: its id)
+//   "ot-parameter-key:<device>:<point>"   -> the point's key (absent: its id; "": a literal)
 //   "ot-parameter-point:<device>:<set>:<key>" -> the point that key of the set belongs to
 //                                            (read by ot-command-forward)
 //   "ot-parameter-claims:<device>:<point>" -> [[set, key]] the point holds
 //   "ot-parameter-claimants:<device>"     -> [points] that have claimed a key
-//   "ot-parameter-declared:<device>:<protocol>" -> [{point, key, set, group}] from the descriptor
+//   "ot-parameter-declared:<device>:<protocol>" -> [{point, key, set, group, fragment}] from the
+//                                            descriptor
 //   "ot-parameter-declaring:<service>"    -> [devices] that service's descriptor declared keys for
 //   "ot-parameter-protocols:<device>"     -> [protocols] whose connector sampled or reported the
 //                                            device (a device name is only unique per connector)
@@ -94,6 +104,9 @@ function canWrite(access) {
 }
 
 const DEFAULT_GROUP = "control";
+
+// The key a literal parameter holds in the set named after its fragment.
+const LITERAL_KEY = "";
 
 // Every RUN of characters outside [A-Za-z0-9] becomes a single "_", so a device type can be
 // written the way it reads ("acme-meter-v2") and still be a valid fragment key. A run rather
@@ -151,10 +164,21 @@ function namesOf(value, validate) {
   return out;
 }
 
+// The fragment a literal parameter is published as (meta.parameter.fragment), or null when the
+// options name none — or one that is unusable, which falls back to the point's usual placement
+// like an unusable key does (`tedge-dot describe` refuses it).
+function fragmentOf(options) {
+  const fragment = options?.fragment;
+  return typeof fragment === "string" && isValidSet(fragment) ? fragment : null;
+}
+
 // EVERY set a point belongs to: `set` and `group` each accept a string or a list, so one point
 // can appear on several operator screens and its value reaches each of their fragments.
 // `set` is absolute and wins over `group`. Mirrors SetNaming::sets_of in both SDKs.
 function setsOf(options, names) {
+  // A literal IS its fragment: it is in no set, so nothing else places it.
+  const fragment = fragmentOf(options);
+  if (fragment) return [fragment];
   // A key that names its set (`key = "<set>.<key>"`) is absolute, like `set`, and wins; an
   // unusable set in it falls back like an unusable `set` does.
   const dotted = dottedKey(options.key);
@@ -210,14 +234,22 @@ function keyName(key) {
 // `tedge-dot describe` refuses it.
 function keyFromSample(sample, point) {
   const mp = sample.meta?.parameter;
-  const key = mp && typeof mp === "object" && !Array.isArray(mp) ? keyName(mp.key) : null;
-  return key ?? point;
+  if (!mp || typeof mp !== "object" || Array.isArray(mp)) return point;
+  if (fragmentOf(mp)) return LITERAL_KEY;
+  return keyName(mp.key) ?? point;
+}
+
+// The key a descriptor entry declares: the literal key for a usable fragment, else its usable
+// `key`, else null.
+function declaredKey(entry) {
+  if (fragmentOf(entry)) return LITERAL_KEY;
+  return keyName(entry?.key);
 }
 
 // The key a point was last seen under: its id until a sample or its declaration names another.
 function keyOf(context, device, point) {
   const key = context.mapper.get(`ot-parameter-key:${device}:${point}`);
-  return typeof key === "string" && key ? key : point;
+  return typeof key === "string" ? key : point;
 }
 
 // The point a key of a set belongs to, or null when no point has claimed it.
@@ -239,6 +271,7 @@ function claim(context, device, set, key, point) {
   const owner = ownerOf(context, device, set, key);
   if (owner && owner !== point) return false;
   if (owner) return true;
+  if (shapeTaken(context, device, set, key, point)) return false;
   context.mapper.set(`ot-parameter-point:${device}:${set}:${key}`, point);
   const claims = claimsOf(context, device, point);
   context.mapper.set(`ot-parameter-claims:${device}:${point}`, [...claims, [set, key]]);
@@ -247,6 +280,20 @@ function claim(context, device, set, key, point) {
     context.mapper.set(`ot-parameter-claimants:${device}`, [...claimants, point]);
   }
   return true;
+}
+
+// True when `set` already has the other shape: a literal value when `key` is a key, or keys when
+// `key` is the literal key — held by a point other than `point`, which is about to move.
+function shapeTaken(context, device, set, key, point) {
+  if (key !== LITERAL_KEY) {
+    const literal = ownerOf(context, device, set, LITERAL_KEY);
+    return literal !== null && literal !== point;
+  }
+  for (const other of context.mapper.get(`ot-parameter-claimants:${device}`) || []) {
+    if (other === point) continue;
+    if (claimsOf(context, device, other).some(([s, k]) => s === set && k !== LITERAL_KEY)) return true;
+  }
+  return false;
 }
 
 // The recorded sets of a point as a list. Tolerates the pre-list shape (a bare set name) in case
@@ -334,9 +381,9 @@ function applyDeclarations(context, device, protocol, changed) {
   const names = naming(context, device, protocol);
   const entries = [];
   for (const e of context.mapper.get(`ot-parameter-declared:${device}:${protocol}`) || []) {
-    const key = keyName(e?.key);
-    if (typeof e?.point !== "string" || !e.point || !key) continue;
-    entries.push({ point: e.point, key, options: { set: e.set, group: e.group, key: e.key } });
+    const key = declaredKey(e);
+    if (typeof e?.point !== "string" || !e.point || key === null) continue;
+    entries.push({ point: e.point, key, options: { set: e.set, group: e.group, key: e.key, fragment: e.fragment } });
   }
   for (const entry of entries) entry.sets = setsOf(entry.options, names);
   // Two passes: first every point gives up the claims another declared point is to take, so keys
@@ -363,9 +410,14 @@ function applyDeclarations(context, device, protocol, changed) {
 function twinMessages(context, device, changed) {
   return [...changed].map((set) => {
     const values = context.mapper.get(`ot-parameter-values:${device}:${set}`) || {};
+    // A literal set holds the one value the fragment IS.
+    const literal = Object.prototype.hasOwnProperty.call(values, LITERAL_KEY);
+    let payload = "";
+    if (literal) payload = JSON.stringify(values[LITERAL_KEY]);
+    else if (Object.keys(values).length) payload = JSON.stringify(values);
     return {
       topic: `te/device/${device}///twin/${set}`,
-      payload: Object.keys(values).length ? JSON.stringify(values) : "",
+      payload,
       mqtt: { retain: true, qos: 1 },
     };
   });
@@ -429,7 +481,7 @@ function pruneRemovedPoints(context, device, changed) {
 // is not undone.
 function releaseDeclaration(context, device, entry, changed) {
   const point = entry.point;
-  if (keyOf(context, device, point) !== keyName(entry.key)) return;
+  if (keyOf(context, device, point) !== declaredKey(entry)) return;
   for (const [set, held] of claimsOf(context, device, point)) {
     dropValue(context, device, point, held, [set], changed);
   }
@@ -448,7 +500,9 @@ function onCapabilities(context, service, caps) {
   for (const entry of Array.isArray(caps.parameter_keys) ? caps.parameter_keys : []) {
     if (!entry || typeof entry.device !== "string" || !entry.device) continue;
     if (!byDevice[entry.device]) byDevice[entry.device] = [];
-    byDevice[entry.device].push({ point: entry.point, key: entry.key, set: entry.set, group: entry.group });
+    byDevice[entry.device].push({
+      point: entry.point, key: entry.key, set: entry.set, group: entry.group, fragment: entry.fragment,
+    });
   }
   const devices = Object.keys(byDevice);
   const previous = context.mapper.get(`ot-parameter-declaring:${service}`) || [];

@@ -106,6 +106,18 @@ covers the `write` and `write-batch` commands, the CLI and Cumulocity device par
 - The demo point libraries show the feature: the Modbus `boiler_state` maps by range, and the
   OPC UA `run_state` is an enumerated parameter.
 
+### Literal device parameters (`meta.parameter.fragment`)
+
+A device parameter no longer has to sit inside an object. With
+`meta.parameter = { fragment = "pump_speed" }` the point's value is published as the fragment
+itself, so the managed object holds `"pump_speed": 42` rather than an object around one value.
+`tedge-dot describe` renders it as a primitive Cumulocity definition (number, boolean or string),
+and an edit from the *Parameters* tab carrying the bare value is written to the point.
+
+- The name is used verbatim, like `set`. It cannot be combined with `set`, `group` or `key`, and
+  one name cannot be both a literal and a set. `describe` refuses either.
+- Configurations without `fragment` are unchanged.
+
 ### Notes
 
 - On a fresh install the service starts with **no devices configured**. Add

@@ -25,7 +25,15 @@
 //   2. Direct:     { "set": "<set>", "parameters": { "<key>": <value>, ... } }
 // The keys of a set are the connector point ids, unless a point names its own key
 // (meta.parameter.key): ot-parameter-state records which point each key of a set belongs to, and
-// a key no point has claimed is taken as the point id. The batch request carries an `origin`
+// a key no point has claimed is taken as the point id.
+//
+// A *literal* parameter (meta.parameter.fragment) is the fragment itself, so its edit carries a
+// value where a set carries an object, and becomes a batch of ONE write:
+//   1. Cumulocity: { "operation": { ..., "c8y_ParameterUpdate_<fragment>":{}, "<fragment>": <value> } }
+//   2. Direct:     { "set": "<fragment>", "value": <value> }
+// The point is the one ot-parameter-state recorded under the fragment's reserved key "". There is
+// no fallback to the point id: a fragment no point has claimed fails the command, and so does a
+// value sent for a set of keys, or an object sent for a literal. The batch request carries an `origin`
 // object (command type, set, requested values) that the connector ignores; ot-command-result
 // reads it back from the retained init to complete the right thin-edge command.
 //
@@ -51,6 +59,16 @@ function isTopicSegment(value) {
   return typeof value === "string" && /^[^/+#]+$/.test(value);
 }
 
+// The key a literal parameter holds in the set named after its fragment (see ot-parameter-state).
+const LITERAL_KEY = "";
+
+// A value a literal parameter can take: a point value is a number, string or bool.
+function isScalar(value) {
+  return typeof value === "number" || typeof value === "string" || typeof value === "boolean";
+}
+
+// The set (or literal fragment) a parameter_update edits, with either the { key: value } object
+// of a set or the `value` of a literal; `error` when the request cannot be read.
 function parameterRequest(payload) {
   const op = payload?.operation;
   if (op && typeof op === "object") {
@@ -58,20 +76,50 @@ function parameterRequest(payload) {
     if (!marker) return { error: "c8y_ParameterUpdate operation names no parameter set" };
     const set = marker.slice("c8y_ParameterUpdate_".length);
     const values = op[set];
-    if (!values || typeof values !== "object") return { error: `operation carries no '${set}' fragment` };
+    if (isScalar(values)) return { set, value: values };
+    if (!values || typeof values !== "object" || Array.isArray(values)) {
+      return { set, error: `operation carries no '${set}' fragment` };
+    }
     return { set, values };
   }
   if (typeof payload?.set === "string" && payload.parameters && typeof payload.parameters === "object") {
     return { set: payload.set, values: payload.parameters };
   }
-  return { error: "unsupported parameter_update payload (expected operation or set+parameters)" };
+  if (typeof payload?.set === "string" && Object.prototype.hasOwnProperty.call(payload, "value")) {
+    if (isScalar(payload.value)) return { set: payload.set, value: payload.value };
+    return { set: payload.set, error: `'${payload.set}' must be a number, string or bool` };
+  }
+  return { error: "unsupported parameter_update payload (expected operation, set+parameters or set+value)" };
 }
 
-// The point a key of `set` belongs to on `device`, as ot-parameter-state recorded it; the key
-// itself when no point has claimed it (it is then the point id).
-function pointOf(context, device, set, key) {
+// The point that claimed `key` of `set` on `device`, as ot-parameter-state recorded it, or null.
+function ownerOf(context, device, set, key) {
   const owner = context.mapper.get(`ot-parameter-point:${device}:${set}:${key}`);
-  return typeof owner === "string" && owner ? owner : key;
+  return typeof owner === "string" && owner ? owner : null;
+}
+
+// The point a key of `set` belongs to on `device`; the key itself when no point has claimed it
+// (it is then the point id).
+function pointOf(context, device, set, key) {
+  return ownerOf(context, device, set, key) ?? key;
+}
+
+// The writes of a request, or the reason it cannot be written. A literal is written to the one
+// point that is the fragment; a set's keys to their points. The shape sent has to match the
+// shape the fragment has on the device.
+function parameterWrites(context, device, req) {
+  const literal = ownerOf(context, device, req.set, LITERAL_KEY);
+  if (req.value !== undefined) {
+    if (!literal) return { error: `'${req.set}' is not a literal parameter of this device` };
+    return { writes: [{ point: literal, value: req.value }] };
+  }
+  if (literal) return { error: `'${req.set}' is a literal parameter: send a value, not an object` };
+  return {
+    writes: Object.entries(req.values).map(([key, value]) => ({
+      point: pointOf(context, device, req.set, key),
+      value,
+    })),
+  };
 }
 
 // Reshape an parameter_update request into a write-batch request. A request the flow cannot
@@ -81,14 +129,14 @@ function pointOf(context, device, set, key) {
 // match its own input filter.)
 function parameterBatch(payload, context, device) {
   const req = parameterRequest(payload);
-  const origin = { command: "parameter_update", set: req.set ?? null, parameters: req.values ?? null };
-  if (req.error) origin.error = req.error;
-  const writes = req.error
-    ? []
-    : Object.entries(req.values).map(([key, value]) => ({
-        point: pointOf(context, device, req.set, key),
-        value,
-      }));
+  const origin = { command: "parameter_update", set: req.set ?? null };
+  // A literal's edit is one value. No write-only point learns from it that it is a literal: only
+  // a point that has already claimed the fragment can be written this way.
+  if (req.value !== undefined) origin.value = req.value;
+  else origin.parameters = req.values ?? null;
+  const planned = req.error ? { error: req.error } : parameterWrites(context, device, req);
+  if (planned.error) origin.error = planned.error;
+  const writes = planned.writes ?? [];
   const out = { status: "init", writes, origin };
   if (payload["c8y-mapper"] !== undefined) out["c8y-mapper"] = payload["c8y-mapper"];
   return out;

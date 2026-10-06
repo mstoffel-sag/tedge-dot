@@ -96,6 +96,30 @@ The plugin's own workflow only serves the main device (tedge-agent runs workflow
 entity only), so on OT child devices the flows are the sole handler and no second template is
 needed: the c8y mapper binds templates per fragment name, so two templates for
 `c8y_ParameterUpdate` could never coexist.
+
+A point that needs no set can be a **literal parameter**: `meta.parameter.fragment` names a
+fragment that the point's value IS, with no object around it:
+
+```toml
+[[point]]
+id       = "pumpSpeed"
+datatype = "uint16"
+access   = "read_write"
+address  = { table = "holding", address = 1, count = 1 }
+meta     = { parameter = { fragment = "pump_speed", max = 3000 } }
+```
+
+publishes `te/device/<device>///twin/pump_speed` as `42`, so the managed object holds
+`"pump_speed": 42`. The name is used verbatim, like `set`, and the point is in no set, so `set`,
+`group` and `key` cannot be combined with it. A Parameters-tab edit of the fragment
+(`"pump_speed": 1500`, or the direct `{ "set": "pump_speed", "value": 1500 }`) becomes a
+`write-batch` of one write to that point. The fragment is declared in `parameter_keys` like a key,
+so it holds after a restart and for write-only points. It is pruned like a key too, and cleared
+when the point leaves it. One name is either a literal or a set, never both: the first point to
+claim it keeps it, and `tedge-dot describe` refuses the configuration. An edit whose shape does
+not match fails with no write: a value for a set, an object for a literal, or a fragment no point
+has claimed.
+
 A set name is a tenant-wide identifier in the cloud, so it is derived from the **device type**
 (echoed in every sample and on the retained link status) rather than from the protocol:
 `<type, else protocol>_<meta.parameter.group, default "control">_parameters`, e.g.

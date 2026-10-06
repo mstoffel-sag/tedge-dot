@@ -124,7 +124,9 @@ class ParameterLibrary:
                 )
                 drift.append(f"property '{key}' differs ({detail})")
 
-        for field in ("title", "type", "description"):
+        # A literal parameter's schema is a primitive: its limits and choices sit at the top
+        # level rather than in a property.
+        for field in ("title", "type", "description", "minimum", "maximum", "enum", "default", "readOnly"):
             if field in want_schema and want_schema[field] != have_schema.get(field):
                 drift.append(
                     f"schema {field} differs "

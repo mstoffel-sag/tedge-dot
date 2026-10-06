@@ -129,6 +129,15 @@ default_mode     = "typed"
   address  = { node_id = "ns=2;s=Count" }
   meta     = { parameter = { key = "counters.count" }, measurement = false }
 
+  # The Count node as a literal parameter (§5.2 meta.parameter.fragment): published as the twin
+  # fragment itself (`617001`, not an object), and listed in parameter_keys with its fragment.
+  [[device.point]]
+  id       = "count_literal"
+  subscribe = false
+  datatype = "uint32"
+  address  = { node_id = "ns=2;s=Count" }
+  meta     = { parameter = { fragment = "opcua_sim_cycle_count" }, measurement = false }
+
   # Switched off (§3.3): the changing Ticks node, which would push a sample every second if this
   # point were subscribed, and a key which would be listed in parameter_keys. Neither may happen
   # — see "A Disabled Point Is Never Subscribed" in tests/opcua_e2e.robot. After cycle_count, so a

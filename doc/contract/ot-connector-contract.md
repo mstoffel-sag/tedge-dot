@@ -664,6 +664,15 @@ identifiers (`[A-Za-z0-9_]`) and unique per set on a device. The capability desc
 every point that names a key (`parameter_keys`, §7), so consumers know the keys before any sample:
 after a restart, since samples are not retained, and for a write-only point, which never samples.
 
+**Literal parameters.** A point that needs no set names a fragment with
+`meta.parameter = { fragment = "<name>" }` and is published as that fragment: its value IS the
+fragment (`"pump_speed": 42`), not a key in an object. The name is used verbatim, like `set`, and
+SHOULD be a plain identifier. A literal is in no set, so `fragment` cannot be combined with `set`,
+`group` or `key`. One name is either a literal fragment or a set, never both, on any device of the
+tenant. The presentation options (`title`, `description`, `min`, `max`, `enum`, `default`) keep
+their meaning. The capability descriptor lists every literal in `parameter_keys` (§7) with its
+`fragment`, for the same reason it lists keys.
+
 **Naming a set.** A set name is a tenant-wide identifier in the cloud, so it is qualified by the
 *device type* (§3.1) — what decides which points exist — and never by the protocol alone, which
 says nothing about them:
@@ -1060,7 +1069,8 @@ same fields with its own values (and typically `"subscribe": true`):
       "name": "Boiler temp", "description": "Outlet temperature after the heat exchanger" }
   ],
   "parameter_keys": [
-    { "device": "plc-1", "point": "boiler_setpoint", "key": "setpoint", "group": "control" }
+    { "device": "plc-1", "point": "boiler_setpoint", "key": "setpoint", "group": "control" },
+    { "device": "plc-1", "point": "pump_speed_sp", "fragment": "pump_speed" }
   ],
   "reports": {
     "default": { "max_interval": "30m" },
@@ -1082,7 +1092,7 @@ same fields with its own values (and typically `"subscribe": true`):
 | `features` | Optional capability tags: `polling`, `subscribe`, `bitfield`, `string`, `bulk_read`, … |
 | `subscribe` | Whether the connector supports event-driven (push) reads in addition to polling. |
 | `point_labels` | The human-readable `name`/`description` of the configured points (§3.1), so a consumer can show something friendlier than the point id. Only points declaring one of them appear, and each entry carries only the fields it declares — **no entry means the id is the label**, so a configuration that labels nothing adds nothing here. Unlike the fields above, this describes the *configuration* rather than the connector's abilities; it lives here because it is static per point, which makes one retained message the right place for it and a per-sample echo the wrong one (§5 samples are a time series). |
-| `parameter_keys` | The configured points that name their own key inside their parameter sets (`meta.parameter.key`, §5.2), with the key and any `set` / `group` exactly as configured — so a key of the form `<set>.<key>` names its set too. A consumer learns from it which point a key belongs to before the point samples — after a restart, since samples are not retained, and for a write-only point, which never samples. Only points naming a key appear, so a configuration naming none adds nothing here. Like `point_labels`, this describes the configuration. |
+| `parameter_keys` | The configured points that name their own key inside their parameter sets (`meta.parameter.key`, §5.2), with the key and any `set` / `group` exactly as configured — so a key of the form `<set>.<key>` names its set too. Also every literal parameter (`meta.parameter.fragment`, §5.2), as `{ device, point, fragment }` with the fragment as configured. A consumer learns from it which point a key or fragment belongs to before the point samples — after a restart, since samples are not retained, and for a write-only point, which never samples. Only points naming a key or a fragment appear, so a configuration naming neither adds nothing here. Like `point_labels`, this describes the configuration. |
 | `reports` | The reporting policies (§5.3): `default` is `[connector] report`, `devices` lists each device declaring a `report`, and `points` lists the **effective** (merged) policy of each point whose policy differs from its device's. A point's policy is its `points` entry if it has one, otherwise its device's entry merged over `default`. Absent when no `report` is configured. Like `point_labels`, this describes the configuration. |
 
 Tooling and the conformance suite use the descriptor to decide which tests apply.

@@ -83,6 +83,12 @@ identifiers (`[A-Za-z0-9_]`; Cumulocity rejects dots in keys) and unique per set
 (`parameter_keys`), so the flows know a key before the point samples: after a mapper restart, and
 for a write-only point.
 
+*Later addition:* a point can also be a **literal parameter** with
+`meta.parameter = { fragment = "<name>" }`. Its value is then the fragment itself
+(`"pump_speed": 42`) and its DTM definition is a primitive `jsonSchema`, not an object with one
+property. A Parameters-tab edit carries the bare value (`"pump_speed": 1500`) and becomes a
+`write-batch` of one write. See `openspec/specs/literal-parameters/spec.md`.
+
 Three places could own the definition; the config wins:
 
 | Source of the definition | Verdict |

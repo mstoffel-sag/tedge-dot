@@ -25,6 +25,8 @@ ${CHILD_NAME}           plc1
 # The parameter set is named after the device *type* the config declares (§5.2), not after the
 # protocol: a DTM identifier is tenant-wide, and two Modbus device types must not share one.
 ${SET}                  modbus_plc_sim_control_parameters
+# A literal parameter (§5.2 meta.parameter.fragment): the point's value IS this fragment.
+${LITERAL}              plc_sim_pump_enabled
 ${OP_TIMEOUT}           60
 ${MEAS_TIMEOUT}         90
 ${NEW_VALUE}            4343
@@ -47,6 +49,15 @@ Parameter Definitions Are Rendered From The Connector Config
     Should Be Equal    ${definition}[jsonSchema][properties][state][type]    string
     Should Be Equal    ${definition}[jsonSchema][properties][state][enum]    ${{["running", "idle"]}}
     Set Suite Variable    ${DEFINITION}    ${definition}
+    # The literal is in no set: it has a definition of its own.
+    Dictionary Should Not Contain Key    ${definition}[jsonSchema][properties]    pump_enabled
+    ${literal}=    Evaluate
+    ...    [d for d in (json.loads(l) for l in $output.splitlines() if l.startswith("{")) if d["identifier"] == $LITERAL][0]
+    ...    modules=json
+    Should Be Equal    ${literal}[jsonSchema][type]    boolean
+    Should Be Equal    ${literal}[jsonSchema][title]    Pump enabled
+    Dictionary Should Not Contain Key    ${literal}[jsonSchema]    properties
+    Set Suite Variable    ${LITERAL_DEFINITION}    ${literal}
 
 Parameter Definition Is Registered In The Tenant
     [Documentation]    The rendered definition is posted to the DTM service — the tenant admin's
@@ -57,6 +68,9 @@ Parameter Definition Is Registered In The Tenant
     Ensure DTM Property Definition    ${DEFINITION}
     DTM Property Definitions Should Contain    ${SET}
     DTM Property Definition Should Match    ${DEFINITION}
+    # A primitive schema is accepted as a device-parameter definition too.
+    Ensure DTM Property Definition    ${LITERAL_DEFINITION}
+    DTM Property Definition Should Match    ${LITERAL_DEFINITION}
 
 Child Device Carries The Parameter Set Fragment
     [Documentation]    ot-parameter-state publishes the set as a twin fragment; the c8y mapper
@@ -97,6 +111,23 @@ A Mapped Parameter Shows Its Label And Writes The Code
     ...    description=Update ${SET} by label
     Cumulocity.Operation Should Be SUCCESSFUL    ${operation}    timeout=${OP_TIMEOUT}
     Cumulocity.Managed Object Should Have Fragment Values    ${SET}.state\=idle    ${SET}.temp_u16\=17001    timeout=${MEAS_TIMEOUT}
+
+Child Device Carries The Literal Parameter As A Bare Value
+    [Documentation]    The c8y mapper mirrors the literal's twin fragment into the managed object
+    ...                as the value itself: `"plc_sim_pump_enabled": false`, not an object.
+    Cumulocity.Device Should Exist    ${CHILD_EXTERNAL_ID}
+    ${mo}=    Managed Object Should Have Fragments    ${LITERAL}    timeout=${MEAS_TIMEOUT}
+    Should Be Equal    ${mo}[${LITERAL}]    ${False}
+
+Literal Parameter Update Writes The Point
+    [Documentation]    An edit of a literal parameter carries the bare value. It is executed as
+    ...                a write-batch of one write, and the managed object follows.
+    Cumulocity.Device Should Exist    ${CHILD_EXTERNAL_ID}
+    ${operation}=    Cumulocity.Create Operation
+    ...    fragments={"c8y_ParameterUpdate":{},"c8y_ParameterUpdate_${LITERAL}":{},"${LITERAL}":true}
+    ...    description=Update ${LITERAL}
+    Cumulocity.Operation Should Be SUCCESSFUL    ${operation}    timeout=${OP_TIMEOUT}
+    Cumulocity.Managed Object Should Have Fragment Values    ${LITERAL}\=true    timeout=${MEAS_TIMEOUT}
 
 Parameter Update With An Unknown Key Fails
     Cumulocity.Device Should Exist    ${CHILD_EXTERNAL_ID}

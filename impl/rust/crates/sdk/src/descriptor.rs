@@ -201,6 +201,9 @@ pub struct Parameter {
     pub key: String,
     /// Parameter set (twin fragment / DTM identifier).
     pub set: String,
+    /// A *literal* parameter (`meta.parameter.fragment`): the point's value is the fragment
+    /// itself rather than a key inside a set. `set` is then the fragment and `key` is empty.
+    pub literal: bool,
     pub datatype: Option<DataType>,
     pub access: Access,
     pub unit: Option<String>,
@@ -239,6 +242,24 @@ pub fn parameters_of(point: &PointConfig, naming: &SetNaming) -> Vec<Parameter> 
         return Vec::new();
     }
     let options = options.unwrap_or_default();
+    let parameter = |set: String, key: String, literal: bool| Parameter {
+        point: point.id.clone(),
+        key,
+        set,
+        literal,
+        datatype: point.datatype,
+        map: point.value_map(),
+        access,
+        unit: point.unit.clone(),
+        name: point.name.clone(),
+        description: point.description.clone(),
+        options: options.clone(),
+    };
+    // A point naming a fragment IS that fragment: it is in no set, so `set`, `group`, `key`
+    // and the forced set do not apply (`key_conflicts` refuses combining them).
+    if let Some(fragment) = fragment_of(&options) {
+        return vec![parameter(fragment, String::new(), true)];
+    }
     // A string key replaces the id inside the set — its part after the set, for a key naming its
     // set — and anything else is no key. An unusable string is kept as it is, so `invalid_keys`
     // reports it rather than silently falling back to the id.
@@ -249,19 +270,17 @@ pub fn parameters_of(point: &PointConfig, naming: &SetNaming) -> Vec<Parameter> 
     naming
         .sets_of(&options)
         .into_iter()
-        .map(|set| Parameter {
-            point: point.id.clone(),
-            key: key.clone(),
-            set,
-            datatype: point.datatype,
-            map: point.value_map(),
-            access,
-            unit: point.unit.clone(),
-            name: point.name.clone(),
-            description: point.description.clone(),
-            options: options.clone(),
-        })
+        .map(|set| parameter(set, key.clone(), false))
         .collect()
+}
+
+/// The fragment a literal parameter is published as (`meta.parameter.fragment`), or `None` when
+/// the point names none. A fragment that is not a string is kept as an empty name, so
+/// [`invalid_keys`] refuses it rather than the point silently landing in a set.
+fn fragment_of(options: &Map<String, Value>) -> Option<String> {
+    options
+        .get("fragment")
+        .map(|f| f.as_str().unwrap_or_default().to_string())
 }
 
 /// Every parameter of every device in the config, in configuration order. `forced` is the
@@ -278,6 +297,13 @@ pub fn parameters(config: &ConnectorConfig, forced: Option<&str>) -> Vec<Paramet
                 .flat_map(move |p| parameters_of(p, &naming))
         })
         .collect()
+}
+
+/// True when the point is a parameter kept in a set rather than a literal fragment. A device whose
+/// only parameters are literals names no set after its type or protocol, so the type warnings
+/// have nothing to say about it.
+fn in_a_set(point: &PointConfig, naming: &SetNaming) -> bool {
+    parameters_of(point, naming).iter().any(|p| !p.literal)
 }
 
 /// Every device of every configuration, with the protocol that names its fallback sets, in
@@ -313,10 +339,7 @@ pub fn untyped_devices_across(configs: &[ConnectorConfig], protocol: &str) -> Ve
             continue;
         }
         let naming = SetNaming::of(device, p, None);
-        let has_parameters = device
-            .points
-            .iter()
-            .any(|point| !parameters_of(point, &naming).is_empty());
+        let has_parameters = device.points.iter().any(|point| in_a_set(point, &naming));
         // Named once, even when several files define a device of that name.
         if has_parameters && !names.contains(&device.name) {
             names.push(device.name.clone());
@@ -365,7 +388,7 @@ pub fn type_warnings_across(configs: &[ConnectorConfig]) -> Vec<String> {
         }
         // A device with no parameters derives no set, so it cannot collide with anything.
         let naming = SetNaming::of(device, protocol, None);
-        if !device.points.iter().any(|p| !parameters_of(p, &naming).is_empty()) {
+        if !device.points.iter().any(|p| in_a_set(p, &naming)) {
             continue;
         }
         let key = set_name(declared, DEFAULT_GROUP);
@@ -411,16 +434,22 @@ pub fn invalid_keys_across(configs: &[ConnectorConfig], forced: Option<&str>) ->
                 let mut reported: Vec<String> = Vec::new();
                 for p in parameters_of(point, &naming) {
                     let mut items = Vec::new();
+                    // A literal parameter is published as its fragment: only that name has to
+                    // be usable — not the id, and there is no key.
+                    if p.literal {
+                        if !is_valid_key(&p.set) {
+                            items.push(format!("parameter fragment '{}' of point '{}'", p.set, p.point));
+                        }
                     // A point that names its key is published under the key, so only the key
                     // has to be usable — not the id.
-                    if p.key != p.point {
+                    } else if p.key != p.point {
                         if !is_valid_key(&p.key) {
                             items.push(format!("parameter key '{}' of point '{}'", p.key, p.point));
                         }
                     } else if !is_valid_key(&p.point) {
                         items.push(format!("point id '{}'", p.point));
                     }
-                    if !is_valid_key(&p.set) {
+                    if !p.literal && !is_valid_key(&p.set) {
                         items.push(format!("parameter set '{}'", p.set));
                     }
                     for item in items {
@@ -440,7 +469,11 @@ pub fn invalid_keys_across(configs: &[ConnectorConfig], forced: Option<&str>) ->
 ///
 /// * two points of one device with the same key in one set — a fragment holds one value per key;
 /// * a point combining `set` with `key` — a key names its set itself (`<set>.<key>`);
-/// * a point combining `group` with a key that names its set — the set is then absolute.
+/// * a point combining `group` with a key that names its set — the set is then absolute;
+/// * a point combining `fragment` with `set`, `group` or `key` — a literal is in no set;
+/// * two points of one device naming the same fragment;
+/// * a name used as a literal fragment and as a parameter set, anywhere in the configurations —
+///   the DTM identifier is tenant-wide, and one fragment cannot be both a value and an object.
 pub fn key_conflicts(config: &ConnectorConfig, forced: Option<&str>) -> Vec<String> {
     key_conflicts_across(std::slice::from_ref(config), forced)
 }
@@ -456,7 +489,17 @@ pub fn key_conflicts_across(configs: &[ConnectorConfig], forced: Option<&str>) -
             let mut seen: Vec<(String, String, String)> = Vec::new();
             for point in &device.points {
                 let params = parameters_of(point, &naming);
-                if let Some(p) = params.first() {
+                if let Some(p) = params.first().filter(|p| p.literal) {
+                    if let Some(option) = ["set", "group", "key"]
+                        .into_iter()
+                        .find(|o| p.options.contains_key(*o))
+                    {
+                        conflicts.push(format!(
+                            "point '{}' on device '{}' combines \"fragment\" with \"{option}\": a literal parameter is in no set",
+                            p.point, device.name
+                        ));
+                    }
+                } else if let Some(p) = params.first() {
                     if let Some(key) = p.options.get("key").and_then(Value::as_str) {
                         if p.options.contains_key("set") {
                             conflicts.push(format!(
@@ -473,6 +516,10 @@ pub fn key_conflicts_across(configs: &[ConnectorConfig], forced: Option<&str>) -
                 }
                 for p in params {
                     match seen.iter().find(|(set, key, _)| *set == p.set && *key == p.key) {
+                        Some((_, _, first)) if p.literal => conflicts.push(format!(
+                            "fragment '{}' of points '{}' and '{}' on device '{}'",
+                            p.set, first, p.point, device.name
+                        )),
                         Some((_, _, first)) => conflicts.push(format!(
                             "key '{}' of points '{}' and '{}' in set '{}' on device '{}'",
                             p.key, first, p.point, p.set, device.name
@@ -483,7 +530,38 @@ pub fn key_conflicts_across(configs: &[ConnectorConfig], forced: Option<&str>) -
             }
         }
     }
+    conflicts.extend(fragment_set_clashes(configs, forced));
     conflicts
+}
+
+/// Names used both as a literal fragment and as a parameter set, across every configuration:
+/// one message per name, naming the first point declaring the fragment and the first device
+/// using the set, in the order the fragments are first declared.
+fn fragment_set_clashes(configs: &[ConnectorConfig], forced: Option<&str>) -> Vec<String> {
+    // fragment -> (point, device) declaring it first; set -> device using it first
+    let mut literals: Vec<(String, String, String)> = Vec::new();
+    let mut sets: Vec<(String, String)> = Vec::new();
+    for (protocol, device) in devices_across(configs) {
+        let naming = SetNaming::of(device, protocol, forced);
+        for p in device.points.iter().flat_map(|point| parameters_of(point, &naming)) {
+            if p.literal {
+                if !literals.iter().any(|(name, _, _)| *name == p.set) {
+                    literals.push((p.set, p.point, device.name.clone()));
+                }
+            } else if !sets.iter().any(|(name, _)| *name == p.set) {
+                sets.push((p.set, device.name.clone()));
+            }
+        }
+    }
+    literals
+        .into_iter()
+        .filter_map(|(name, point, device)| {
+            let (_, set_device) = sets.iter().find(|(set, _)| *set == name)?;
+            Some(format!(
+                "fragment '{name}' of point '{point}' on device '{device}' is also a parameter set on device '{set_device}'"
+            ))
+        })
+        .collect()
 }
 
 /// Render Cumulocity Digital Twin Manager property definitions — one per parameter set — for
@@ -505,28 +583,36 @@ pub fn c8y_dtm_definitions_across(
 ) -> Vec<Value> {
     // ordered (key, property schema)
     type Properties = Vec<(String, Value)>;
-    // set -> (protocol of the config declaring it first, its properties)
-    let mut sets: Vec<(String, &str, Properties)> = Vec::new();
+    // set -> (protocol of the config declaring it first, literal?, its properties)
+    let mut sets: Vec<(String, &str, bool, Properties)> = Vec::new();
     for config in configs {
         let protocol = config.connector.protocol.as_str();
         for param in parameters(config, forced_set) {
-            let index = match sets.iter().position(|(name, _, _)| *name == param.set) {
+            let index = match sets.iter().position(|(name, _, _, _)| *name == param.set) {
                 Some(index) => index,
                 None => {
-                    sets.push((param.set.clone(), protocol, Vec::new()));
+                    sets.push((param.set.clone(), protocol, param.literal, Vec::new()));
                     sets.len() - 1
                 }
             };
-            let props = &mut sets[index].2;
+            // A name declared as a literal and as a set is refused by `key_conflicts`; if it gets
+            // here anyway, its first declaration decides the shape.
+            if sets[index].2 != param.literal {
+                continue;
+            }
+            let props = &mut sets[index].3;
             if props.iter().any(|(k, _)| *k == param.key) {
-                continue; // same key on another device: first definition wins
+                continue; // same key (or fragment) on another device: first definition wins
             }
             let schema = property_schema(&param);
             props.push((param.key.clone(), schema));
         }
     }
     sets.into_iter()
-        .map(|(set, protocol, props)| {
+        .map(|(set, protocol, literal, props)| {
+            if literal {
+                return literal_definition(set, protocol, props.into_iter().next().map(|(_, s)| s));
+            }
             let mut properties = Map::new();
             for (i, (key, mut schema)) in props.into_iter().enumerate() {
                 if !schema.as_object().map(|o| o.contains_key("order")).unwrap_or(false) {
@@ -550,6 +636,27 @@ pub fn c8y_dtm_definitions_across(
             })
         })
         .collect()
+}
+
+/// The DTM definition of a literal parameter: its property schema is the whole `jsonSchema` — a
+/// primitive, not an object with one property — and `order`, which places a property inside a
+/// set, has nothing to order.
+fn literal_definition(fragment: String, protocol: &str, schema: Option<Value>) -> Value {
+    let mut json_schema = Map::new();
+    json_schema.insert("$schema".into(), json!("http://json-schema.org/draft-07/schema#"));
+    if let Some(Value::Object(schema)) = schema {
+        for (k, v) in schema {
+            if k != "order" {
+                json_schema.insert(k, v);
+            }
+        }
+    }
+    json!({
+        "identifier": fragment,
+        "jsonSchema": json_schema,
+        "contexts": ["asset", "event", "operation"],
+        "tags": ["tedge-dot", protocol],
+    })
 }
 
 /// Every numeric output of `map` — each `to` and the `default` — is a whole number.
@@ -606,7 +713,8 @@ pub fn property_schema(param: &Parameter) -> Value {
         .and_then(|t| t.as_str())
         .map(String::from)
         .or_else(|| param.name.clone())
-        .unwrap_or_else(|| param.key.clone());
+        // A literal has no key: it is titled like a set, after its fragment.
+        .unwrap_or_else(|| if param.literal { title_from_key(&param.set) } else { param.key.clone() });
     schema.insert("title".into(), json!(title));
     let mut description = param
         .options
@@ -719,7 +827,8 @@ pub fn point_labels(config: &ConnectorConfig) -> Vec<Value> {
 
 /// The `parameter_keys` of the capability descriptor (§7): every configured point that names its
 /// own key inside its parameter sets (`meta.parameter.key`), with the `set` / `group` that name
-/// those sets, exactly as configured.
+/// those sets, exactly as configured — and every point that is a literal parameter
+/// (`meta.parameter.fragment`), with its fragment as configured.
 ///
 /// A consumer — the `ot-parameter-state` flow — learns from it which point a key belongs to
 /// before the point samples: right after a restart (samples are not retained), and at all for a
@@ -733,12 +842,19 @@ pub fn parameter_keys(config: &ConnectorConfig) -> Vec<Value> {
             else {
                 continue;
             };
-            let Some(Value::String(key)) = options.get("key") else {
-                continue;
-            };
             let mut entry = Map::new();
             entry.insert("device".into(), json!(device.name));
             entry.insert("point".into(), json!(point.id));
+            // A literal parameter is its fragment: that is all the flow needs, and it is in
+            // no set, so nothing else is listed.
+            if let Some(fragment) = options.get("fragment") {
+                entry.insert("fragment".into(), fragment.clone());
+                keys.push(Value::Object(entry));
+                continue;
+            }
+            let Some(Value::String(key)) = options.get("key") else {
+                continue;
+            };
             entry.insert("key".into(), json!(key));
             for name in ["set", "group"] {
                 if let Some(value) = options.get(name) {
@@ -1447,5 +1563,228 @@ protocol_address = { endpoint = "opc.tcp://127.0.0.1:4841/" }
         assert_eq!(untyped_devices_across(&both, "modbus"), ["plc2"]);
         assert_eq!(untyped_devices_across(&both, "opcua"), ["opc1"]);
         assert_eq!(invalid_keys_across(&both, None), ["point id 'Tank.Level'"]);
+    }
+
+    /// A point naming a `fragment` is a literal parameter: its value is the fragment itself, so
+    /// its DTM definition is a primitive schema (no `properties`, no `order`), it is in no set,
+    /// and the descriptor lists it. Mirrors `check_literal_parameters` in
+    /// impl/c/tests/describe.c.
+    #[test]
+    fn a_point_can_be_a_literal_parameter() {
+        const LITERAL: &str = r#"
+[connector]
+protocol = "modbus"
+
+[[device]]
+name = "plc1"
+type = "acme-pump"
+protocol_address = { transport = "tcp", host = "127.0.0.1", port = 502, unit_id = 1 }
+
+  [[device.point]]
+  id = "pumpSpeed"
+  datatype = "uint16"
+  access = "read_write"
+  unit = "rpm"
+  address = { table = "holding", address = 1, count = 1 }
+  meta = { parameter = { fragment = "pump_speed", title = "Pump speed", max = 3000, order = 4 } }
+
+  [[device.point]]
+  id = "mode"
+  datatype = "uint16"
+  access = "read_write"
+  address = { table = "holding", address = 2, count = 1 }
+  map = { cases = [{ eq = 0, to = "stopped" }, { eq = 1, to = "running" }] }
+  meta = { parameter = { fragment = "pump_mode" } }
+
+  [[device.point]]
+  id = "resetCounter"
+  datatype = "bool"
+  access = "write"
+  address = { table = "coil", address = 3, count = 1 }
+  meta = { parameter = { fragment = "reset_counter" } }
+
+  [[device.point]]
+  id = "setpoint"
+  datatype = "int16"
+  access = "read_write"
+  address = { table = "holding", address = 4, count = 1 }
+"#;
+        let config: ConnectorConfig = toml::from_str(LITERAL).unwrap();
+        assert!(invalid_keys(&config, None).is_empty());
+        assert!(key_conflicts(&config, None).is_empty());
+
+        let naming = SetNaming::of(&config.devices[0], "modbus", Some("forced_set"));
+        let params = parameters_of(&config.devices[0].points[0], &naming);
+        assert_eq!(params.len(), 1, "a literal is in exactly one fragment");
+        assert!(params[0].literal);
+        assert_eq!((params[0].set.as_str(), params[0].key.as_str()), ("pump_speed", ""));
+
+        let defs = c8y_dtm_definitions(&config, None);
+        let ids: Vec<&str> = defs.iter().map(|d| d["identifier"].as_str().unwrap()).collect();
+        assert_eq!(ids, ["pump_speed", "pump_mode", "reset_counter", "acme_pump_control_parameters"]);
+        assert_eq!(
+            defs[0]["jsonSchema"],
+            json!({
+                "$schema": "http://json-schema.org/draft-07/schema#",
+                "type": "integer",
+                "title": "Pump speed",
+                "description": "[rpm]",
+                "minimum": 0.0,
+                "maximum": 3000.0,
+            })
+        );
+        assert_eq!(defs[0]["tags"], json!(["tedge-dot", "modbus"]));
+        assert_eq!(defs[1]["jsonSchema"]["type"], "string");
+        assert_eq!(defs[1]["jsonSchema"]["enum"], json!(["stopped", "running"]));
+        assert_eq!(defs[1]["jsonSchema"]["title"], "Pump mode", "titled after its fragment");
+        assert_eq!(defs[2]["jsonSchema"]["type"], "boolean");
+        let set = &defs[3]["jsonSchema"]["properties"];
+        assert_eq!(set.as_object().unwrap().keys().collect::<Vec<_>>(), ["setpoint"]);
+
+        assert_eq!(
+            parameter_keys(&config),
+            vec![
+                json!({ "device": "plc1", "point": "pumpSpeed", "fragment": "pump_speed" }),
+                json!({ "device": "plc1", "point": "mode", "fragment": "pump_mode" }),
+                json!({ "device": "plc1", "point": "resetCounter", "fragment": "reset_counter" }),
+            ]
+        );
+    }
+
+    /// What a literal parameter refuses: an unusable fragment, combining it with an option that
+    /// places a point in a set, two points naming one fragment, and a name used both as a
+    /// fragment and as a set — on one device or across configurations. Mirrors
+    /// `check_literal_parameters` in impl/c/tests/describe.c.
+    #[test]
+    fn literal_parameter_conflicts() {
+        const BAD: &str = r#"
+[connector]
+protocol = "modbus"
+
+[[device]]
+name = "plc1"
+type = "pump"
+protocol_address = { transport = "tcp", host = "127.0.0.1", port = 502, unit_id = 1 }
+
+  [[device.point]]
+  id = "a"
+  datatype = "uint16"
+  access = "read_write"
+  address = { table = "holding", address = 1, count = 1 }
+  meta = { parameter = { fragment = "speed" } }
+
+  [[device.point]]
+  id = "b"
+  datatype = "uint16"
+  access = "read_write"
+  address = { table = "holding", address = 2, count = 1 }
+  meta = { parameter = { fragment = "speed" } }
+
+  [[device.point]]
+  id = "c"
+  datatype = "uint16"
+  access = "read_write"
+  address = { table = "holding", address = 3, count = 1 }
+  meta = { parameter = { fragment = "c_value", key = "speed" } }
+
+  [[device.point]]
+  id = "d"
+  datatype = "uint16"
+  access = "read_write"
+  address = { table = "holding", address = 4, count = 1 }
+  meta = { parameter = { set = "plant", group = "x", fragment = "d_value" } }
+
+  [[device.point]]
+  id = "e"
+  datatype = "uint16"
+  access = "read_write"
+  address = { table = "holding", address = 5, count = 1 }
+  meta = { parameter = { fragment = "plant" } }
+
+  [[device.point]]
+  id = "f"
+  datatype = "uint16"
+  access = "read_write"
+  address = { table = "holding", address = 6, count = 1 }
+  meta = { parameter = { set = "plant" } }
+
+  [[device.point]]
+  id = "g"
+  datatype = "uint16"
+  access = "read_write"
+  address = { table = "holding", address = 7, count = 1 }
+  meta = { parameter = { fragment = "bad.name" } }
+
+  [[device.point]]
+  id = "h"
+  datatype = "uint16"
+  access = "read_write"
+  address = { table = "holding", address = 8, count = 1 }
+  meta = { parameter = { fragment = 3 } }
+"#;
+        let config: ConnectorConfig = toml::from_str(BAD).unwrap();
+        assert_eq!(
+            invalid_keys(&config, None),
+            [
+                "parameter fragment 'bad.name' of point 'g'",
+                "parameter fragment '' of point 'h'",
+            ]
+        );
+        assert_eq!(
+            key_conflicts(&config, None),
+            [
+                "fragment 'speed' of points 'a' and 'b' on device 'plc1'",
+                "point 'c' on device 'plc1' combines \"fragment\" with \"key\": a literal parameter is in no set",
+                "point 'd' on device 'plc1' combines \"fragment\" with \"set\": a literal parameter is in no set",
+                "fragment 'plant' of point 'e' on device 'plc1' is also a parameter set on device 'plc1'",
+            ]
+        );
+
+        // Across configurations: the identifier is tenant-wide, whichever file uses it.
+        const SET_ELSEWHERE: &str = r#"
+[connector]
+protocol = "opcua"
+
+[[device]]
+name = "opc1"
+protocol_address = { endpoint = "opc.tcp://127.0.0.1:4840" }
+
+  [[device.point]]
+  id = "speed_rw"
+  datatype = "uint16"
+  access = "read_write"
+  address = { node_id = "ns=2;s=Speed" }
+  meta = { parameter = { set = "pump_speed" } }
+"#;
+        const LITERAL_HERE: &str = r#"
+[connector]
+protocol = "modbus"
+
+[[device]]
+name = "plc1"
+type = "pump"
+protocol_address = { transport = "tcp", host = "127.0.0.1", port = 502, unit_id = 1 }
+
+  [[device.point]]
+  id = "pumpSpeed"
+  datatype = "uint16"
+  access = "read_write"
+  address = { table = "holding", address = 1, count = 1 }
+  meta = { parameter = { fragment = "pump_speed" } }
+"#;
+        let both: Vec<ConnectorConfig> = [LITERAL_HERE, SET_ELSEWHERE]
+            .iter()
+            .map(|t| toml::from_str(t).unwrap())
+            .collect();
+        assert!(key_conflicts(&both[0], None).is_empty());
+        assert_eq!(
+            key_conflicts_across(&both, None),
+            ["fragment 'pump_speed' of point 'pumpSpeed' on device 'plc1' is also a parameter set on device 'opc1'"]
+        );
+        // A device whose only parameters are literals derives no set, so it is not warned about
+        // for lacking a type.
+        let untyped: ConnectorConfig =
+            toml::from_str(&LITERAL_HERE.replace("type = \"pump\"\n", "")).unwrap();
+        assert!(devices_without_type(&untyped).is_empty());
     }
 }

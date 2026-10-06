@@ -81,7 +81,9 @@ if [ ${#configs[@]} -eq 0 ]; then
              # description where Rust does not (and overflowed a fixed title buffer).
              "$repo"/impl/c/ci/fixtures/long-strings-modbus.toml
              # Two device types folding to one qualifier: exercises the collision warning.
-             "$repo"/impl/c/ci/fixtures/folded-types-modbus.toml)
+             "$repo"/impl/c/ci/fixtures/folded-types-modbus.toml
+             # Literal parameters (meta.parameter.fragment): primitive definitions.
+             "$repo"/impl/c/ci/fixtures/literal-modbus.toml)
 fi
 
 # stdout is the JSON and stderr carries diagnostics (a config with no device `type` is

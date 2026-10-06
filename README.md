@@ -243,7 +243,9 @@ the same configuration — by default every connector config in `/etc/tedge/plug
 set that several of them share rendered once. A set name is a tenant-wide identifier, so it is derived from the device's
 **type** rather than from the protocol — `acme_meter_v2_control_parameters`, not
 `modbus_parameters` — which is what lets several device types on one protocol coexist in a
-tenant. See [RFC 0003](doc/rfc/0003-parameter-writes.md),
+tenant. A point that needs no set can be published as a fragment of its own with
+`meta.parameter = { fragment = "pump_speed" }`: the managed object then holds `"pump_speed": 42`
+rather than an object around one value. See [RFC 0003](doc/rfc/0003-parameter-writes.md),
 [RFC 0005](doc/rfc/0005-device-types-and-parameter-sets.md), [flows/](flows/) and
 [operations/](operations/).
 

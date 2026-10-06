@@ -666,7 +666,9 @@ static void add_point_labels(cJSON *caps, const tdot_config_t *cfg) {
 
 /* `parameter_keys` of the capability descriptor (contract §7): every configured
  * point that names its own key inside its parameter sets (`meta.parameter.key`),
- * with the `set` / `group` that name those sets, exactly as configured.
+ * with the `set` / `group` that name those sets, exactly as configured -- and
+ * every point that is a literal parameter (`meta.parameter.fragment`), with its
+ * fragment as configured.
  *
  * A consumer (the ot-parameter-state flow) learns from it which point a key
  * belongs to before the point samples -- right after a restart (samples are not
@@ -685,7 +687,21 @@ static void add_parameter_keys(cJSON *caps, const tdot_config_t *cfg) {
             const cJSON *key = cJSON_IsObject(param)
                                    ? cJSON_GetObjectItemCaseSensitive(param, "key")
                                    : NULL;
-            if (cJSON_IsString(key)) {
+            const cJSON *fragment =
+                cJSON_IsObject(param)
+                    ? cJSON_GetObjectItemCaseSensitive(param, "fragment")
+                    : NULL;
+            /* A literal parameter is its fragment: that is all the flow needs,
+             * and it is in no set, so nothing else is listed. */
+            if (fragment) {
+                if (!keys)
+                    keys = cJSON_AddArrayToObject(caps, "parameter_keys");
+                cJSON *entry = cJSON_CreateObject();
+                cJSON_AddStringToObject(entry, "device", dev->name);
+                cJSON_AddStringToObject(entry, "point", pt->id);
+                cJSON_AddItemToObject(entry, "fragment", cJSON_Duplicate(fragment, 1));
+                cJSON_AddItemToArray(keys, entry);
+            } else if (cJSON_IsString(key)) {
                 if (!keys)
                     keys = cJSON_AddArrayToObject(caps, "parameter_keys");
                 cJSON *entry = cJSON_CreateObject();

@@ -436,6 +436,177 @@ static void check_parameter_keys(void) {
     unlink(path);
 }
 
+/* A point naming a `fragment` is a literal parameter: its value is the fragment
+ * itself, so its DTM definition is a primitive schema (no `properties`, no
+ * `order`) and it is in no set. Then what it refuses. Mirrors
+ * a_point_can_be_a_literal_parameter / literal_parameter_conflicts in
+ * descriptor.rs. */
+static const char *LITERAL =
+    "[connector]\n"
+    "protocol = \"modbus\"\n"
+    "\n"
+    "[[device]]\n"
+    "name = \"plc1\"\n"
+    "type = \"acme-pump\"\n"
+    "protocol_address = { transport = \"tcp\", host = \"127.0.0.1\", port = 502, unit_id = 1 }\n"
+    "\n"
+    "  [[device.point]]\n"
+    "  id = \"pumpSpeed\"\n"
+    "  datatype = \"uint16\"\n"
+    "  access = \"read_write\"\n"
+    "  unit = \"rpm\"\n"
+    "  address = { table = \"holding\", address = 1, count = 1 }\n"
+    "  meta = { parameter = { fragment = \"pump_speed\", title = \"Pump speed\", max = 3000, order = 4 } }\n"
+    "\n"
+    "  [[device.point]]\n"
+    "  id = \"mode\"\n"
+    "  datatype = \"uint16\"\n"
+    "  access = \"read_write\"\n"
+    "  address = { table = \"holding\", address = 2, count = 1 }\n"
+    "  map = { cases = [{ eq = 0, to = \"stopped\" }, { eq = 1, to = \"running\" }] }\n"
+    "  meta = { parameter = { fragment = \"pump_mode\" } }\n"
+    "\n"
+    "  [[device.point]]\n"
+    "  id = \"setpoint\"\n"
+    "  datatype = \"int16\"\n"
+    "  access = \"read_write\"\n"
+    "  address = { table = \"holding\", address = 4, count = 1 }\n";
+
+static const char *LITERAL_BAD =
+    "[connector]\n"
+    "protocol = \"modbus\"\n"
+    "\n"
+    "[[device]]\n"
+    "name = \"plc1\"\n"
+    "type = \"pump\"\n"
+    "protocol_address = { transport = \"tcp\", host = \"127.0.0.1\", port = 502, unit_id = 1 }\n"
+    "\n"
+    "  [[device.point]]\n"
+    "  id = \"a\"\n"
+    "  datatype = \"uint16\"\n"
+    "  access = \"read_write\"\n"
+    "  address = { table = \"holding\", address = 1, count = 1 }\n"
+    "  meta = { parameter = { fragment = \"speed\" } }\n"
+    "\n"
+    "  [[device.point]]\n"
+    "  id = \"b\"\n"
+    "  datatype = \"uint16\"\n"
+    "  access = \"read_write\"\n"
+    "  address = { table = \"holding\", address = 2, count = 1 }\n"
+    "  meta = { parameter = { fragment = \"speed\" } }\n"
+    "\n"
+    "  [[device.point]]\n"
+    "  id = \"c\"\n"
+    "  datatype = \"uint16\"\n"
+    "  access = \"read_write\"\n"
+    "  address = { table = \"holding\", address = 3, count = 1 }\n"
+    "  meta = { parameter = { fragment = \"c_value\", key = \"speed\" } }\n"
+    "\n"
+    "  [[device.point]]\n"
+    "  id = \"d\"\n"
+    "  datatype = \"uint16\"\n"
+    "  access = \"read_write\"\n"
+    "  address = { table = \"holding\", address = 4, count = 1 }\n"
+    "  meta = { parameter = { set = \"plant\", group = \"x\", fragment = \"d_value\" } }\n"
+    "\n"
+    "  [[device.point]]\n"
+    "  id = \"e\"\n"
+    "  datatype = \"uint16\"\n"
+    "  access = \"read_write\"\n"
+    "  address = { table = \"holding\", address = 5, count = 1 }\n"
+    "  meta = { parameter = { fragment = \"plant\" } }\n"
+    "\n"
+    "  [[device.point]]\n"
+    "  id = \"f\"\n"
+    "  datatype = \"uint16\"\n"
+    "  access = \"read_write\"\n"
+    "  address = { table = \"holding\", address = 6, count = 1 }\n"
+    "  meta = { parameter = { set = \"plant\" } }\n"
+    "\n"
+    "  [[device.point]]\n"
+    "  id = \"g\"\n"
+    "  datatype = \"uint16\"\n"
+    "  access = \"read_write\"\n"
+    "  address = { table = \"holding\", address = 7, count = 1 }\n"
+    "  meta = { parameter = { fragment = \"bad.name\" } }\n"
+    "\n"
+    "  [[device.point]]\n"
+    "  id = \"h\"\n"
+    "  datatype = \"uint16\"\n"
+    "  access = \"read_write\"\n"
+    "  address = { table = \"holding\", address = 8, count = 1 }\n"
+    "  meta = { parameter = { fragment = 3 } }\n";
+
+static void check_literal_parameters(void) {
+    char err[256];
+    char *path = write_temp_config(LITERAL);
+    tdot_config_t *cfg = tdot_config_load(path, err, sizeof err);
+    CHECK(cfg != NULL, "literal config did not load: %s", err);
+    if (cfg) {
+        char *bad = tdot_param_invalid_keys(cfg, NULL);
+        CHECK(bad == NULL, "literal fixture reported bad keys: %s", bad ? bad : "");
+        free(bad);
+        char *conflicts = tdot_param_key_conflicts(cfg, NULL);
+        CHECK(conflicts == NULL, "literal fixture reported conflicts: %s",
+              conflicts ? conflicts : "");
+        free(conflicts);
+
+        cJSON *docs = tdot_c8y_dtm_definitions(cfg, NULL);
+        CHECK(cJSON_GetArraySize(docs) == 3, "expected 3 definitions, got %d",
+              cJSON_GetArraySize(docs));
+        const cJSON *speed = cJSON_GetArrayItem(docs, 0);
+        const cJSON *schema = cJSON_GetObjectItemCaseSensitive(speed, "jsonSchema");
+        CHECK(strcmp(str_of(speed, "identifier"), "pump_speed") == 0,
+              "first identifier = %s", str_of(speed, "identifier"));
+        CHECK(strcmp(str_of(schema, "type"), "integer") == 0 &&
+                  strcmp(str_of(schema, "title"), "Pump speed") == 0 &&
+                  strcmp(str_of(schema, "description"), "[rpm]") == 0 &&
+                  num_of(schema, "minimum") == 0 && num_of(schema, "maximum") == 3000,
+              "pump_speed schema is not the primitive one");
+        CHECK(!cJSON_GetObjectItemCaseSensitive(schema, "properties") &&
+                  !cJSON_GetObjectItemCaseSensitive(schema, "order"),
+              "a literal schema has no properties and no order");
+        const cJSON *mode = cJSON_GetObjectItemCaseSensitive(cJSON_GetArrayItem(docs, 1), "jsonSchema");
+        const cJSON *choices = cJSON_GetObjectItemCaseSensitive(mode, "enum");
+        CHECK(strcmp(str_of(mode, "type"), "string") == 0 &&
+                  cJSON_GetArraySize(choices) == 2 &&
+                  strcmp(str_of(mode, "title"), "Pump mode") == 0,
+              "pump_mode must offer its labels and be titled after its fragment");
+        const cJSON *set = cJSON_GetArrayItem(docs, 2);
+        CHECK(strcmp(str_of(set, "identifier"), "acme_pump_control_parameters") == 0 &&
+                  prop(set, "setpoint") && !prop(set, "pumpSpeed"),
+              "a literal must not appear in the device's set");
+        cJSON_Delete(docs);
+        tdot_config_free(cfg);
+    }
+    unlink(path);
+
+    path = write_temp_config(LITERAL_BAD);
+    cfg = tdot_config_load(path, err, sizeof err);
+    CHECK(cfg != NULL, "conflicting literal config did not load: %s", err);
+    if (cfg) {
+        char *bad = tdot_param_invalid_keys(cfg, NULL);
+        CHECK(bad && strcmp(bad, "parameter fragment 'bad.name' of point 'g', "
+                                 "parameter fragment '' of point 'h'") == 0,
+              "invalid fragments = %s", bad ? bad : "<none>");
+        free(bad);
+        char *conflicts = tdot_param_key_conflicts(cfg, NULL);
+        CHECK(conflicts &&
+                  strcmp(conflicts,
+                         "fragment 'speed' of points 'a' and 'b' on device 'plc1', "
+                         "point 'c' on device 'plc1' combines \"fragment\" with "
+                         "\"key\": a literal parameter is in no set, "
+                         "point 'd' on device 'plc1' combines \"fragment\" with "
+                         "\"set\": a literal parameter is in no set, "
+                         "fragment 'plant' of point 'e' on device 'plc1' is also a "
+                         "parameter set on device 'plc1'") == 0,
+              "conflicts = %s", conflicts ? conflicts : "<none>");
+        free(conflicts);
+        tdot_config_free(cfg);
+    }
+    unlink(path);
+}
+
 int main(void) {
     char *path = write_temp_config(CONFIG);
     char err[256];
@@ -650,6 +821,7 @@ int main(void) {
     check_type_collisions();
     check_across_configs();
     check_parameter_keys();
+    check_literal_parameters();
 
     if (failures) {
         printf("describe: %d check(s) failed\n", failures);

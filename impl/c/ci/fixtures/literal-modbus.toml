@@ -1,0 +1,59 @@
+# Literal parameters (`meta.parameter.fragment`): each point is published as the twin fragment
+# itself, so `describe` renders a primitive jsonSchema for it. The device's other parameter stays
+# in its set. The device declares no `type` and still gets an untyped warning, because it has a
+# point in a set; a device with only literals would not.
+[connector]
+protocol = "modbus"
+
+[[device]]
+name             = "plc-literal"
+protocol_address = { transport = "tcp", host = "127.0.0.1", port = 502, unit_id = 1 }
+
+  [[device.point]]
+  id       = "pumpSpeed"
+  datatype = "uint16"
+  access   = "read_write"
+  unit     = "rpm"
+  address  = { table = "holding", address = 1, count = 1 }
+  meta     = { parameter = { fragment = "literal_probe_speed", title = "Pump speed", max = 3000, order = 2 } }
+
+  # Mapped: the schema offers the labels, titled after the fragment.
+  [[device.point]]
+  id       = "mode"
+  datatype = "uint16"
+  access   = "read_write"
+  address  = { table = "holding", address = 2, count = 1 }
+  map      = { cases = [{ eq = 0, to = "stopped" }, { eq = 1, to = "running" }] }
+  meta     = { parameter = { fragment = "literal_probe_mode" } }
+
+  # Write-only: the description says it shows the last value written.
+  [[device.point]]
+  id       = "resetCounter"
+  datatype = "bool"
+  access   = "write"
+  address  = { table = "coil", address = 3, count = 1 }
+  meta     = { parameter = { fragment = "literal_probe_reset", description = "Reset the counter" } }
+
+  # Read-only but opted in: readOnly in the schema.
+  [[device.point]]
+  id       = "firmware"
+  datatype = "string"
+  address  = { table = "holding", address = 4, count = 8 }
+  meta     = { parameter = { fragment = "literal_probe_firmware" } }
+
+  [[device.point]]
+  id       = "setpoint"
+  datatype = "int16"
+  access   = "read_write"
+  address  = { table = "holding", address = 20, count = 1 }
+
+[[device]]
+name             = "plc-literal-only"
+protocol_address = { transport = "tcp", host = "127.0.0.1", port = 503, unit_id = 1 }
+
+  [[device.point]]
+  id       = "speed"
+  datatype = "float32"
+  access   = "read_write"
+  address  = { table = "holding", address = 1, count = 2 }
+  meta     = { parameter = { fragment = "literal_probe_only_speed" } }

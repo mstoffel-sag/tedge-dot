@@ -928,6 +928,79 @@ check_multi "parameter key: keys swapped between points by one reload map to the
   "ot-parameter-state ot-command-forward" "$SWAP" \
   '"writes":[{"point":"b","value":1},{"point":"a","value":2}]'
 
+# --- literal parameters: meta.parameter.fragment publishes the point as the fragment itself ---
+SLIT='{"device":"plc1","type":"acme-pump","protocol":"modbus","point":"pumpSpeed","mode":"typed","datatype":"uint16","value":42,"value_repr":"number","quality":"good","addr":{},"access":"read_write","meta":{"parameter":{"fragment":"pump_speed"}}}'
+check "literal: a sample publishes the bare value on the fragment" ot-parameter-state \
+  "[te/device/plc1/ot/modbus/sample/pumpSpeed] $SLIT" \
+  '[te/device/plc1///twin/pump_speed] 42'
+SLITSTR='{"device":"plc1","type":"acme-pump","protocol":"modbus","point":"mode","mode":"typed","datatype":"uint16","value":"running","value_repr":"string","quality":"good","addr":{},"access":"read_write","meta":{"parameter":{"fragment":"pump_mode"}}}'
+check "literal: a string value is published as a JSON string" ot-parameter-state \
+  "[te/device/plc1/ot/modbus/sample/mode] $SLITSTR" \
+  '[te/device/plc1///twin/pump_mode] "running"'
+SLITBAD='{"device":"plc1","type":"acme-pump","protocol":"modbus","point":"pumpSpeed","mode":"typed","datatype":"uint16","value":42,"value_repr":"number","quality":"good","addr":{},"access":"read_write","meta":{"parameter":{"fragment":"pump.speed"}}}'
+check "literal: an unusable fragment falls back to the usual set" ot-parameter-state \
+  "[te/device/plc1/ot/modbus/sample/pumpSpeed] $SLITBAD" \
+  '[te/device/plc1///twin/acme_pump_control_parameters] {"pumpSpeed":42}'
+# Moving between the shapes leaves nothing behind: the old fragment is cleared.
+SLITKEYED='{"device":"plc1","type":"acme-pump","protocol":"modbus","point":"pumpSpeed","mode":"typed","datatype":"uint16","value":42,"value_repr":"number","quality":"good","addr":{},"access":"read_write"}'
+check "literal: a point made literal leaves its set" ot-parameter-state \
+  "[te/device/plc1/ot/modbus/sample/pumpSpeed] $SLITKEYED"$'\n'"[te/device/plc1/ot/modbus/sample/pumpSpeed] $SLIT" \
+  $'[te/device/plc1///twin/acme_pump_control_parameters] \n[te/device/plc1///twin/pump_speed] 42'
+check "literal: a literal made a key clears its fragment" ot-parameter-state \
+  "[te/device/plc1/ot/modbus/sample/pumpSpeed] $SLIT"$'\n'"[te/device/plc1/ot/modbus/sample/pumpSpeed] $SLITKEYED" \
+  $'[te/device/plc1///twin/pump_speed] \n[te/device/plc1///twin/acme_pump_control_parameters] {"pumpSpeed":42}'
+check "literal: a point removed from the configuration clears its fragment" ot-parameter-state \
+  "[te/device/plc1/ot/modbus/sample/pumpSpeed] $SLIT"$'\n''[te/device/plc1/ot/modbus/status/link] {"status":"connected","type":"acme-pump","points":["other"]}' \
+  '[te/device/plc1///twin/pump_speed] '
+# One name cannot be a literal and a set at once: the first to claim it keeps it.
+SSETCLASH='{"device":"plc1","type":"acme-pump","protocol":"modbus","point":"other","mode":"typed","datatype":"uint16","value":7,"value_repr":"number","quality":"good","addr":{},"access":"read_write","meta":{"parameter":{"set":"pump_speed"}}}'
+check_absent "literal: a set cannot take keys in a literal's fragment" ot-parameter-state \
+  "[te/device/plc1/ot/modbus/sample/pumpSpeed] $SLIT"$'\n'"[te/device/plc1/ot/modbus/sample/other] $SSETCLASH" \
+  '[te/device/plc1///twin/pump_speed] 42' '"other":7'
+check_absent "literal: a literal cannot take a set that has keys" ot-parameter-state \
+  "[te/device/plc1/ot/modbus/sample/other] $SSETCLASH"$'\n'"[te/device/plc1/ot/modbus/sample/pumpSpeed] $SLIT" \
+  '[te/device/plc1///twin/pump_speed] {"other":7}' '[te/device/plc1///twin/pump_speed] 42'
+# The descriptor declares the fragment, so it is known before any sample (after a restart) and at
+# all for a write-only point, which never samples.
+CAPSLIT='{"protocol":"modbus","parameter_keys":[{"device":"plc1","point":"pumpSpeed","fragment":"pump_speed"},{"device":"plc1","point":"reset","fragment":"reset_counter"}]}'
+LITRESTART="[te/device/main/service/tedge-dot-modbus/ot/capabilities] $CAPSLIT
+[te/device/plc1/ot/modbus/status/link] {\"status\":\"connected\",\"type\":\"acme-pump\",\"points\":[\"pumpSpeed\",\"reset\"]}
+[te/device/plc1///cmd/parameter_update/c8y-mapper-l1] {\"status\":\"init\",\"operation\":{\"c8y_ParameterUpdate\":{},\"c8y_ParameterUpdate_pump_speed\":{},\"pump_speed\":1500}}"
+check_multi "literal: after a restart, a scalar edit of the fragment is one write to its point" \
+  "ot-parameter-state ot-command-forward" "$LITRESTART" \
+  '[te/device/plc1/ot/modbus/cmd/write-batch/ot--c8y-mapper-l1] {"status":"init","writes":[{"point":"pumpSpeed","value":1500}],"origin":{"command":"parameter_update","set":"pump_speed","value":1500}}'
+check "literal: a write-only literal shows its last acknowledged write" ot-parameter-state \
+  "[te/device/main/service/tedge-dot-modbus/ot/capabilities] $CAPSLIT"$'\n''[te/device/plc1/ot/modbus/cmd/write-batch/ot--w1] {"status":"successful","results":[{"point":"reset","status":"successful","value":true}]}' \
+  '[te/device/plc1///twin/reset_counter] true'
+check "literal: a fragment the descriptor no longer declares is cleared" ot-parameter-state \
+  "[te/device/main/service/tedge-dot-modbus/ot/capabilities] $CAPSLIT"$'\n''[te/device/plc1/ot/modbus/cmd/write-batch/ot--w1] {"status":"successful","results":[{"point":"reset","status":"successful","value":true}]}'$'\n''[te/device/main/service/tedge-dot-modbus/ot/capabilities] {"protocol":"modbus"}' \
+  '[te/device/plc1///twin/reset_counter] '
+check_multi "literal: the direct shape set+value is one write" \
+  "ot-parameter-state ot-command-forward" \
+  "[te/device/main/service/tedge-dot-modbus/ot/capabilities] $CAPSLIT
+[te/device/plc1///cmd/parameter_update/l2] {\"status\":\"init\",\"set\":\"reset_counter\",\"value\":true}" \
+  '"writes":[{"point":"reset","value":true}],"origin":{"command":"parameter_update","set":"reset_counter","value":true}'
+# The shape sent has to match the shape on the device; anything else fails with no writes.
+check "literal: a fragment no point has claimed fails" ot-command-forward \
+  '[te/device/plc1///cmd/parameter_update/l3] {"status":"init","operation":{"c8y_ParameterUpdate":{},"c8y_ParameterUpdate_unknown_fragment":{},"unknown_fragment":1}}' \
+  '"writes":[],"origin":{"command":"parameter_update","set":"unknown_fragment","value":1,"error":"'"'"'unknown_fragment'"'"' is not a literal parameter of this device"}'
+check_multi "literal: an object sent for a literal fails" \
+  "ot-parameter-state ot-command-forward" \
+  "[te/device/main/service/tedge-dot-modbus/ot/capabilities] $CAPSLIT
+[te/device/plc1///cmd/parameter_update/l4] {\"status\":\"init\",\"set\":\"pump_speed\",\"parameters\":{\"pumpSpeed\":1}}" \
+  '"writes":[],"origin":{"command":"parameter_update","set":"pump_speed","parameters":{"pumpSpeed":1},"error":"'"'"'pump_speed'"'"' is a literal parameter: send a value, not an object"}'
+check_multi "literal: a value sent for a set of keys fails" \
+  "ot-parameter-state ot-command-forward" \
+  "[te/device/plc1/ot/modbus/sample/pumpSpeed] $SLITKEYED
+[te/device/plc1///cmd/parameter_update/l5] {\"status\":\"init\",\"operation\":{\"c8y_ParameterUpdate\":{},\"c8y_ParameterUpdate_acme_pump_control_parameters\":{},\"acme_pump_control_parameters\":5}}" \
+  '"writes":[],"origin":{"command":"parameter_update","set":"acme_pump_control_parameters","value":5,"error":'
+check "literal: a null value fails" ot-command-forward \
+  '[te/device/plc1///cmd/parameter_update/l6] {"status":"init","operation":{"c8y_ParameterUpdate":{},"c8y_ParameterUpdate_pump_speed":{},"pump_speed":null}}' \
+  '"writes":[],"origin":{"command":"parameter_update","set":"pump_speed","parameters":null,"error":"operation carries no '"'"'pump_speed'"'"' fragment"}'
+check "literal: an array value fails" ot-command-forward \
+  '[te/device/plc1///cmd/parameter_update/l7] {"status":"init","set":"pump_speed","value":[1]}' \
+  '"writes":[],"origin":{"command":"parameter_update","set":"pump_speed","parameters":null,"error":"'"'"'pump_speed'"'"' must be a number, string or bool"}'
+
 # --- ot-command-forward: parameter_update -> write-batch ---
 C8YOP='{"status":"init","operation":{"deviceId":"123","c8y_ParameterUpdate":{},"c8y_ParameterUpdate_acme_boiler_v2_control_parameters":{},"acme_boiler_v2_control_parameters":{"temp_u16":4242,"coil_rw":true}},"c8y-mapper":{"on_fragment":"c8y_ParameterUpdate","output":null}}'
 check "command-forward: c8y parameter update -> one write-batch with origin + mapper metadata" ot-command-forward \

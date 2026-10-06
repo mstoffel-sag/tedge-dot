@@ -475,13 +475,16 @@ Alarm And Event Declared On A Point Follow Its Value
 Capability Descriptor Declares The Parameter Keys
     [Documentation]    A point naming its own key in its parameter set (meta.parameter.key) is listed
     ...                in the retained capability descriptor's parameter_keys (§7), so a consumer
-    ...                knows the key before the point samples. Only keyed points appear.
+    ...                knows the key before the point samples. Only keyed points and literal
+    ...                parameters (meta.parameter.fragment) appear.
     ${payload}=    Wait For Retained    ${CAPS_TOPIC}    timeout=${READY_TIMEOUT}
     ${keys}=    Get Json Field    ${payload}    parameter_keys
-    Length Should Be    ${keys}    1
+    Length Should Be    ${keys}    2
     Should Be Equal    ${keys}[0][device]    ${DEVICE}
     Should Be Equal    ${keys}[0][point]    cycle_count
     Should Be Equal    ${keys}[0][key]    counters.count
+    # A literal parameter is listed with its fragment, and nothing else.
+    Should Be Equal    ${keys}[1]    ${{{"device": $DEVICE, "point": "count_literal", "fragment": "opcua_sim_cycle_count"}}}
 
 Parameter Twin Publishes A Point Under Its Key
     [Documentation]    (flows) ot-parameter-state publishes the keyed point under its key, not its id.
@@ -490,6 +493,13 @@ Parameter Twin Publishes A Point Under Its Key
     ${twin}=    Evaluate    json.loads($payload)    modules=json
     Dictionary Should Not Contain Key    ${twin}    cycle_count
     Should Be Equal As Numbers    ${twin}[count]    617001
+
+Literal Parameter Is Published As A Bare Value
+    [Documentation]    (flows) A point naming `meta.parameter.fragment` is published as the twin
+    ...                fragment itself: the payload is the number, not an object around it.
+    [Tags]    flows
+    ${payload}=    Wait For Message Containing    te/device/${DEVICE}///twin/opcua_sim_cycle_count    617001    timeout=${FLOWS_TIMEOUT}
+    Should Be Equal    ${payload}    617001
 
 
 *** Keywords ***

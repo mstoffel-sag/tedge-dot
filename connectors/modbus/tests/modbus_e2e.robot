@@ -32,6 +32,9 @@ ${PARAM_CMD_PREFIX}     te/device/${DEVICE}///cmd/parameter_update
 ${DEVICE_TYPE}          modbus-plc-sim
 ${PARAM_SET}            modbus_plc_sim_control_parameters
 ${PARAM_TWIN}           te/device/${DEVICE}///twin/${PARAM_SET}
+# A literal parameter (§5.2 meta.parameter.fragment): the point's value is the fragment itself.
+${LITERAL}              plc_sim_pump_enabled
+${LITERAL_TWIN}         te/device/${DEVICE}///twin/${LITERAL}
 # The flows container installs thin-edge from the main channel at build time; give it time.
 ${FLOWS_TIMEOUT}        120
 
@@ -327,7 +330,7 @@ Describe Renders Every Config In A Directory
     ...                another protocol — describe needs neither the protocol module nor a device.
     Write Describe Configs    /tmp/describe-dir
     ${identifiers}=    Describe Identifiers    -c /tmp/describe-dir
-    Should Be Equal    ${identifiers}    ${{[$PARAM_SET, "acme_boiler_control_parameters"]}}
+    Should Be Equal    ${identifiers}    ${{[$PARAM_SET, $LITERAL, "acme_boiler_control_parameters"]}}
     # A device filter applies across every file, not only the first one.
     ${identifiers}=    Describe Identifiers    -c /tmp/describe-dir -d boiler-*
     Should Be Equal    ${identifiers}    ${{["acme_boiler_control_parameters"]}}
@@ -337,7 +340,7 @@ Describe Defaults To The Connector Config Directory
     ...                (/etc/tedge/plugins/ot) — every connector in it, not just modbus.toml.
     Write Describe Configs    /etc/tedge/plugins/ot
     ${identifiers}=    Describe Identifiers
-    Should Be Equal    ${identifiers}    ${{[$PARAM_SET, "acme_boiler_control_parameters"]}}
+    Should Be Equal    ${identifiers}    ${{[$PARAM_SET, $LITERAL, "acme_boiler_control_parameters"]}}
 
 Flows Register The Device And Advertise The Parameter Capability
     [Documentation]    (flows) ot-registration turns the link status into a child-device
@@ -364,6 +367,8 @@ Parameter Twin Follows The Device
     Dictionary Should Not Contain Key    ${twin}    level_f32
     # Writable and in the same set, but switched off (`enabled = false`, §3.3).
     Dictionary Should Not Contain Key    ${twin}    spare_u16
+    # A literal parameter is in no set.
+    Dictionary Should Not Contain Key    ${twin}    pump_enabled
 
 A Parameter Opted Out Of Measurements Reaches Only Its Twin
     [Documentation]    (flows) `meta.measurement = false` keeps a parameter off the measurement
@@ -410,6 +415,36 @@ Parameter Update Command Writes The Points And Completes
     ${payload}=    Wait For Sample    ${SAMPLE_PREFIX}/temp_u16    timeout=${SAMPLE_TIMEOUT}
     ${value}=    Get Json Field    ${payload}    value
     Should Be Equal As Numbers    ${value}    1234
+
+A Literal Parameter Is Published And Written As A Bare Value
+    [Documentation]    (flows) A point naming `meta.parameter.fragment` is published as the twin
+    ...                fragment itself — a bare `false`, not an object with one key — and an edit
+    ...                of the fragment carrying a bare value is ONE write to that point, after
+    ...                which the fragment shows the new value.
+    [Tags]    flows
+    Wait For Message Containing    ${LITERAL_TWIN}    false    timeout=${FLOWS_TIMEOUT}
+    Publish Message    ${PARAM_CMD_PREFIX}/c8y-mapper-literal
+    ...    {"status":"init","operation":{"c8y_ParameterUpdate":{},"c8y_ParameterUpdate_${LITERAL}":{},"${LITERAL}":true},"c8y-mapper":{"on_fragment":"c8y_ParameterUpdate","output":null}}    retain=True
+    Wait For Message Containing    ${PARAM_CMD_PREFIX}/c8y-mapper-literal    "status":"successful"    timeout=${FLOWS_TIMEOUT}
+    ${batch}=    Wait For Message Containing    ${BATCH_PREFIX}/ot--c8y-mapper-literal    "status":"successful"    timeout=${SAMPLE_TIMEOUT}
+    ${results}=    Get Json Field    ${batch}    results
+    Length Should Be    ${results}    1
+    Should Be Equal    ${results}[0][point]    pump_enabled
+    Wait For Message Containing    ${LITERAL_TWIN}    true    timeout=${FLOWS_TIMEOUT}
+    ${sample}=    Wait For Message Containing    ${SAMPLE_PREFIX}/pump_enabled    "value":true    timeout=${SAMPLE_TIMEOUT}
+    # The neighbouring bit of the same register is untouched.
+    ${coil}=    Wait For Sample    ${SAMPLE_PREFIX}/coil_rw    timeout=${SAMPLE_TIMEOUT}
+    Sample Should Be Good    ${coil}
+
+A Literal Parameter Refuses An Object
+    [Documentation]    (flows) The shape of an edit has to match the fragment's: an object sent
+    ...                for a literal parameter fails the command, with no write.
+    [Tags]    flows
+    Publish Message    ${PARAM_CMD_PREFIX}/c8y-mapper-literal-obj
+    ...    {"status":"init","operation":{"c8y_ParameterUpdate":{},"c8y_ParameterUpdate_${LITERAL}":{},"${LITERAL}":{"pump_enabled":true}},"c8y-mapper":{"on_fragment":"c8y_ParameterUpdate","output":null}}    retain=True
+    ${result}=    Wait For Message Containing    ${PARAM_CMD_PREFIX}/c8y-mapper-literal-obj    "status":"failed"    timeout=${FLOWS_TIMEOUT}
+    ${reason}=    Get Json Field    ${result}    reason
+    Should Contain    ${reason}    literal parameter
 
 Parameter Update With An Unknown Key Fails With The Connector Reason
     [Tags]    flows

@@ -75,3 +75,13 @@ default_mode     = "typed"
   datatype = "bool"
   access   = "read_write"
   address  = { table = "coil", address = 768, count = 1 }
+
+  # A literal parameter (contract §5.2 meta.parameter.fragment): the managed object holds
+  # `"plc_sim_pump_enabled": true`, not an object around one value, and its DTM definition is a
+  # primitive schema. Coil 769 is bit 1 of register 48, next to coil_rw's bit 0.
+  [[device.point]]
+  id       = "pump_enabled"
+  datatype = "bool"
+  access   = "read_write"
+  address  = { table = "coil", address = 769, count = 1 }
+  meta     = { parameter = { fragment = "plc_sim_pump_enabled", title = "Pump enabled" }, measurement = false }
