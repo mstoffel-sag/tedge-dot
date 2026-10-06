@@ -128,6 +128,10 @@ typedef struct {
      * OID). NULL -- what tdot_sample_init sets -- uses the point's. Borrowed:
      * it only has to outlive the sink/emit call the sample is handed to. */
     const char *addr_json;
+    /* The value before the point's `map` (contract §4.3), after the
+     * transform: set by the runtime on mapped points only, never by a module.
+     * NONE otherwise, which keeps `source_value` out of the envelope. */
+    tdot_value_t source;
 } tdot_sample_t;
 
 void tdot_sample_init(tdot_sample_t *s);

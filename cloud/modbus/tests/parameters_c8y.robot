@@ -43,6 +43,9 @@ Parameter Definitions Are Rendered From The Connector Config
     Dictionary Should Contain Key    ${definition}[jsonSchema][properties]    coil_rw
     Dictionary Should Not Contain Key    ${definition}[jsonSchema][properties]    level_f32
     Should Be Equal    ${definition}[jsonSchema][properties][temp_u16][title]    Temperature setpoint
+    # A mapped point (§4.3) is a parameter of its labels, offered as a choice.
+    Should Be Equal    ${definition}[jsonSchema][properties][state][type]    string
+    Should Be Equal    ${definition}[jsonSchema][properties][state][enum]    ${{["running", "idle"]}}
     Set Suite Variable    ${DEFINITION}    ${definition}
 
 Parameter Definition Is Registered In The Tenant
@@ -82,6 +85,18 @@ Measurements Confirm The Written Value
     ...    minimum=1    type=modbus    value=modbus    series=temp_u16
     ...    sort_newest=${True}    timeout=${MEAS_TIMEOUT}
     Should Be Equal As Integers    ${measurements[0]["modbus"]["temp_u16"]["value"]}    ${NEW_VALUE}
+
+A Mapped Parameter Shows Its Label And Writes The Code
+    [Documentation]    The fragment carries the mapped point's label, and an edit of the label
+    ...                from the Parameters tab reaches the register as its code (§4.3): the
+    ...                fragment and the next measurement of the same register both follow.
+    Cumulocity.Device Should Exist    ${CHILD_EXTERNAL_ID}
+    Cumulocity.Managed Object Should Have Fragment Values    ${SET}.state\=running    timeout=${MEAS_TIMEOUT}
+    ${operation}=    Cumulocity.Create Operation
+    ...    fragments={"c8y_ParameterUpdate":{},"c8y_ParameterUpdate_${SET}":{},"${SET}":{"state":"idle"}}
+    ...    description=Update ${SET} by label
+    Cumulocity.Operation Should Be SUCCESSFUL    ${operation}    timeout=${OP_TIMEOUT}
+    Cumulocity.Managed Object Should Have Fragment Values    ${SET}.state\=idle    ${SET}.temp_u16\=17001    timeout=${MEAS_TIMEOUT}
 
 Parameter Update With An Unknown Key Fails
     Cumulocity.Device Should Exist    ${CHILD_EXTERNAL_ID}

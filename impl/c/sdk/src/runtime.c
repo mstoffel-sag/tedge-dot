@@ -172,6 +172,11 @@ static void emit_sample(rt_t *rt, tdot_device_t *dev, tdot_point_t *pt,
      * published later with this time, not its publish time. */
     tdot_report_item_t item;
     item.sample = *s;
+    /* The value map (§4.3), ahead of the reporting policy, so the policy, the
+     * topic and every consumer see the mapped value. Applied to the copy: the
+     * caller judges the link on the reading as the module returned it, since
+     * a mapping failure is not a failed read. */
+    tdot_sample_apply_map(pt, &item.sample);
     tdot_now_rfc3339(item.ts, sizeof item.ts);
     item.ts_ms = tdot_now_ms();
     int64_t now = mono_ns();

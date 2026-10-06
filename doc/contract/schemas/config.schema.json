@@ -373,6 +373,10 @@
           "$ref": "#/$defs/report",
           "description": "This point's reporting policy (§5.3); merged over the device's and [connector]'s report."
         },
+        "map": {
+          "$ref": "#/$defs/map",
+          "description": "This point's value map (§4.3): state codes to labels, ranges with a catch-all, numeric text to numbers. The samples carry the mapped value (and the unmapped one as source_value); writes carry it too and are mapped back."
+        },
         "meta": {
           "type": "object",
           "description": "Free-form signal metadata, echoed verbatim as 'meta' in every sample envelope for this point. Never interpreted by the connector; flows read it for per-signal behaviour (measurement naming, alarms, events, parameters) and consumers may carry arbitrary descriptive fields. Reporting behaviour (on change, deadband, rate limit, heartbeat) belongs in 'report', not here."
@@ -413,6 +417,167 @@
               "datatype"
             ]
           }
+        }
+      ]
+    },
+    "map": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Value map (contract §4.3), applied by the SDK runtime after `transform` on reads and reversed before the inverse transform on writes. The first matching case wins; an unmatched value takes `default`, else the `as` conversion, else the sample is bad. Every output (each `to`, `default`, the `as` type) is of one type, the sample's value_repr. A later definition (§3.4) replaces the whole map; an empty table removes it. Not allowed on raw-mode or bytes points.",
+      "properties": {
+        "cases": {
+          "type": "array",
+          "description": "Ordered cases; the first that matches gives the output.",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "to"
+            ],
+            "properties": {
+              "eq": {
+                "description": "Match a value equal to this one, or to any entry of a list (no type coercion: a number matches numbers only). A write of `to` sends this value (a list's first entry).",
+                "oneOf": [
+                  {
+                    "type": [
+                      "number",
+                      "string",
+                      "boolean"
+                    ]
+                  },
+                  {
+                    "type": "array",
+                    "minItems": 1,
+                    "items": {
+                      "type": [
+                        "number",
+                        "string",
+                        "boolean"
+                      ]
+                    }
+                  }
+                ]
+              },
+              "min": {
+                "type": "number",
+                "description": "Inclusive lower bound of a numeric range; omit for an open range."
+              },
+              "max": {
+                "type": "number",
+                "description": "Inclusive upper bound of a numeric range; omit for an open range."
+              },
+              "to": {
+                "type": [
+                  "number",
+                  "string",
+                  "boolean"
+                ],
+                "description": "The output for a matching value."
+              },
+              "write": {
+                "type": "number",
+                "description": "Range cases only: the device value a write of `to` sends, within the range. Without it the range's output is read-only."
+              }
+            },
+            "oneOf": [
+              {
+                "required": [
+                  "eq"
+                ],
+                "not": {
+                  "anyOf": [
+                    {
+                      "required": [
+                        "min"
+                      ]
+                    },
+                    {
+                      "required": [
+                        "max"
+                      ]
+                    },
+                    {
+                      "required": [
+                        "write"
+                      ]
+                    }
+                  ]
+                }
+              },
+              {
+                "anyOf": [
+                  {
+                    "required": [
+                      "min"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "max"
+                    ]
+                  }
+                ],
+                "not": {
+                  "required": [
+                    "eq"
+                  ]
+                }
+              }
+            ]
+          }
+        },
+        "default": {
+          "type": [
+            "number",
+            "string",
+            "boolean"
+          ],
+          "description": "Catch-all output for a value no case matches. Never writable."
+        },
+        "as": {
+          "enum": [
+            "number",
+            "string",
+            "bool"
+          ],
+          "description": "Convert a value no case matches to this type (numeric text to a number, a number to its shortest text, ...); reversed on writes. Cannot be combined with `default`."
+        }
+      },
+      "not": {
+        "required": [
+          "default",
+          "as"
+        ]
+      },
+      "examples": [
+        {
+          "cases": [
+            {
+              "eq": 0,
+              "to": "stopped"
+            },
+            {
+              "eq": [
+                1,
+                5
+              ],
+              "to": "running"
+            },
+            {
+              "min": 10,
+              "max": 19,
+              "to": "warning"
+            },
+            {
+              "min": 20,
+              "to": "fault",
+              "write": 20
+            }
+          ],
+          "default": "unknown"
+        },
+        {
+          "as": "number"
         }
       ]
     }

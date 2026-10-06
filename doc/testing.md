@@ -67,7 +67,9 @@ the layer where a bug corrupts *every* protocol at once:
 - 64-bit integers switch from `number` to `string` exactly at the JS safe-integer boundary;
 - the linear transform is NaN-free for finite inputs and passes non-numerics through;
 - `hex_grouped` raw serialization is lossless;
-- `extract_bitfield` agrees with an independently written bit-by-bit reference model.
+- `extract_bitfield` agrees with an independently written bit-by-bit reference model;
+- a value map's labels write back to codes that read back as the same labels, numeric text
+  (`as = "string"`) round-trips every finite number, and mapping is total.
 
 New shared decode logic must come with properties, not just examples. When a property fails,
 proptest shrinks to a minimal counterexample — commit that counterexample as a plain unit test
@@ -75,7 +77,7 @@ alongside the fix.
 
 ## Fuzzing (cargo-fuzz / libFuzzer)
 
-`impl/rust/crates/sdk/fuzz/` has four targets, runnable with `just fuzz <target> [seconds]` or all
+`impl/rust/crates/sdk/fuzz/` has five targets, runnable with `just fuzz <target> [seconds]` or all
 briefly via `just fuzz-all` (requires the nightly toolchain and `cargo install cargo-fuzz`):
 
 - `decode_primitive` — arbitrary wire bytes × datatype × byte orders; asserts integer
@@ -87,6 +89,8 @@ briefly via `just fuzz-all` (requires the nightly toolchain and `cargo install c
   `invalid_durations_are_none_not_panics`).
 - `transform` — the full f64 space (NaN, ±inf, subnormals) through `Transform::apply`.
 - `sample_envelope` — arbitrary `Sample` contents must always serialize to valid JSON.
+- `value_map` — arbitrary `map` tables (§4.3) parse or are refused, and a parsed map answers any
+  value, read and written, across datatypes.
 
 Protocol parsers of network input have their own fuzz crate next to the connector:
 

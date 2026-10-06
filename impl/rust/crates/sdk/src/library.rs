@@ -101,6 +101,7 @@ const POINT_KEYS: &[&str] = &[
     "subscribe",
     "enabled",
     "report",
+    "map",
 ];
 const TRANSFORM_KEYS: &[&str] = &["multiplier", "divisor", "decimal_shift", "offset"];
 const LIBRARY_TOP_KEYS: &[&str] = &["library", "point"];
@@ -201,6 +202,13 @@ fn check_point_keys(point: &Value) -> Result<(), String> {
     if let Some(report) = point.get("report") {
         check_keys(report, crate::report::REPORT_KEYS, &format!("the report of point '{id}'"))?;
     }
+    if let Some(map) = point.get("map") {
+        check_keys(map, crate::map::MAP_KEYS, &format!("the map of point '{id}'"))?;
+        let cases = map.get("cases").and_then(Value::as_array).into_iter().flatten();
+        for (i, case) in cases.enumerate() {
+            check_keys(case, crate::map::CASE_KEYS, &format!("map.cases[{i}] of point '{id}'"))?;
+        }
+    }
     Ok(())
 }
 
@@ -300,7 +308,33 @@ fn check_point_values(point: &Value) -> Result<(), String> {
     check_type(point, "meta", Value::is_table, "a table")?;
     check_type(point, "subscribe", Value::is_bool, "true or false")?;
     check_type(point, "enabled", Value::is_bool, "true or false")?;
-    check_report(point)
+    check_report(point)?;
+    check_map(point)
+}
+
+/// The `map` table of a point definition (§4.3), when present: its shape and output types. The
+/// checks that need the resolved datatype run once the point is merged ([`check_resolved_maps`]).
+fn check_map(point: &Value) -> Result<(), String> {
+    let Some(map) = point.get("map") else {
+        return Ok(());
+    };
+    let json = serde_json::to_value(map).map_err(|e| format!("map: {e}"))?;
+    crate::map::ValueMap::parse(&json).map(|_| ())
+}
+
+/// The map checks that need a point's resolved `mode` and `datatype` (§4.3): run on the typed
+/// configuration, after every definition is merged, because a library may declare the map and
+/// the site the datatype.
+fn check_resolved_maps(config: &crate::config::ConnectorConfig) -> Result<(), String> {
+    for device in &config.devices {
+        for point in &device.points {
+            if let Some(map) = point.value_map() {
+                map.check_point(point.resolved_mode(device.default_mode), point.datatype)
+                    .map_err(|e| format!("device '{}': point '{}': {e}", device.name, point.id))?;
+            }
+        }
+    }
+    Ok(())
 }
 
 /// The `report` table of a connector, device or point (§5.3), when present.
@@ -395,6 +429,7 @@ pub fn resolve(text: &str, base_dir: &Path) -> Result<ConnectorConfig, String> {
     let mut config: ConnectorConfig = doc
         .try_into()
         .map_err(|e: toml::de::Error| format!("failed to parse config: {e}"))?;
+    check_resolved_maps(&config)?;
     // Absolute, so a later change of working directory cannot move what it points at.
     config.base_dir = Some(std::path::absolute(base_dir).unwrap_or_else(|_| base_dir.to_path_buf()));
     Ok(config)
@@ -1431,6 +1466,99 @@ report           = {{ on_change = true, deadband = 5 }}
             table("level"),
             serde_json::json!({ "max_interval": "15m", "on_change": true, "deadband": 5 })
         );
+    }
+
+    /// `map` (§4.3) is replaced as a whole by a later definition — cases are an ordered list, so
+    /// merging them would mean nothing — and an empty table removes an inherited map.
+    #[test]
+    fn map_replaces_through_libraries() {
+        let dir = Dir::new("map-replace");
+        dir.write(
+            "modbus/base.toml",
+            r#"
+[library]
+protocol = "modbus"
+
+[[point]]
+id       = "state"
+datatype = "uint16"
+address  = { table = "holding", address = 7, count = 1 }
+map      = { cases = [{ eq = 0, to = "off" }], default = "unknown" }
+
+[[point]]
+id       = "mode"
+datatype = "uint16"
+address  = { table = "holding", address = 8, count = 1 }
+map      = { as = "string" }
+
+[[point]]
+id       = "kept"
+datatype = "uint16"
+address  = { table = "holding", address = 9, count = 1 }
+map      = { as = "string" }
+"#,
+        );
+        let text = format!(
+            r#"
+[connector]
+protocol = "modbus"
+point_library_path = ["{}"]
+
+[[device]]
+name             = "plc"
+protocol_address = {{ host = "127.0.0.1" }}
+points_from      = ["base"]
+
+  [[device.point]]
+  id  = "state"
+  map = {{ as = "bool" }}
+
+  [[device.point]]
+  id  = "mode"
+  map = {{}}
+"#,
+            dir.path().display()
+        );
+        let cfg = resolve(&text, dir.path()).unwrap();
+        let point = |id: &str| cfg.devices[0].points.iter().find(|p| p.id == id).unwrap();
+        assert_eq!(point("state").map, Some(serde_json::json!({ "as": "bool" })));
+        assert!(point("mode").value_map().is_none());
+        assert_eq!(
+            point("kept").value_map().unwrap().convert,
+            Some(crate::map::Kind::String)
+        );
+    }
+
+    #[test]
+    fn maps_are_validated_where_they_are_and_once_resolved() {
+        let config = |point: &str| {
+            format!(
+                "[connector]\nprotocol = \"modbus\"\n[[device]]\nname = \"plc\"\nprotocol_address = {{}}\n  [[device.point]]\n  id = \"p\"\n  datatype = \"uint16\"\n  address = {{}}\n  {point}\n"
+            )
+        };
+        let err = |text: String| resolve(&text, Path::new(".")).unwrap_err();
+        assert_eq!(
+            err(config("map = { cases = [{ eq = 0, to = \"off\" }, { eq = 1, to = 1 }] }")),
+            "device 'plc': point 'p': map.cases[1].to must be a string like the map's other outputs"
+        );
+        assert_eq!(
+            err(config("map = { cases = [{ eqs = 0, to = \"off\" }] }")),
+            "unknown key 'eqs' in map.cases[0] of point 'p' (did you mean 'eq'?)"
+        );
+        assert_eq!(
+            err(config("map = { defualt = \"x\" }")),
+            "unknown key 'defualt' in the map of point 'p' (did you mean 'default'?)"
+        );
+        // Needs the resolved datatype.
+        assert_eq!(
+            err(config("map = { cases = [{ eq = \"a\", to = 1 }] }")),
+            "device 'plc': point 'p': map.cases[0].eq \"a\" can never match a uint16 value"
+        );
+        assert_eq!(
+            err(config("mode = \"raw\"\n  map = { as = \"string\" }")),
+            "device 'plc': point 'p': map is not allowed on a raw-mode point"
+        );
+        assert!(resolve(&config("map = { as = \"string\" }"), Path::new(".")).is_ok());
     }
 
     #[test]

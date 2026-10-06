@@ -8,6 +8,7 @@
 use proptest::prelude::*;
 use tedge_dot_sdk::config::parse_duration;
 use tedge_dot_sdk::decode::{decode_primitive, encode_primitive, extract_bitfield, Endianness, WordOrder};
+use tedge_dot_sdk::map::{format_number, parse_number, ValueMap};
 use tedge_dot_sdk::model::{hex_grouped, DataType, Transform, Value};
 
 fn endianness() -> impl Strategy<Value = Endianness> {
@@ -241,4 +242,62 @@ proptest! {
         let v = decode_primitive(&bytes, DataType::String, Endianness::Big, WordOrder::Big).unwrap();
         prop_assert!(matches!(v, Value::Text(_)));
     }
+
+    /// A map of distinct codes to labels (§4.3) inverts exactly: writing any label a read can
+    /// produce sends the code that reads back as that label.
+    #[test]
+    fn map_label_write_reads_back(
+        codes in proptest::collection::btree_set(-1000i64..1000, 1..12),
+        dt in prop_oneof![Just(DataType::Int16), Just(DataType::Int32), Just(DataType::Float64)],
+    ) {
+        let cases: Vec<serde_json::Value> = codes
+            .iter()
+            .enumerate()
+            .map(|(i, c)| serde_json::json!({ "eq": c, "to": format!("s{}", i % 5) }))
+            .collect();
+        let map = ValueMap::parse(&serde_json::json!({ "cases": cases })).unwrap().unwrap();
+        for label in map.writable_outputs() {
+            let code = map.invert(&label, Some(dt)).unwrap();
+            let read = map.apply(&Value::Number(code.as_f64().unwrap()), Some(dt)).unwrap();
+            prop_assert_eq!(read, Value::Text(label.as_str().unwrap().to_string()));
+        }
+    }
+
+    /// `as = "string"` is lossless: the text of any finite number parses back to that number,
+    /// so a written value is the one that was read.
+    #[test]
+    fn map_number_text_roundtrip(n in any::<f64>().prop_filter("finite", |n| n.is_finite())) {
+        let text = format_number(n).unwrap();
+        prop_assert!(!text.contains('e') && !text.contains('E'), "{text}");
+        let back = parse_number(&text).unwrap();
+        prop_assert!(back == n, "{n} -> {text} -> {back}");
+    }
+
+    /// Mapping is total: whatever a connector decodes, `apply` answers (a value or a reason)
+    /// without panicking, for every kind of map.
+    #[test]
+    fn map_apply_never_panics(
+        n in any::<f64>(),
+        text in ".*",
+        b in any::<bool>(),
+        dt in any_datatype(),
+    ) {
+        let maps = [
+            serde_json::json!({ "as": "number" }),
+            serde_json::json!({ "as": "string" }),
+            serde_json::json!({ "as": "bool" }),
+            serde_json::json!({ "cases": [{ "eq": [0, 1.5], "to": "a" }, { "min": -1e9, "max": 1e9, "to": "b" }] }),
+            serde_json::json!({ "cases": [{ "eq": "x", "to": 1 }], "default": 0 }),
+        ];
+        for m in maps {
+            let map = ValueMap::parse(&m).unwrap().unwrap();
+            for v in [Value::Number(n), Value::Text(text.clone()), Value::Bool(b)] {
+                let _ = map.apply(&v, Some(dt));
+            }
+            let _ = map.invert(&serde_json::json!(n.is_finite().then_some(n)), Some(dt));
+            let _ = map.invert(&serde_json::json!(text), Some(dt));
+        }
+        let _ = parse_number(&text);
+    }
 }
+

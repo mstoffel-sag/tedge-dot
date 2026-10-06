@@ -190,6 +190,14 @@ The connector returns every reading; the SDK runtime applies the point's `report
 Every Modbus point is polled, so a heartbeat (`max_interval`) is the point's next poll, and
 needs no extra protocol traffic. The packaged config sets `[connector] report = { max_interval = "30m" }`.
 
+### 5.2 Value mapping (`map`)
+
+The connector decodes the register. The SDK runtime then applies the point's `map`
+([contract §4.3](../contract/ot-connector-contract.md#43-value-mapping)), after the transform, and maps a written label back to its code before
+the connector encodes it. Status and operating-state registers are the common case, for example
+`map.cases = [{ eq = 0, to = "stopped" }, { eq = 1, to = "running" }]` on a `uint16` holding
+register. A coil maps from a bool (`eq = true`). See [Mapping values](../mapping-values.md).
+
 ## 6. Write flow (`execute`, verb `write`)
 
 For `cmd/write/<id>` with `status: "init"`:

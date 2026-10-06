@@ -1097,6 +1097,7 @@ fn write_bytes_into(buffer: &mut Vec<u8>, start: usize, bytes: &[u8]) {
 
 fn good_sample(id: &str, model: &ProfibusPoint, raw: Vec<u8>, value: Option<Value>) -> Sample {
     Sample {
+        source_value: None,
         ts: OffsetDateTime::now_utc(),
         device: String::new(),
         protocol: PROTOCOL,
@@ -1120,6 +1121,7 @@ fn good_sample(id: &str, model: &ProfibusPoint, raw: Vec<u8>, value: Option<Valu
 
 fn bad_sample(id: &str, error: &str, addr: Option<&PointAddress>, unit: Option<String>) -> Sample {
     Sample {
+        source_value: None,
         ts: OffsetDateTime::now_utc(),
         device: String::new(),
         protocol: PROTOCOL,

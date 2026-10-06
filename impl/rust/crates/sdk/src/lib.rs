@@ -10,6 +10,7 @@ pub mod connector;
 pub mod decode;
 pub mod descriptor;
 pub mod library;
+pub mod map;
 pub mod model;
 pub mod report;
 pub mod runtime;

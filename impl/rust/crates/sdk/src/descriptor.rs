@@ -211,6 +211,9 @@ pub struct Parameter {
     pub description: Option<String>,
     /// The `meta.parameter` table (normalized to an object).
     pub options: Map<String, Value>,
+    /// The point's value map (§4.3): a mapped parameter carries mapped values, so its type and
+    /// choices come from the map rather than the datatype.
+    pub map: Option<crate::map::ValueMap>,
 }
 
 /// The parameters of one point: one per set it belongs to, and none when it is not a
@@ -251,6 +254,7 @@ pub fn parameters_of(point: &PointConfig, naming: &SetNaming) -> Vec<Parameter> 
             key: key.clone(),
             set,
             datatype: point.datatype,
+            map: point.value_map(),
             access,
             unit: point.unit.clone(),
             name: point.name.clone(),
@@ -548,8 +552,17 @@ pub fn c8y_dtm_definitions_across(
         .collect()
 }
 
-/// JSON-schema property for one parameter (type from the datatype, limits from the datatype
-/// range, everything else from `meta.parameter`).
+/// Every numeric output of `map` — each `to` and the `default` — is a whole number.
+fn map_outputs_whole(map: &crate::map::ValueMap) -> bool {
+    map.cases
+        .iter()
+        .map(|c| &c.to)
+        .chain(map.default.as_ref())
+        .all(|v| v.as_f64().is_some_and(|n| n.fract() == 0.0))
+}
+
+/// JSON-schema property for one parameter (type from the datatype, or from the value map,
+/// limits from the datatype range, everything else from `meta.parameter`).
 pub fn property_schema(param: &Parameter) -> Value {
     let mut schema = Map::new();
     let (ty, min, max): (&str, Option<f64>, Option<f64>) = match param.datatype {
@@ -564,6 +577,27 @@ pub fn property_schema(param: &Parameter) -> Value {
         Some(DataType::Int64) | Some(DataType::Uint64) => ("integer", None, None),
         Some(DataType::Float32) | Some(DataType::Float64) => ("number", None, None),
         Some(DataType::String) | Some(DataType::Bytes) | None => ("string", None, None),
+    };
+    // A mapped parameter (§4.3) holds mapped values: its type is the map's output type, the
+    // datatype's limits describe the device value and do not apply, and a map whose writable
+    // values form a closed set (no `as`) offers them as a choice.
+    let (ty, min, max) = match &param.map {
+        None => (ty, min, max),
+        Some(map) => {
+            let ty = match map.output_kind() {
+                crate::map::Kind::Bool => "boolean",
+                crate::map::Kind::String => "string",
+                crate::map::Kind::Number if map.convert.is_none() && map_outputs_whole(map) => "integer",
+                crate::map::Kind::Number => "number",
+            };
+            if map.convert.is_none() {
+                let choices = map.writable_outputs();
+                if !choices.is_empty() {
+                    schema.insert("enum".into(), Value::Array(choices));
+                }
+            }
+            (ty, None, None)
+        }
     };
     schema.insert("type".into(), json!(ty));
     let title = param
@@ -1256,6 +1290,61 @@ protocol_address = { transport = "tcp", host = "127.0.0.1", port = 502, unit_id 
             parameter_keys(&cfg()).is_empty(),
             "a configuration naming no key adds nothing to the descriptor"
         );
+    }
+
+    /// A mapped parameter (§4.3) takes the map's output type, drops the datatype's limits and,
+    /// when its writable values are a closed set, offers them as an enum.
+    #[test]
+    fn dtm_schema_of_mapped_parameters() {
+        let config: ConnectorConfig = toml::from_str(
+            r#"
+[connector]
+protocol = "modbus"
+[[device]]
+name = "plc"
+type = "pump"
+protocol_address = {}
+  [[device.point]]
+  id = "mode"
+  datatype = "uint16"
+  access = "read_write"
+  address = {}
+  map = { cases = [
+    { eq = 0, to = "off" }, { eq = 1, to = "auto" }, { eq = 2, to = "manual" },
+    { eq = 3, to = "auto" }, { min = 10, max = 19, to = "warning" },
+  ], default = "unknown" }
+  [[device.point]]
+  id = "level"
+  datatype = "string"
+  access = "read_write"
+  address = {}
+  map = { as = "number" }
+  [[device.point]]
+  id = "code"
+  datatype = "uint16"
+  access = "read_write"
+  address = {}
+  map = { cases = [{ eq = 0, to = 10 }, { eq = 1, to = 20.5 }, { eq = 2, to = 30 }] }
+  [[device.point]]
+  id = "band"
+  datatype = "uint16"
+  access = "read_write"
+  address = {}
+  map = { cases = [{ eq = 0, to = 10 }, { eq = 1, to = 20 }] }
+"#,
+        )
+        .unwrap();
+        let defs = c8y_dtm_definitions(&config, None);
+        let props = &defs[0]["jsonSchema"]["properties"];
+        assert_eq!(props["mode"]["type"], json!("string"));
+        assert_eq!(props["mode"]["enum"], json!(["off", "auto", "manual"]));
+        assert!(props["mode"].get("maximum").is_none());
+        assert_eq!(props["level"]["type"], json!("number"));
+        assert!(props["level"].get("enum").is_none());
+        // Numeric outputs: an integer only when every one is whole.
+        assert_eq!(props["code"]["type"], json!("number"));
+        assert_eq!(props["band"]["type"], json!("integer"));
+        assert_eq!(props["band"]["enum"], json!([10, 20]));
     }
 
     #[test]

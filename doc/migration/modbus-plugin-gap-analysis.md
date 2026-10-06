@@ -175,6 +175,15 @@ value conditions, thresholds with hysteresis, events on change.
 metadata is the bridge"). This is a parity-plus item; it can land after G1 ships with
 measurement mappings only.
 
+> **Update (2026-10): status mappings have a target.** A point's value map (`point.map`,
+> [contract §4.3](../contract/ot-connector-contract.md#43-value-mapping), see
+> [Mapping values](../mapping-values.md)) turns a register's codes into the state texts a
+> `statusMapping` describes. It handles exact codes, code lists and inclusive ranges, with a
+> `default` for the rest, and it works both ways, so a status is also writable as its label.
+> Translating a type's `statusMapping` therefore becomes one `map.cases` entry per status.
+> Alarm and event mappings still go to `point.meta.alarm` / `point.meta.event`, and they can
+> match the mapped label (`when = { equals = "..." }`).
+
 ### G5 — Cut-over ergonomics and small parity items
 
 - **Packaging:** declare `conflicts`/`replaces: tedge-modbus-plugin` in `.goreleaser.yaml`

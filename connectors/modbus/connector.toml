@@ -81,6 +81,17 @@ points_from      = ["plc-sim", "./points.d/modbus/plc-sim-extra.toml"]
   address  = { table = "holding", address = 3, count = 1 }
   meta     = { measurement = false }
 
+  # A value map (§4.3): register 3 read as an operating state. Its samples and its parameter
+  # twin entry carry the label, with the code as `source_value`; a label written by a command or
+  # as a parameter reaches the register as its code. `default` catches every other value, and is
+  # never writable.
+  [[device.point]]
+  id       = "state"
+  datatype = "uint16"
+  access   = "read_write"
+  address  = { table = "holding", address = 3, count = 1 }
+  map      = { cases = [{ eq = 1234, to = "running" }, { eq = 17001, to = "idle" }], default = "other" }
+
   # Points switched off (§3.3). spare_u16 comes from the path-referenced library, and this bare
   # `enabled = false` leaves it out of plc1 without editing that file: it is never read, written
   # or described. draft_u16 is incomplete (no datatype, no address) and loads only because it is

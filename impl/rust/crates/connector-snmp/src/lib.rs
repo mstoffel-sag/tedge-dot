@@ -817,6 +817,7 @@ pub(crate) fn sample(
         (Mode::Typed, Err(e)) => (None, Quality::Bad, Some(e), point.datatype),
     };
     Sample {
+        source_value: None,
         ts,
         device: device.to_string(),
         protocol: PROTOCOL,

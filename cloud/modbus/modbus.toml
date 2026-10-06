@@ -45,6 +45,16 @@ default_mode     = "typed"
   address  = { table = "holding", address = 3, count = 1 }
   meta     = { parameter = { title = "Temperature setpoint", min = 0, max = 30000 } }
 
+  # A value map (contract §4.3) on the same register: a parameter shown as a label, which
+  # `describe` offers as a choice and an operator's pick writes back as the code.
+  [[device.point]]
+  id       = "state"
+  datatype = "uint16"
+  access   = "read_write"
+  address  = { table = "holding", address = 3, count = 1 }
+  map      = { cases = [{ eq = 4343, to = "running" }, { eq = 17001, to = "idle" }], default = "other" }
+  meta     = { parameter = { title = "Operating state" } }
+
   [[device.point]]
   id       = "count_u32"
   datatype = "uint32"

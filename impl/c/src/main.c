@@ -314,6 +314,10 @@ static int cmd_read(const args_t *a) {
                         exit_code = 1;
                     continue;
                 }
+                if (pt->mode == TDOT_MODE_RAW)
+                    s.value.kind = TDOT_VAL_NONE;
+                /* The value map (§4.3), as the runtime applies it. */
+                tdot_sample_apply_map(pt, &s);
                 print_sample(a, cfg, dev, pt, &s);
                 if (s.quality == TDOT_Q_BAD)
                     exit_code = 1;

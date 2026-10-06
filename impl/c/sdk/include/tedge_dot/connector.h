@@ -149,8 +149,10 @@ tdot_connector_t *tdot_connector_factory(const char *protocol);
  * through the inverse of the point's transform, and rounded to the nearest
  * integer (ties away from zero) when the datatype is an integer. bool/string
  * values and raw-mode points pass through unchanged, and connectors never see
- * the transform on write. Returns 0, or -1 with err filled -- including when
- * the transform has no inverse, in which case nothing is written. */
+ * the transform on write. A point with a value map (contract §4.3) has the
+ * requested value mapped back to the device value first. Returns 0, or -1
+ * with err filled -- including when the map or the transform has no inverse,
+ * in which case nothing is written. */
 int tdot_connector_write(tdot_connector_t *conn, tdot_device_t *dev,
                          tdot_point_t *pt, const tdot_value_t *value, char *err,
                          size_t errlen);

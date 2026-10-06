@@ -8,7 +8,8 @@ use crate::connector::{
     LinkStatus, PointRef, SampleSink,
 };
 use crate::decode::{Endianness, WordOrder};
-use crate::model::{format_rfc3339_ms, Mode, Quality, Sample};
+use crate::map::ValueMap;
+use crate::model::{format_rfc3339_ms, DataType, Mode, Quality, Sample};
 use crate::report::{Obs, ReportState};
 use rumqttc::{AsyncClient, Event, LastWill, MqttOptions, Packet, QoS};
 use std::collections::{BTreeSet, HashMap, HashSet};
@@ -655,7 +656,7 @@ pub async fn run_until_reloadable(
                                 // connectors routinely leave `device` empty, and the sample
                                 // topic + meta lookup are keyed by the configured name.
                                 s.device = device.clone();
-                                if let Some(mut s) = reporter.offer(s.clone()) {
+                                if let Some(mut s) = reporter.offer(map_sample(s.clone(), &meta_index)) {
                                     publish_sample(&client, &protocol, &mut s, &mut seq_counters, &meta_index)
                                         .await;
                                 }
@@ -735,7 +736,7 @@ pub async fn run_until_reloadable(
                     let samples = reporter.heartbeat_result(caps.protocol, &device, &points, result);
                     let healthy = samples.iter().any(|s| s.quality != crate::model::Quality::Bad);
                     for s in samples {
-                        if let Some(mut s) = reporter.offer(s) {
+                        if let Some(mut s) = reporter.offer(map_sample(s, &meta_index)) {
                             publish_sample(&client, &protocol, &mut s, &mut seq_counters, &meta_index).await;
                         }
                     }
@@ -812,7 +813,7 @@ pub async fn run_until_reloadable(
                 }
             }
             Some(sample) = sample_rx.recv() => {
-                if let Some(mut sample) = reporter.offer(sample) {
+                if let Some(mut sample) = reporter.offer(map_sample(sample, &meta_index)) {
                     publish_sample(&client, &protocol, &mut sample, &mut seq_counters, &meta_index)
                         .await;
                 }
@@ -979,7 +980,7 @@ pub async fn run_stdout_until(
                         Ok(mut samples) => {
                             for s in samples.iter_mut() {
                                 s.device = device.clone();
-                                if let Some(mut s) = reporter.offer(s.clone()) {
+                                if let Some(mut s) = reporter.offer(map_sample(s.clone(), &meta_index)) {
                                     print_sample(&mut s, &mut seq_counters, &meta_index);
                                 }
                             }
@@ -1042,7 +1043,7 @@ pub async fn run_stdout_until(
                         }
                     }
                     for s in reporter.heartbeat_result(caps.protocol, &device, &points, result) {
-                        if let Some(mut s) = reporter.offer(s) {
+                        if let Some(mut s) = reporter.offer(map_sample(s, &meta_index)) {
                             print_sample(&mut s, &mut seq_counters, &meta_index);
                         }
                     }
@@ -1112,7 +1113,7 @@ pub async fn run_stdout_until(
                 }
             }
             Some(sample) = sample_rx.recv() => {
-                if let Some(mut sample) = reporter.offer(sample) {
+                if let Some(mut sample) = reporter.offer(map_sample(sample, &meta_index)) {
                     print_sample(&mut sample, &mut seq_counters, &meta_index);
                 }
             }
@@ -1246,6 +1247,7 @@ impl Reporter {
                     addr: serde_json::json!({}),
                     seq: None,
                     error: Some(e.to_string()),
+                    source_value: None,
                 })
                 .collect(),
         }
@@ -1525,6 +1527,9 @@ struct PointExtras {
     /// The device's declared `type` (§3.1). Per device rather than per point, but carried here
     /// so one lookup answers everything the envelope needs.
     device_type: Option<String>,
+    /// The point's value map (§4.3) and the datatype it maps from.
+    map: Option<ValueMap>,
+    datatype: Option<DataType>,
 }
 
 type MetaIndex = HashMap<(String, String), PointExtras>;
@@ -1539,11 +1544,46 @@ fn build_meta_index(config: &ConnectorConfig) -> MetaIndex {
                     meta: point.meta.clone(),
                     access: Access::parse(point.access.as_deref()),
                     device_type: device.device_type.clone().filter(|t| !t.is_empty()),
+                    map: point.value_map(),
+                    datatype: point.datatype,
                 },
             );
         }
     }
     index
+}
+
+/// A sample with its point's value map (§4.3) applied: the one place the runtime maps a reading,
+/// ahead of the reporting policy, so the policy, the topic and every consumer see the mapped
+/// value. Samples of points without a map pass through untouched.
+fn map_sample(mut sample: Sample, meta_index: &MetaIndex) -> Sample {
+    if let Some(PointExtras { map: Some(map), datatype, .. }) =
+        meta_index.get(&(sample.device.clone(), sample.point.clone()))
+    {
+        apply_map(&mut sample, map, *datatype);
+    }
+    sample
+}
+
+/// Map one sample's value through `map` (§4.3). The value before mapping becomes `source_value`;
+/// a value the map has no output for turns the sample `bad`, with an error naming the point and
+/// the value — a mapping failure, not a failed read, so callers judge the link on the reading
+/// as the connector returned it. Samples without a value (bad reads, raw points) are untouched.
+pub fn apply_map(sample: &mut Sample, map: &ValueMap, datatype: Option<DataType>) {
+    if sample.mode != Mode::Typed {
+        return;
+    }
+    let Some(value) = sample.value.take() else {
+        return;
+    };
+    match map.apply(&value, datatype) {
+        Ok(mapped) => sample.value = Some(mapped),
+        Err(e) => {
+            sample.quality = Quality::Bad;
+            sample.error = Some(format!("point {}: {e}", sample.point));
+        }
+    }
+    sample.source_value = Some(value);
 }
 
 /// The declared `type` of one configured device (§3.1), if it has one. Used verbatim: the
@@ -1636,9 +1676,10 @@ pub fn point_ref(point: &crate::config::PointConfig, device_default: Option<Mode
 }
 
 /// The request a connector's `write` receives for a write `request` to `device`: the point's
-/// transform inverted, see [`CommandRequest::to_raw_units`]. A device or point the
-/// configuration does not define, or a point that is not writable, passes through unchanged
-/// for the connector to reject as usual (the C SDK checks access before the transform too).
+/// value map reversed (§4.3), then its transform inverted, see [`CommandRequest::to_raw_units`].
+/// A device or point the configuration does not define, or a point that is not writable, passes
+/// through unchanged for the connector to reject as usual (the C SDK checks access before the
+/// map and the transform too).
 pub fn raw_unit_request(
     config: &ConnectorConfig,
     device: &str,
@@ -1652,13 +1693,26 @@ pub fn raw_unit_request(
             d.points
                 .iter()
                 .find(|p| p.id == request.point)
-                .map(|p| point_ref(p, d.default_mode))
-                .filter(|p| p.access.can_write())
+                .map(|p| (p, point_ref(p, d.default_mode)))
+                .filter(|(_, p)| p.access.can_write())
         });
-    match point {
-        Some(point) => request.to_raw_units(&point),
-        None => Ok(request.clone()),
-    }
+    let Some((config_point, point)) = point else {
+        return Ok(request.clone());
+    };
+    let unmapped = match (config_point.value_map(), &request.value) {
+        (Some(map), Some(value)) if request.raw.is_none() && point.mode == Mode::Typed => {
+            let device_value = map
+                .invert(value, point.datatype)
+                .map_err(|e| format!("point {}: {e}", point.id))?;
+            CommandRequest {
+                value: Some(device_value),
+                value_repr: None,
+                ..request.clone()
+            }
+        }
+        _ => request.clone(),
+    };
+    unmapped.to_raw_units(&point)
 }
 
 /// Execute a write `verb` for `request` (engineering units) on `connector`. The one place every
@@ -3326,6 +3380,65 @@ protocol_address = { host = "127.0.0.1" }
         assert!(size < MQTT_MAX_PACKET_SIZE, "{size} bytes");
     }
 
+    /// The runtime maps a sample (§4.3) ahead of the reporting policy: the envelope carries the
+    /// mapped value and `source_value`; a value the map has no output for turns the sample bad
+    /// while keeping `raw`, and samples without a value are untouched.
+    #[test]
+    fn samples_are_mapped_with_their_source_value() {
+        let config: ConnectorConfig = toml::from_str(
+            r#"
+[connector]
+protocol = "modbus"
+[[device]]
+name = "plc-1"
+protocol_address = {}
+  [[device.point]]
+  id = "state"
+  datatype = "uint16"
+  address = {}
+  map = { cases = [{ eq = 0, to = "stopped" }, { eq = 1, to = "running" }] }
+"#,
+        )
+        .unwrap();
+        let index = build_meta_index(&config);
+        let sample = |value: Option<f64>, quality| Sample {
+            ts: OffsetDateTime::UNIX_EPOCH,
+            device: "plc-1".into(),
+            protocol: "modbus",
+            point: "state".into(),
+            mode: Mode::Typed,
+            datatype: Some(DataType::Uint16),
+            value: value.map(crate::model::Value::Number),
+            raw: vec![0x00, 0x01],
+            raw_group: 2,
+            quality,
+            unit: None,
+            addr: serde_json::Value::Null,
+            seq: None,
+            error: None,
+            source_value: None,
+        };
+        let env = envelope_with_meta(&map_sample(sample(Some(1.0), Quality::Good), &index), &index);
+        assert_eq!(env["value"], serde_json::json!("running"));
+        assert_eq!(env["value_repr"], serde_json::json!("string"));
+        assert_eq!(env["datatype"], serde_json::json!("uint16"));
+        assert_eq!(env["source_value"], serde_json::json!(1.0));
+        assert_eq!(env["source_value_repr"], serde_json::json!("number"));
+
+        let env = envelope_with_meta(&map_sample(sample(Some(3.0), Quality::Good), &index), &index);
+        assert_eq!(env["quality"], serde_json::json!("bad"));
+        assert_eq!(env["error"], serde_json::json!("point state: no mapping for value 3"));
+        assert!(env.get("value").is_none());
+        assert_eq!(env["source_value"], serde_json::json!(3.0));
+        assert_eq!(env["raw"], serde_json::json!("0001"));
+
+        let mut failed = sample(None, Quality::Bad);
+        failed.error = Some("timeout".into());
+        let env = envelope_with_meta(&map_sample(failed, &index), &index);
+        assert_eq!(env["error"], serde_json::json!("timeout"));
+        assert!(env.get("source_value").is_none());
+    }
+
     #[test]
     fn envelope_carries_point_meta() {
         let sample = Sample {
@@ -3343,6 +3456,7 @@ protocol_address = { host = "127.0.0.1" }
             addr: serde_json::Value::Null,
             seq: None,
             error: None,
+            source_value: None,
         };
         let mut index = HashMap::new();
         index.insert(
@@ -3351,6 +3465,8 @@ protocol_address = { host = "127.0.0.1" }
                 meta: Some(serde_json::json!({ "on_change": true })),
                 access: Access::ReadWrite,
                 device_type: Some("acme-meter-v2".into()),
+                map: None,
+                datatype: None,
             },
         );
         let env = envelope_with_meta(&sample, &index);

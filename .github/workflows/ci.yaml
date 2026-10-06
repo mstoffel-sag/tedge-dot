@@ -84,7 +84,7 @@ jobs:
       - name: Fuzz all targets briefly
         working-directory: impl/rust/crates/sdk
         run: |
-          for t in decode_primitive config_toml transform sample_envelope; do
+          for t in decode_primitive config_toml transform sample_envelope value_map; do
             cargo +nightly fuzz run "$t" -- -max_total_time=30
           done
       - name: Fuzz the SNMP notification decoder briefly

@@ -293,6 +293,7 @@ pub async fn run(manifest: &Manifest, schemas: &Schemas) -> Result<Vec<Layer>, S
     check_b7_access_control(&ctx, &mut layer).await;
     check_b8_hot_reload(&ctx, &mut layer, &config_path).await;
     check_b12_reporting_policy(&ctx, &mut layer, &config_path).await;
+    check_b13_value_map(&ctx, &mut layer, &config_path).await;
     check_b11_unowned_device_ignored(&ctx, &mut layer).await;
     check_b5_link_drop_and_recovery(&ctx, &mut layer).await;
     check_b5_silent_peer(&ctx, &mut layer).await;
@@ -1222,6 +1223,293 @@ async fn check_b12_reporting_policy(ctx: &Ctx<'_>, layer: &mut Layer, config_pat
             r.topic == topic && r.json().ok().map(|j| j["status"] == "successful").unwrap_or(false)
         })
         .await;
+}
+
+/// B13 — the value map (contract §4.3) is applied by the runtime, both ways: a clone of a
+/// writable numeric point, mapped code-to-label, publishes labels with the code as
+/// `source_value`; a write of a label reaches the simulator as its code and reads back as the
+/// label; a label with no inverse fails without a protocol write; and a value the map has no
+/// output for is a bad sample that does not count against the link — shown on a device of its
+/// own whose only point is unmatched, which must still report `connected`.
+async fn check_b13_value_map(ctx: &Ctx<'_>, layer: &mut Layer, config_path: &std::path::Path) {
+    const POINT: &str = "b13-map";
+    const UNMAPPED: &str = "b13-unmapped";
+    const LONE: &str = "b13-lone-device";
+    const IDS: [(&str, &str); 4] = [
+        ("B13-map-read", "a mapped point publishes the label, with the code as source_value"),
+        ("B13-map-write", "a label write reaches the device as its code and reads back as the label"),
+        ("B13-map-refused", "a label with no inverse fails without reaching the device"),
+        ("B13-map-unmatched", "an unmatched value is a bad sample that leaves the link connected"),
+    ];
+    let fail_all = |layer: &mut Layer, reason: String| {
+        for (id, name) in IDS {
+            layer.fail(id, name, reason.clone());
+        }
+    };
+
+    let template = ctx.points.iter().find(|p| {
+        p.mode == Mode::Typed
+            && p.access.can_write()
+            && p.bitfield.is_none()
+            && !ctx.sim.is_invalid(&p.spec())
+            && matches!(
+                p.datatype,
+                Some(DataType::Int8 | DataType::Uint8 | DataType::Int16 | DataType::Uint16 | DataType::Int32 | DataType::Uint32 | DataType::Float32 | DataType::Float64)
+            )
+    });
+    let Some(template) = template else {
+        for (id, name) in IDS {
+            layer.skip(id, name, "no writable numeric typed point to clone".into());
+        }
+        return;
+    };
+    // Two codes the datatype holds exactly, in engineering units: the B6 probe and a neighbour.
+    let (probe, target) = match template.datatype {
+        Some(DataType::Float32 | DataType::Float64) => (99.5, 100.5),
+        Some(DataType::Int8 | DataType::Uint8) => (42.0, 41.0),
+        _ => (12345.0, 12344.0),
+    };
+    let code = |n: f64| -> serde_json::Value {
+        if template.datatype.is_some_and(DataType::is_integer) {
+            serde_json::json!(n as i64)
+        } else {
+            serde_json::json!(n)
+        }
+    };
+
+    let setup = async {
+        let text = std::fs::read_to_string(config_path)
+            .map_err(|e| format!("read {}: {e}", config_path.display()))?;
+        let doc: toml::Value = toml::from_str(&text).map_err(|e| format!("parse config: {e}"))?;
+        let device_toml = doc
+            .get("device")
+            .and_then(|d| d.as_array())
+            .and_then(|a| a.iter().find(|d| d.get("name").and_then(|n| n.as_str()) == Some(template.device.as_str())))
+            .ok_or("the template's device is not in the config")?;
+        let original: serde_json::Value =
+            serde_json::to_value(device_toml).map_err(|e| format!("device to JSON: {e}"))?;
+        let template_point = original["point"]
+            .as_array()
+            .and_then(|points| points.iter().find(|p| p["id"] == serde_json::json!(template.id)))
+            .cloned()
+            .ok_or("template point not found in config")?;
+        let mut mapped = template_point.clone();
+        mapped["id"] = serde_json::json!(POINT);
+        mapped["poll_interval"] = serde_json::json!("250ms");
+        mapped["subscribe"] = serde_json::json!(false);
+        mapped["map"] = serde_json::json!({
+            "cases": [
+                { "eq": code(probe), "to": "probe" },
+                { "eq": code(target), "to": "target" },
+                { "min": -1e12, "max": 1e12, "to": "other" },
+            ],
+        });
+        let mut device = original.clone();
+        device["point"]
+            .as_array_mut()
+            .ok_or("device has no points array")?
+            .push(mapped);
+
+        // A device of its own whose only point maps nothing it can read.
+        let mut unmapped = template_point;
+        unmapped["id"] = serde_json::json!(UNMAPPED);
+        unmapped["poll_interval"] = serde_json::json!("250ms");
+        unmapped["subscribe"] = serde_json::json!(false);
+        unmapped["access"] = serde_json::json!("read");
+        unmapped["map"] = serde_json::json!({ "cases": [{ "eq": code(7.0), "to": "never" }] });
+        let mut lone = original.clone();
+        lone["name"] = serde_json::json!(LONE);
+        lone["point"] = serde_json::json!([unmapped]);
+        if let Some(table) = lone.as_object_mut() {
+            table.remove("points_from");
+        }
+        Ok::<_, String>((original, device, lone))
+    }
+    .await;
+    let (original, device, lone) = match setup {
+        Ok(devices) => devices,
+        Err(e) => return fail_all(layer, e),
+    };
+
+    let command = |verb: &str, payload: serde_json::Value, id: &str| {
+        let topic = format!("te/device/main/service/{}/ot/cmd/{verb}/{id}", ctx.service);
+        let mark = ctx.broker.mark();
+        ctx.broker.publish(&topic, payload.to_string().as_bytes(), true);
+        (topic, mark)
+    };
+    let terminal = |topic: String, mark: usize| async move {
+        ctx.wait_connector_record(mark, COMMAND_TIMEOUT, "a terminal status", |r| {
+            r.topic == topic
+                && r.json()
+                    .ok()
+                    .map(|j| j["status"] == "successful" || j["status"] == "failed")
+                    .unwrap_or(false)
+        })
+        .await
+        .and_then(|r| r.json())
+    };
+    let (topic, mark) = command(
+        "define-device",
+        serde_json::json!({ "status": "init", "device": device }),
+        "conf-b13",
+    );
+    match terminal(topic, mark).await {
+        Ok(j) if j["status"] == "successful" => {}
+        Ok(j) => return fail_all(layer, format!("define-device failed: {}", j["reason"])),
+        Err(e) => return fail_all(layer, e),
+    }
+
+    // Read: the label for whatever the register holds, and the code beside it.
+    let sample_topic = format!("te/device/{}/ot/{}/sample/{POINT}", template.device, ctx.protocol);
+    let read = ctx
+        .wait_connector_record(mark, SAMPLE_TIMEOUT, "a sample of the mapped point", |r| {
+            r.topic == sample_topic
+        })
+        .await
+        .and_then(|r| r.json())
+        .and_then(|j| {
+            let source = j["source_value"].as_f64().ok_or_else(|| format!("no numeric source_value: {j}"))?;
+            let label = if source == probe {
+                "probe"
+            } else if source == target {
+                "target"
+            } else {
+                "other"
+            };
+            if j["quality"] == "good"
+                && j["value"] == label
+                && j["value_repr"] == "string"
+                && j["source_value_repr"] == "number"
+                && j["datatype"] == serde_json::to_value(template.datatype).unwrap_or_default()
+            {
+                Ok(Some(format!("{} -> {}", j["source_value"], j["value"])))
+            } else {
+                Err(format!("sample {j}"))
+            }
+        });
+    layer.check(IDS[0].0, IDS[0].1, read);
+
+    // Write a label: the simulator sees its code, and the point reads back as the label.
+    let write = |value: serde_json::Value, id: &str| {
+        let topic = format!("te/device/{}/ot/{}/cmd/write/{id}", template.device, ctx.protocol);
+        let mark = ctx.broker.mark();
+        ctx.broker.publish(
+            &topic,
+            serde_json::json!({ "status": "init", "point": POINT, "value": value, "value_repr": "string" })
+                .to_string()
+                .as_bytes(),
+            true,
+        );
+        (topic, mark)
+    };
+    let (topic, mark) = write(serde_json::json!("target"), "conf-b13-target");
+    let written = async {
+        let result = terminal(topic, mark).await?;
+        if result["status"] != "successful" {
+            return Err(format!("write failed: {}", result["reason"]));
+        }
+        if result["value"] != "target" {
+            return Err(format!("the result echoes {} instead of the label", result["value"]));
+        }
+        let data = ctx.sim.point_data(&template.spec())?;
+        let now = expected_value(template, &data.bytes, data.raw_group)?
+            .map(|v| sdk_value_to_json(&v))
+            .unwrap_or(serde_json::Value::Null);
+        if !json_value_eq(&now, &serde_json::json!(target)) {
+            return Err(format!("the simulator holds {now}, expected the code {target}"));
+        }
+        ctx.wait_connector_record(mark, SAMPLE_TIMEOUT, "the label read back", |r| {
+            r.topic == sample_topic && r.json().ok().is_some_and(|j| j["value"] == "target")
+        })
+        .await?;
+        Ok(Some(format!("\"target\" -> {target}")))
+    }
+    .await;
+    layer.check(IDS[1].0, IDS[1].1, written);
+
+    // A label the map cannot write: refused before the protocol.
+    let writes_mid = ctx.sim.write_count(&template.spec()).unwrap_or(0);
+    let (topic, mark) = write(serde_json::json!("other"), "conf-b13-refused");
+    let refused = async {
+        let result = terminal(topic, mark).await?;
+        if result["status"] != "failed" {
+            return Err(format!("a write of a read-only label ended {}", result["status"]));
+        }
+        let reason = result["reason"].as_str().unwrap_or_default().to_string();
+        if !reason.contains("accepted values") {
+            return Err(format!("the reason does not list the accepted values: {reason}"));
+        }
+        let after = ctx.sim.write_count(&template.spec())?;
+        if after != writes_mid {
+            return Err(format!("the simulator saw {} write(s)", after - writes_mid));
+        }
+        Ok(Some(reason))
+    }
+    .await;
+    layer.check(IDS[2].0, IDS[2].1, refused);
+
+    // An unmatched value on a device of its own: every sample bad, the link connected.
+    let (topic, mark) = command(
+        "define-device",
+        serde_json::json!({ "status": "init", "device": lone }),
+        "conf-b13-lone",
+    );
+    let unmatched = async {
+        let result = terminal(topic, mark).await?;
+        if result["status"] != "successful" {
+            return Err(format!("define-device failed: {}", result["reason"]));
+        }
+        let lone_topic = format!("te/device/{LONE}/ot/{}/sample/{UNMAPPED}", ctx.protocol);
+        let mut bad = 0;
+        let mut last = mark;
+        while bad < 3 {
+            let r = ctx
+                .wait_connector_record(last, SAMPLE_TIMEOUT, "a sample of the unmatched point", |r| {
+                    r.topic == lone_topic
+                })
+                .await?;
+            last = r.seq + 1;
+            let j = r.json()?;
+            let error = j["error"].as_str().unwrap_or_default();
+            if j["quality"] != "bad" || !error.contains("no mapping for value") || j.get("source_value").is_none() {
+                return Err(format!("sample {j}"));
+            }
+            bad += 1;
+        }
+        let link_topic = ctx.link_topic(LONE);
+        let statuses: Vec<String> = ctx
+            .broker
+            .records_from(mark)
+            .into_iter()
+            .filter(|r| r.client == ctx.client && r.topic == link_topic)
+            .filter_map(|r| r.json().ok())
+            .filter_map(|j| j["status"].as_str().map(str::to_string))
+            .collect();
+        match statuses.last() {
+            Some(s) if s == "connected" && statuses.iter().all(|s| s == "connected") => {
+                Ok(Some(format!("{bad} bad samples, link {statuses:?}")))
+            }
+            _ => Err(format!("link status went {statuses:?} on unmatched values")),
+        }
+    }
+    .await;
+    layer.check(IDS[3].0, IDS[3].1, unmatched);
+
+    // Leave things as they were: the code B6 left, the device without its clone, no lone device.
+    let (topic, mark) = write(serde_json::json!("probe"), "conf-b13-restore-value");
+    let _ = terminal(topic, mark).await;
+    let (topic, mark) = command(
+        "remove-device",
+        serde_json::json!({ "status": "init", "device": LONE }),
+        "conf-b13-remove",
+    );
+    let _ = terminal(topic, mark).await;
+    let (topic, mark) = command(
+        "define-device",
+        serde_json::json!({ "status": "init", "device": original }),
+        "conf-b13-restore",
+    );
+    let _ = terminal(topic, mark).await;
 }
 
 /// B5 (second half) — outage handling, in two escalating flavours:

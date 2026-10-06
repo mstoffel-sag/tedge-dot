@@ -221,9 +221,21 @@ pub struct PointConfig {
     /// This point's reporting policy (§5.3), as written (merged with a library's).
     #[serde(default)]
     pub report: Option<serde_json::Value>,
+    /// This point's value map (§4.3), as written. A library's is replaced, not merged; an empty
+    /// table means no map. Read it through [`PointConfig::value_map`].
+    #[serde(default)]
+    pub map: Option<serde_json::Value>,
 }
 
 impl PointConfig {
+    /// The point's parsed value map, if it has one. The loader validated it, so a map that does
+    /// not parse (only possible for a config built without the loader) counts as none.
+    pub fn value_map(&self) -> Option<crate::map::ValueMap> {
+        self.map
+            .as_ref()
+            .and_then(|m| crate::map::ValueMap::parse(m).ok().flatten())
+    }
+
     /// Resolve the effective output mode, given the device default.
     pub fn resolved_mode(&self, device_default: Option<Mode>) -> Mode {
         self.mode.or(device_default).unwrap_or(Mode::Typed)

@@ -245,6 +245,20 @@ check_multi "measurement: an opted-out parameter still reaches its twin fragment
   '[te/device/plc1///twin/modbus_control_parameters] {"setpoint":55}' \
   --absent '///m/'
 
+# Value maps (contract §4.3) are applied by the connector runtime, so a mapped sample reaches the
+# flows with the mapped value: a number from a map is a measurement like any other, a label is not
+# (its code rides along as source_value), and the parameter twin shows the label.
+SMAPNUM='{"ts":"2026-05-30T10:00:00.000Z","device":"plc1","protocol":"modbus","point":"level_text","mode":"typed","datatype":"string","value":21.5,"value_repr":"number","source_value":"21.5","source_value_repr":"string","raw":"3231 2e35","quality":"good","addr":{}}'
+SMAPSTR='{"ts":"2026-05-30T10:00:00.000Z","device":"plc1","protocol":"modbus","point":"state","mode":"typed","datatype":"uint16","value":"running","value_repr":"string","source_value":1,"source_value_repr":"number","raw":"0001","quality":"good","addr":{},"access":"read_write"}'
+check "measurement: a number from a value map is a measurement" ot-measurement \
+  "[te/device/plc1/ot/modbus/sample/level_text] $SMAPNUM" \
+  '[te/device/plc1///m/modbus] {"modbus":{"level_text":21.5},"time":"2026-05-30T10:00:00.000Z"}'
+check_empty "measurement: a label from a value map is not a measurement" ot-measurement \
+  "[te/device/plc1/ot/modbus/sample/state] $SMAPSTR"
+check "parameter-state: a mapped parameter shows its label" ot-parameter-state \
+  "[te/device/plc1/ot/modbus/sample/state] $SMAPSTR" \
+  '[te/device/plc1///twin/modbus_control_parameters] {"state":"running"}'
+
 # combine: two series of one device merged into a single measurement, flushed on interval.
 SLVL='{"ts":"2026-05-30T10:00:00.000Z","device":"plc1","protocol":"modbus","point":"level_f32","mode":"typed","datatype":"float32","value":404.17,"value_repr":"number","raw":"43ca15c3","quality":"good","addr":{}}'
 check_params "measurement: combine merges series on interval" ot-measurement \
@@ -922,6 +936,10 @@ check "command-forward: c8y parameter update -> one write-batch with origin + ma
 check "command-forward: direct parameter update shape" ot-command-forward \
   '[te/device/plc1///cmd/parameter_update/x1] {"status":"init","set":"pump","parameters":{"pump_speed":12}}' \
   '[te/device/plc1/ot/modbus/cmd/write-batch/ot--x1] {"status":"init","writes":[{"point":"pump_speed","value":12}],"origin":{"command":"parameter_update","set":"pump","parameters":{"pump_speed":12}}}'
+# A mapped parameter (§4.3) is written as its label; the connector maps it back to the code.
+check "command-forward: a label is forwarded unchanged for the connector to map back" ot-command-forward \
+  '[te/device/plc1///cmd/parameter_update/x3] {"status":"init","set":"modbus_control_parameters","parameters":{"state":"idle"}}' \
+  '[te/device/plc1/ot/modbus/cmd/write-batch/ot--x3] {"status":"init","writes":[{"point":"state","value":"idle"}]'
 check_params "command-forward: protocol recorded by ot-parameter-state wins over params" ot-command-forward '' \
   '[te/device/opc1///cmd/parameter_update/x1] {"status":"init","set":"opcua_control_parameters","parameters":{"setpoint":7}}' \
   '[te/device/opc1/ot/opcua/cmd/write-batch/ot--x1]' \

@@ -54,6 +54,7 @@ fuzz_target!(|input: Input| {
         addr: serde_json::json!({ "text": input.text }),
         seq: input.seq,
         error: input.error,
+        source_value: None,
     };
     let envelope = sample.to_envelope();
     // The envelope must always be serializable JSON.

@@ -38,6 +38,12 @@ char *tdot_envelope_sample_at(const tdot_config_t *cfg, const tdot_device_t *dev
                               const tdot_point_t *pt, const tdot_sample_t *s,
                               const char *ts, double ts_ms);
 
+/* Apply the point's value map (contract §4.3) to a sample in place: the value
+ * before mapping becomes `source`, and a value the map has no output for turns
+ * the sample bad with an error naming the point and the value. Samples without
+ * a value (bad reads, raw points) and points without a map are untouched. */
+void tdot_sample_apply_map(const tdot_point_t *pt, tdot_sample_t *s);
+
 /* Monotonic clock (seconds) and wall-clock helpers. */
 double tdot_mono(void);
 /* RFC 3339 ms-precision UTC, e.g. "2026-07-02T10:00:00.000Z". */

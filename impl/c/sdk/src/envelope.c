@@ -5,6 +5,7 @@
 
 #include "cjson/cJSON.h"
 #include "tedge_dot/decode.h"
+#include "tedge_dot/map.h"
 #include "tedge_dot/runtime.h"
 
 double tdot_mono(void) {
@@ -28,22 +29,43 @@ void tdot_now_rfc3339(char *dst, size_t dstlen) {
     snprintf(dst + n, dstlen - n, ".%03dZ", (int)(tv.tv_usec / 1000));
 }
 
-static void add_value(cJSON *obj, const tdot_value_t *v) {
+/* `v` as the envelope's `<field>` and `<field>_repr`. */
+static void add_value_as(cJSON *obj, const tdot_value_t *v, const char *field) {
+    char repr[64];
+    snprintf(repr, sizeof repr, "%s_repr", field);
     switch (v->kind) {
     case TDOT_VAL_BOOL:
-        cJSON_AddBoolToObject(obj, "value", v->b);
-        cJSON_AddStringToObject(obj, "value_repr", "boolean");
+        cJSON_AddBoolToObject(obj, field, v->b);
+        cJSON_AddStringToObject(obj, repr, "boolean");
         break;
     case TDOT_VAL_NUM:
-        cJSON_AddNumberToObject(obj, "value", v->num);
-        cJSON_AddStringToObject(obj, "value_repr", "number");
+        cJSON_AddNumberToObject(obj, field, v->num);
+        cJSON_AddStringToObject(obj, repr, "number");
         break;
     case TDOT_VAL_STR:
-        cJSON_AddStringToObject(obj, "value", v->str);
-        cJSON_AddStringToObject(obj, "value_repr", "string");
+        cJSON_AddStringToObject(obj, field, v->str);
+        cJSON_AddStringToObject(obj, repr, "string");
         break;
     default:
         break;
+    }
+}
+
+static void add_value(cJSON *obj, const tdot_value_t *v) { add_value_as(obj, v, "value"); }
+
+void tdot_sample_apply_map(const tdot_point_t *pt, tdot_sample_t *s) {
+    if (!pt->map || pt->mode != TDOT_MODE_TYPED || s->value.kind == TDOT_VAL_NONE ||
+        s->quality == TDOT_Q_BAD)
+        return;
+    tdot_value_t mapped;
+    char why[TDOT_ERR_MAX];
+    s->source = s->value;
+    if (tdot_map_apply(pt->map, &s->value, pt->datatype, &mapped, why, sizeof why) == 0) {
+        s->value = mapped;
+    } else {
+        s->quality = TDOT_Q_BAD;
+        s->value.kind = TDOT_VAL_NONE;
+        snprintf(s->error, sizeof s->error, "point %s: %s", pt->id, why);
     }
 }
 
@@ -98,6 +120,9 @@ char *tdot_envelope_sample_at(const tdot_config_t *cfg, const tdot_device_t *dev
     cJSON_AddNumberToObject(obj, "seq", (double)pt->seq);
     if (s->quality == TDOT_Q_BAD)
         cJSON_AddStringToObject(obj, "error", s->error);
+    /* The value before the point's map (§4.3); only mapped samples carry it. */
+    if (!raw_mode)
+        add_value_as(obj, &s->source, "source_value");
     if (pt->meta_json) {
         cJSON *meta = cJSON_Parse(pt->meta_json);
         if (meta)

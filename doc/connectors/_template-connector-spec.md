@@ -78,6 +78,13 @@ notification) gets none. Such a point must return `Unsupported` (Rust) or `TDOT_
 (C), not a `bad` sample. State whether the packaged config sets
 `[connector] report = { max_interval = "30m" }`, or shows it only as a comment.
 
+### 5.2 Value mapping (`map`)
+
+The connector returns the decoded value; the SDK runtime applies the point's `map`
+([contract §4.3](../contract/ot-connector-contract.md#43-value-mapping)) and maps a written value back before `write`, so the module needs no code
+for it. Name the values of this protocol that are commonly mapped (state enumerations, numbers
+carried as text). See [Mapping values](../mapping-values.md).
+
 ## 6. Write flow
 
 Describe `execute` for verb `write` (and any extra verbs you declare): typed vs raw encoding,

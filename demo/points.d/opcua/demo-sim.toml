@@ -53,6 +53,18 @@ datatype    = "bool"
 access      = "read_write"
 address     = { node_id = "ns=2;s=Running" }
 
+# A value map (contract §4.3) on the same node: the samples and the parameter twin show
+# "running"/"stopped", `tedge-dot describe` offers the two as a choice, and a choice written from
+# the cloud reaches the node as the bool.
+[[point]]
+id          = "run_state"
+name        = "Run state"
+description = "Whether the simulated process is running, as a label"
+datatype    = "bool"
+access      = "read_write"
+address     = { node_id = "ns=2;s=Running" }
+map         = { cases = [{ eq = true, to = "running" }, { eq = false, to = "stopped" }] }
+
 # A node that does not exist on the server: shows a bad-quality sample end to
 # end. `subscribe = false` keeps it on the polling schedule, since a monitored
 # item for a missing node cannot be created in the first place.

@@ -194,6 +194,34 @@ Writes A Holding Register And Reads It Back
     Should Be Equal As Numbers    ${value}    4242
 
 
+Writes A Label To A Mapped Point
+    [Documentation]    A point with a value map (§4.3) publishes the label of its register's code,
+    ...                with the code as source_value. A write of a label reaches the register as
+    ...                its code; the result echoes the label, and both points on the register
+    ...                read back the new value.
+    Publish Message    ${CMD_PREFIX}/map-1    {"status":"init","point":"state","value":"running"}    retain=True
+    ${result}=    Wait For Message Containing    ${CMD_PREFIX}/map-1    "status":"successful"    timeout=${SAMPLE_TIMEOUT}
+    ${value}=    Get Json Field    ${result}    value
+    Should Be Equal    ${value}    running
+    Wait For Message Containing    ${SAMPLE_PREFIX}/temp_u16    "value":1234    timeout=${SAMPLE_TIMEOUT}
+    ${payload}=    Wait For Message Containing    ${SAMPLE_PREFIX}/state    "value":"running"    timeout=${SAMPLE_TIMEOUT}
+    Sample Should Be Good    ${payload}
+    ${repr}=    Get Json Field    ${payload}    value_repr
+    Should Be Equal    ${repr}    string
+    ${datatype}=    Get Json Field    ${payload}    datatype
+    Should Be Equal    ${datatype}    uint16
+    ${source}=    Get Json Field    ${payload}    source_value
+    Should Be Equal As Numbers    ${source}    1234
+
+A Mapped Point Refuses A Label It Cannot Write
+    [Documentation]    `default` catches every unlisted code, so it has no code of its own to write:
+    ...                the write fails with the accepted labels, and the register keeps its value.
+    Publish Message    ${CMD_PREFIX}/map-2    {"status":"init","point":"state","value":"other"}    retain=True
+    ${result}=    Wait For Message Containing    ${CMD_PREFIX}/map-2    "status":"failed"    timeout=${SAMPLE_TIMEOUT}
+    ${reason}=    Get Json Field    ${result}    reason
+    Should Contain    ${reason}    accepted values: "running", "idle"
+    Wait For Message Containing    ${SAMPLE_PREFIX}/state    "value":"running"    timeout=${SAMPLE_TIMEOUT}
+
 Samples Carry The Point Access And The Device Type
     [Documentation]    Every sample echoes the point's declared access and the device's type, so
     ...                flows can tell writable points (parameters) apart and name their parameter
@@ -286,6 +314,9 @@ Describe Renders The Parameter Set Definition
     Dictionary Should Not Contain Key    ${properties}    level_f32
     # Writable, but switched off with `enabled = false` (§3.3), so not a parameter.
     Dictionary Should Not Contain Key    ${properties}    spare_u16
+    # A mapped parameter (§4.3) offers its writable labels as a choice.
+    Should Be Equal    ${properties}[state][type]    string
+    Should Be Equal    ${properties}[state][enum]    ${{["running", "idle"]}}
     Should Be Equal    ${properties}[coil_rw][type]    boolean
     Should Be Equal    ${definition}[contexts]    ${{['asset', 'event', 'operation']}}
 
@@ -395,6 +426,18 @@ Generic Write Command Is Bridged By The Flows
     Publish Message    te/device/${DEVICE}///cmd/ot_write/w-1    {"status":"init","point":"temp_u16","value":17001}    retain=True
     ${result}=    Wait For Message Containing    te/device/${DEVICE}///cmd/ot_write/w-1    "status":"successful"    timeout=${FLOWS_TIMEOUT}
     ${twin}=    Wait For Message Containing    ${PARAM_TWIN}    "temp_u16":17001    timeout=${FLOWS_TIMEOUT}
+
+A Mapped Parameter Shows The Label And Writes The Code
+    [Documentation]    (flows) A mapped point is a parameter like any other: the twin carries its
+    ...                label, and a parameter update of a label is written as the code (§4.3),
+    ...                which every point on the register then reads back.
+    [Tags]    flows
+    Wait For Message Containing    ${PARAM_TWIN}    "state":"idle"    timeout=${FLOWS_TIMEOUT}
+    Publish Message    ${PARAM_CMD_PREFIX}/c8y-mapper-map
+    ...    {"status":"init","operation":{"c8y_ParameterUpdate":{},"c8y_ParameterUpdate_${PARAM_SET}":{},"${PARAM_SET}":{"state":"running"}},"c8y-mapper":{"on_fragment":"c8y_ParameterUpdate","output":null}}    retain=True
+    Wait For Message Containing    ${PARAM_CMD_PREFIX}/c8y-mapper-map    "status":"successful"    timeout=${FLOWS_TIMEOUT}
+    Wait For Message Containing    ${SAMPLE_PREFIX}/temp_u16    "value":1234    timeout=${SAMPLE_TIMEOUT}
+    Wait For Message Containing    ${PARAM_TWIN}    "state":"running"    timeout=${FLOWS_TIMEOUT}
 
 Refuses A Point Library Path From A Management Command
     [Documentation]    `points_from` may name a library, never a path, when it arrives over

@@ -472,6 +472,7 @@ fn build_sample(device: &DeviceId, point_id: &str, pt: &CanPoint, payload: &[u8]
     let addr = serde_json::json!({ "can_id": format!("0x{:X}", pt.signal.can_id) });
     match pt.mode {
         Mode::Raw => Sample {
+            source_value: None,
             ts,
             device: device.clone(),
             protocol: PROTOCOL,
@@ -499,6 +500,7 @@ fn build_sample(device: &DeviceId, point_id: &str, pt: &CanPoint, payload: &[u8]
             };
             let value = pt.transform.apply(value);
             Sample {
+                source_value: None,
                 ts,
                 device: device.clone(),
                 protocol: PROTOCOL,
@@ -520,6 +522,7 @@ fn build_sample(device: &DeviceId, point_id: &str, pt: &CanPoint, payload: &[u8]
 
 fn make_bad_sample(device: &DeviceId, point_id: &str, error: &str, ts: OffsetDateTime) -> Sample {
     Sample {
+        source_value: None,
         ts,
         device: device.clone(),
         protocol: PROTOCOL,

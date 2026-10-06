@@ -102,7 +102,7 @@ conformance-c protocol="modbus" *args="":
 check-linux target=TARGET:
     cargo check {{MANIFEST}} -p connector-canbus -p connector-canopen --target {{target}}
 
-# Fuzz one SDK target (decode_primitive, config_toml, transform, sample_envelope).
+# Fuzz one SDK target (decode_primitive, config_toml, transform, sample_envelope, value_map).
 # Requires: rustup nightly + `cargo install cargo-fuzz`.
 # Usage: just fuzz decode_primitive 60
 fuzz target="decode_primitive" seconds="60":
@@ -110,7 +110,7 @@ fuzz target="decode_primitive" seconds="60":
 
 # Fuzz every SDK target briefly (CI smoke; ~2 min total).
 fuzz-all seconds="30":
-    cd impl/rust/crates/sdk && for t in decode_primitive config_toml transform sample_envelope; do \
+    cd impl/rust/crates/sdk && for t in decode_primitive config_toml transform sample_envelope value_map; do \
         cargo +nightly fuzz run $t -- -max_total_time={{seconds}} || exit 1; done
 
 # Cross-check the `requires:<capability>` test tags against the declared capability lists.

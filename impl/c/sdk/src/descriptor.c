@@ -1,6 +1,8 @@
 #include "tedge_dot/descriptor.h"
+#include "tedge_dot/map.h"
 
 #include <ctype.h>
+#include <math.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -562,6 +564,46 @@ static const char *opt_string(const cJSON *options, const char *key) {
     return cJSON_IsString(v) ? v->valuestring : NULL;
 }
 
+static cJSON *map_val_json(const tdot_map_val_t *v) {
+    switch (v->kind) {
+    case TDOT_MAP_NUMBER: return cJSON_CreateNumber(v->num);
+    case TDOT_MAP_STRING: return cJSON_CreateString(v->s);
+    case TDOT_MAP_BOOL: return cJSON_CreateBool(v->b);
+    }
+    return cJSON_CreateNull();
+}
+
+/* The JSON-schema type of a mapped parameter, adding its `enum` to `schema`
+ * when the map's writable values are a closed set; no datatype range. */
+static const char *mapped_schema(const tdot_map_t *map, cJSON *schema, bool *has_range) {
+    *has_range = false;
+    if (!map->has_as) {
+        const tdot_map_val_t *choices[256];
+        size_t n = tdot_map_writable(map, choices, 256);
+        if (n > 256)
+            n = 256;
+        if (n) {
+            cJSON *list = cJSON_AddArrayToObject(schema, "enum");
+            for (size_t i = 0; i < n; i++)
+                cJSON_AddItemToArray(list, map_val_json(choices[i]));
+        }
+    }
+    switch (tdot_map_output_kind(map)) {
+    case TDOT_MAP_BOOL: return "boolean";
+    case TDOT_MAP_STRING: return "string";
+    case TDOT_MAP_NUMBER: break;
+    }
+    if (map->has_as)
+        return "number";
+    /* an integer only when every numeric output is whole */
+    for (size_t i = 0; i < map->ncases; i++)
+        if (map->cases[i].to.num != floor(map->cases[i].to.num))
+            return "number";
+    if (map->has_default && map->def.num != floor(map->def.num))
+        return "number";
+    return "integer";
+}
+
 /* JSON-schema property for one parameter: type and limits from the datatype,
  * everything else from `meta.parameter`. `key` is the property's key in its
  * set (param_key). */
@@ -570,8 +612,14 @@ static cJSON *property_schema(const tdot_point_t *point, const char *key,
     cJSON *schema = cJSON_CreateObject();
     bool has_range = false;
     double min = 0, max = 0;
-    cJSON_AddStringToObject(schema, "type",
-                            schema_type(point->datatype, &has_range, &min, &max));
+    const char *type = schema_type(point->datatype, &has_range, &min, &max);
+    /* A mapped parameter (§4.3) holds mapped values: its type is the map's
+     * output type, the datatype's limits describe the device value and do not
+     * apply, and a map whose writable values form a closed set (no `as`)
+     * offers them as a choice. */
+    if (point->map)
+        type = mapped_schema(point->map, schema, &has_range);
+    cJSON_AddStringToObject(schema, "type", type);
 
     /* meta.parameter.title wins, then the point's own `name`, then the key: a
      * point can carry a general-purpose label and still say something
@@ -621,7 +669,10 @@ static cJSON *property_schema(const tdot_point_t *point, const char *key,
     static const char *passthrough[] = {"enum", "default", "order"};
     for (size_t i = 0; i < sizeof passthrough / sizeof *passthrough; i++) {
         const cJSON *v = cJSON_GetObjectItemCaseSensitive(options, passthrough[i]);
-        if (v)
+        /* replaces a mapped parameter's own `enum`: an explicit one wins */
+        if (v && cJSON_GetObjectItemCaseSensitive(schema, passthrough[i]))
+            cJSON_ReplaceItemInObjectCaseSensitive(schema, passthrough[i], cJSON_Duplicate(v, 1));
+        else if (v)
             cJSON_AddItemToObject(schema, passthrough[i], cJSON_Duplicate(v, 1));
     }
     if (!(point->access & TDOT_ACCESS_WRITE))

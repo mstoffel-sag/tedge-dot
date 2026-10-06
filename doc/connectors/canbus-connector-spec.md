@@ -221,6 +221,12 @@ commented-out example.
 
 ---
 
+### 5.2 Value mapping (`map`)
+
+The SDK runtime applies the point's `map` ([contract §4.3](../contract/ot-connector-contract.md#43-value-mapping)) to every decoded signal, after
+the transform, and maps a written value back before the frame is encoded. A typical use is a
+signal whose DBC value table names states (`0` off, `1` on, `2` error). See [Mapping values](../mapping-values.md).
+
 ## 6. Write flow (`execute`, verb `write`)
 
 For `cmd/write/<id>` with `status: "init"`:

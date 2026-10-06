@@ -104,3 +104,20 @@ datatype = "bool"
 access   = "read_write"
 address  = { table = "coil", address = 768, count = 1 }
 meta     = { parameter = { group = ["control", "commissioning"] } }
+
+# A value map (contract §4.3): the same register read as an operating state, by range. Samples
+# carry the label ("heating" for the seeded 17001) with the code as `source_value`; anything
+# outside the ranges is "unknown". A label is a string, so it is not a measurement; meta.alarm
+# can still match it (`when = { equals = "overheat" }`).
+[[point]]
+id          = "boiler_state"
+name        = "Boiler state"
+description = "Operating state derived from the setpoint register"
+datatype    = "uint16"
+address     = { table = "holding", address = 3, count = 1 }
+map.cases   = [
+  { max = 9999,               to = "standby" },
+  { min = 10000, max = 19999, to = "heating" },
+  { min = 20000,              to = "overheat" },
+]
+map.default = "unknown"

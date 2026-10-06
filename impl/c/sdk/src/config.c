@@ -13,6 +13,7 @@
 #include <sys/stat.h>
 
 #include "cjson/cJSON.h"
+#include "tedge_dot/map.h"
 
 /* ---- known keys (contract §3.3) -------------------------------------------
  * The keys a contract-level table may carry. Anything else is refused, with the
@@ -34,7 +35,9 @@ static const char *const DEVICE_KEYS[] = {
 static const char *const POINT_KEYS[] = {
     "id",      "mode",   "datatype", "endianness",  "word_order",
     "poll_interval", "address", "access", "unit", "name", "description",
-    "transform", "meta", "subscribe", "enabled", "report", NULL};
+    "transform", "meta", "subscribe", "enabled", "report", "map", NULL};
+static const char *const MAP_KEYS[] = {"cases", "default", "as", NULL};
+static const char *const CASE_KEYS[] = {"eq", "min", "max", "to", "write", NULL};
 static const char *const TRANSFORM_KEYS[] = {"multiplier", "divisor",
                                              "decimal_shift", "offset", NULL};
 static const char *const LIBRARY_TOP_KEYS[] = {"library", "point", NULL};
@@ -168,6 +171,20 @@ static int check_point_keys(toml_table_t *pt, char *err, size_t errlen) {
         snprintf(place, sizeof place, "the report of point '%s'",
                  id.ok ? id.u.s : "<unnamed>");
         rc = check_keys(report, TDOT_REPORT_KEYS, place, err, errlen);
+    }
+    toml_table_t *map = toml_table_in(pt, "map");
+    if (rc == 0 && map) {
+        snprintf(place, sizeof place, "the map of point '%s'", id.ok ? id.u.s : "<unnamed>");
+        rc = check_keys(map, MAP_KEYS, place, err, errlen);
+        toml_array_t *cases = toml_array_in(map, "cases");
+        for (int i = 0; rc == 0 && cases && i < toml_array_nelem(cases); i++) {
+            toml_table_t *c = toml_table_at(cases, i);
+            if (!c)
+                continue;
+            snprintf(place, sizeof place, "map.cases[%d] of point '%s'", i,
+                     id.ok ? id.u.s : "<unnamed>");
+            rc = check_keys(c, CASE_KEYS, place, err, errlen);
+        }
     }
     if (id.ok)
         free(id.u.s);
@@ -665,6 +682,23 @@ static int check_report_values(toml_table_t *owner, char *err, size_t errlen) {
     return 0;
 }
 
+/* The `map` table of a point definition (§4.3), when present: its shape and
+ * output types, with the messages of map.rs. The checks that need the
+ * resolved datatype run once the point is merged (resolve_device_points). */
+static int check_map_values(toml_table_t *pt, char *err, size_t errlen) {
+    if (!key_present(pt, "map"))
+        return 0;
+    toml_table_t *table = toml_table_in(pt, "map");
+    if (!table) {
+        snprintf(err, errlen, "map must be a table");
+        return -1;
+    }
+    tdot_map_t *map = NULL;
+    int rc = tdot_map_parse(table, &map, err, errlen);
+    tdot_map_free(map);
+    return rc;
+}
+
 static int check_point_values(toml_table_t *pt, char *err, size_t errlen) {
     if (check_one_of(pt, "mode", MODES, err, errlen) ||
         check_one_of(pt, "datatype", DATATYPES, err, errlen) ||
@@ -688,7 +722,9 @@ static int check_point_values(toml_table_t *pt, char *err, size_t errlen) {
         check_shape(pt, "subscribe", SHAPE_BOOL, "", err, errlen) ||
         check_shape(pt, "enabled", SHAPE_BOOL, "", err, errlen))
         return -1;
-    return check_report_values(pt, err, errlen);
+    if (check_report_values(pt, err, errlen) != 0)
+        return -1;
+    return check_map_values(pt, err, errlen);
 }
 
 /* The values of one point definition's contract fields. Checked on each
@@ -790,6 +826,17 @@ static void apply_point_table(toml_table_t *pt, tdot_point_t *point) {
     toml_table_t *report = toml_table_in(pt, "report");
     if (report)
         merge_report(&point->report_table, report);
+
+    /* `map` replaces as a whole (§4.3): its cases are an ordered list, so
+     * merging them would mean nothing; `map = {}` removes an inherited one.
+     * Validated by check_map_values, so the parse succeeds. */
+    toml_table_t *map = toml_table_in(pt, "map");
+    if (map) {
+        char why[256];
+        tdot_map_free(point->map);
+        point->map = NULL;
+        tdot_map_parse(map, &point->map, why, sizeof why);
+    }
 
     d = toml_bool_in(pt, "subscribe");
     if (d.ok)
@@ -1220,6 +1267,7 @@ static void free_point(tdot_point_t *p) {
     free(p->addr_json);
     free(p->proto);
     cJSON_Delete(p->report_table);
+    tdot_map_free(p->map);
     if (p->report_state) {
         tdot_report_free(p->report_state);
         free(p->report_state);
@@ -1331,6 +1379,21 @@ static int resolve_device_points(tdot_config_t *cfg, tdot_device_t *dev,
     for (size_t j = 0; j < dev->npoints; j++)
         if (validate_point(&dev->points[j], err, errlen) != 0)
             return -1;
+
+    /* The map checks that need the resolved mode and datatype (§4.3): a
+     * library may declare the map and the site the datatype. */
+    for (size_t j = 0; j < dev->npoints; j++) {
+        const tdot_point_t *p = &dev->points[j];
+        char why[256];
+        if (p->enabled && p->map &&
+            tdot_map_check_point(p->map, p->mode == TDOT_MODE_RAW,
+                                 p->datatype == TDOT_DT_NONE ? NULL
+                                                             : tdot_datatype_str(p->datatype),
+                                 why, sizeof why) != 0) {
+            snprintf(err, errlen, "device '%s': point '%s': %s", dev->name, p->id, why);
+            return -1;
+        }
+    }
 
     /* Points switched off with `enabled = false` (§3.3) leave the list only
      * now, once every definition has been applied, so that nothing downstream

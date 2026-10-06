@@ -64,8 +64,10 @@ command whose `service` is not a plain topic level is **not forwarded**: the flo
 parameters. `ot-parameter-state` keeps one retained twin fragment per *parameter set*
 (`te/device/<device>///twin/<set>`, keyed by point id or by the key a point names) current from the samples (which echo each
 point's `access`) and from acknowledged writes. Parameter values — in the twin and in a write — are
-in the point's engineering units (after its `transform`); the SDK converts a write back to the raw
-value before the connector encodes it (contract §4.2). A point can name its own key in the fragment with
+in the point's engineering units (after its `transform`, and its value `map` when it has one); the
+SDK converts a write back to the raw value before the connector encodes it (contract §4.2, §4.3).
+A mapped point therefore shows its label in the twin, and an operator's edit of the label is
+written to the device as its code without any flow logic. A point can name its own key in the fragment with
 `meta.parameter.key`, keeping an id that is unique on the device:
 
 ```toml
@@ -142,6 +144,14 @@ Both flows act on the samples as published, so a point's reporting policy (`repo
 keep a deadband smaller than the alarm's `hysteresis`, and give no change filter (and, for a
 pushed point, no heartbeat) to a point whose event uses `every = true`.
 
+A point with a value `map` (contract §4.3) reaches the flows mapped, and so do its alarms and
+events: they test the **label**, so `when = { equals = ["fault", "tripped"] }` raises on a state
+that a map names. A threshold (`above`/`below`) needs a number, so give the map numeric outputs
+or watch the code with a second, unmapped point on the same address. The code itself rides along
+in every mapped sample as `source_value` for flows of your own. `ot-measurement` turns a number
+from a map (numeric text parsed with `as = "number"`, codes renumbered) into a measurement, and
+skips a label like any other string.
+
 By default `ot-measurement` names the measurement group after the sample's `protocol`
 (`m/modbus`, `m/opcua`, ...) and `ot-registration` types the child device as `<protocol>-device`.
 Override either via each flow's `params.toml`, where `ot-alarm` / `ot-event` can also watch one
@@ -164,8 +174,9 @@ reduced stream, and it adds a heartbeat for flat signals. See
 `deadband`, `min_interval` and `debounce` settings (and their `meta.*` overrides) still work but
 are **deprecated**; do not use them together with `report`.
 Linear scaling
-(`multiplier`/`divisor`/`decimal_shift`/`offset`) is a per-point property declared on the
-connector point (applied by the SDK), so the sample already carries the scaled value.
+(`multiplier`/`divisor`/`decimal_shift`/`offset`) and value mapping (`map`, codes to labels or
+text to numbers) are per-point properties declared on the connector point (applied by the SDK),
+so the sample already carries the scaled, mapped value.
 `ot-registration` can additionally publish the connector's device descriptor as a digital-twin
 fragment (`twin_fragment`, e.g. `c8y_ModbusDevice`).
 

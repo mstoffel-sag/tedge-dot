@@ -46,3 +46,9 @@ path = "fuzz_targets/transform.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "value_map"
+path = "fuzz_targets/value_map.rs"
+test = false
+doc = false

@@ -206,6 +206,21 @@ report = { max_interval = "30m" }                   # heartbeat (set in the pack
 The SDK runtime applies it the same way for every connector, before anything reaches the
 broker. See [Reducing data volume](doc/reducing-data-volume.md).
 
+A point can also **map** its value between the device's form and a readable one: state codes to
+labels (with ranges and a catch-all), or numeric text to numbers. The map works both ways, so a
+label written from the cloud reaches the device as its code:
+
+```toml
+  [[device.point]]
+  id       = "op_state"
+  datatype = "uint16"
+  access   = "read_write"
+  address  = { table = "holding", address = 100, count = 1 }
+  map      = { cases = [{ eq = 0, to = "stopped" }, { eq = 1, to = "running" }], default = "unknown" }
+```
+
+See [Mapping values](doc/mapping-values.md).
+
 ## Writing to devices
 
 Writable points (`access = "read_write"` / `"write"`) are written through retained

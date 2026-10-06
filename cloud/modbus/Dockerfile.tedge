@@ -34,7 +34,7 @@ COPY impl/c /src/impl/c
 COPY impl/rust/crates/sdk/conformance /src/impl/rust/crates/sdk/conformance
 RUN cmake -S impl/c -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
         -DTDOT_MODBUS=ON -DTDOT_OPCUA=OFF -DTDOT_PROFIBUS=OFF \
-        -DTDOT_CANBUS=OFF -DTDOT_CANOPEN=OFF \
+        -DTDOT_CANBUS=OFF -DTDOT_CANOPEN=OFF -DTDOT_SNMP=OFF \
     && cmake --build build --target tedge-dot \
     && cp build/tedge-dot /usr/local/bin/tedge-dot
 

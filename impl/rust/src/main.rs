@@ -1059,6 +1059,8 @@ struct ReadJob {
     interval: Duration,
     next_due: Instant,
     remaining: Option<u64>,
+    /// The value map (§4.3) of each mapped point, by id, with the datatype it maps from.
+    maps: std::collections::HashMap<String, (tedge_dot_sdk::map::ValueMap, Option<tedge_dot_sdk::DataType>)>,
 }
 
 /// The poll interval for one device: the `--interval` override, else the device's
@@ -1105,6 +1107,11 @@ async fn cmd_read(args: ReadArgs) -> Result<(), String> {
             interval: effective_interval(&config, t.device, args.interval),
             next_due: now,
             remaining: if poll_mode { args.count } else { Some(1) },
+            maps: t
+                .points
+                .iter()
+                .filter_map(|p| p.value_map().map(|m| (p.id.clone(), (m, p.datatype))))
+                .collect(),
         })
         .collect();
 
@@ -1168,6 +1175,9 @@ async fn read_loop(
                 Ok(mut samples) => {
                     for sample in samples.iter_mut() {
                         sample.device = job.device.clone();
+                        if let Some((map, datatype)) = job.maps.get(&sample.point) {
+                            runtime::apply_map(sample, map, *datatype);
+                        }
                         saw_bad |= sample.quality == Quality::Bad;
                         if json {
                             println!("{}", sample.to_envelope());

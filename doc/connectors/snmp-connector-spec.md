@@ -230,6 +230,14 @@ identical notifications are two occurrences, and the runtime warns about the com
 packaged config shows `max_interval` only as a commented-out example, since without a change
 filter every polled object is already published at each poll.
 
+### 5.4 Value mapping (`map`)
+
+The SDK runtime applies the point's `map` ([contract §4.3](../contract/ot-connector-contract.md#43-value-mapping)) to polled objects and
+notification points after the conversion below, and maps a written value back before a `SET`.
+Two cases are common. An `INTEGER` enumeration (`ifOperStatus`: `1` up, `2` down) can be mapped
+to labels, and a `DisplayString` holding a number can become a number with
+`map = { as = "number" }`. See [Mapping values](../mapping-values.md).
+
 ## 6. Converting a value to a datatype (typed mode)
 
 Unchanged, and shared by polled objects and varbind points:

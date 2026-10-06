@@ -67,6 +67,9 @@ typedef struct tdot_point {
      * kept as the text they were written as (cJSON raw items). NULL when no
      * definition declares one. */
     struct cJSON *report_table;
+    /* The point's value map (contract §4.3, map.h): the last definition that
+     * declares one replaces it whole; NULL for none (or `map = {}`). Owned. */
+    struct tdot_map *map;
     /* Effective policy: [connector] report, then the device's, then the
      * point's, merged key by key (tdot_config_report_table). */
     tdot_report_policy_t report;

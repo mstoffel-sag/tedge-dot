@@ -1248,6 +1248,7 @@ fn build_sample(id: &str, model: &OpcuaPoint, dv: &DataValue) -> Sample {
         ),
     };
     Sample {
+        source_value: None,
         ts: data_value_ts(dv),
         device: String::new(),
         protocol: PROTOCOL,
@@ -1269,6 +1270,7 @@ fn build_sample(id: &str, model: &OpcuaPoint, dv: &DataValue) -> Sample {
 /// reports as `raw`: the contract requires a `datatype` for `typed` and we have none.
 fn bad_sample(id: &str, model: Option<&OpcuaPoint>, error: &str) -> Sample {
     Sample {
+        source_value: None,
         ts: OffsetDateTime::now_utc(),
         device: String::new(),
         protocol: PROTOCOL,

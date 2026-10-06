@@ -125,6 +125,7 @@ skipped for external connectors because only the live descriptor (B9) describes 
 | B8 | Hot reload | A config change (add a point, applied through the management `define-device` verb) is picked up without restart; the new point starts publishing. |
 | B9 | Capability honesty | The connector never emits a datatype/mode/verb it did not advertise. |
 | B10 | Topic discipline | The connector publishes only under its contract topics; never to `…/m/`, `…/e/`, `…/a/`. |
+| B13 | Value map | A clone of a writable numeric point with a `map` (contract §4.3) publishes the label with the code as `source_value`; a write of a label reaches the simulator as its code and reads back as the label; a label with no inverse fails with no simulator write; and a device whose only point maps nothing it reads publishes `bad` samples while its link stays `connected`. |
 
 ### 3.2 Flow integration smoke test
 

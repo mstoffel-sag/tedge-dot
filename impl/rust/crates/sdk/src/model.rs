@@ -223,6 +223,9 @@ pub struct Sample {
     pub seq: Option<u64>,
     /// Required when `quality == Bad`.
     pub error: Option<String>,
+    /// The value before the point's `map` (§4.3), after `transform`; set by the runtime on
+    /// mapped points only, never by a connector.
+    pub source_value: Option<Value>,
 }
 
 impl Sample {
@@ -262,6 +265,10 @@ impl Sample {
         }
         if let Some(err) = &self.error {
             obj.insert("error".into(), serde_json::Value::String(err.clone()));
+        }
+        if let Some(v) = &self.source_value {
+            obj.insert("source_value".into(), v.to_json());
+            obj.insert("source_value_repr".into(), serde_json::Value::String(v.repr().into()));
         }
         serde_json::Value::Object(obj)
     }
@@ -503,6 +510,7 @@ mod tests {
             addr: serde_json::Value::Null,
             seq: None,
             error: None,
+            source_value: None,
         };
         let env = sample.to_envelope();
         assert_eq!(env["ts"], serde_json::json!("2017-07-14T02:40:00.123Z"));

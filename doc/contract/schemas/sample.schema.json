@@ -116,6 +116,22 @@
       "type": "string",
       "description": "Human-readable failure reason. Required when quality=bad."
     },
+    "source_value": {
+      "type": [
+        "number",
+        "boolean",
+        "string"
+      ],
+      "description": "Mapped points only (§4.3): the value before the point's map, after transform — the code behind a label. Present whenever the read produced a value, including when the map had no output for it (then quality=bad)."
+    },
+    "source_value_repr": {
+      "enum": [
+        "number",
+        "boolean",
+        "string"
+      ],
+      "description": "How a consumer should interpret 'source_value'. Present with it."
+    },
     "meta": {
       "type": "object",
       "description": "The point's free-form 'meta' table from the connector configuration, echoed verbatim by the runtime. Flows use it for per-signal behaviour (measurement naming, alarms, events, parameters); absent when the point declares no meta."

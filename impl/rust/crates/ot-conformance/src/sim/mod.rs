@@ -31,6 +31,9 @@ pub struct PointData {
     pub raw_group: usize,
 }
 
+// As on the SDK's `Connector`: `#[async_trait]` marks each method `#[must_use]` on top of the
+// `#[must_use]` boxed future it returns, which clippy reports as `double_must_use`.
+#[allow(clippy::double_must_use)]
 #[async_trait::async_trait]
 pub trait Simulator: Send + Sync {
     /// Loopback port the simulator listens on.

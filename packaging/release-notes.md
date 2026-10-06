@@ -89,6 +89,23 @@ signal, reading a subscribed OPC UA node on demand) and `debounce`. See
 - `tedge-dot-c`, CAN bus: a signal is now published once per received frame, as in
   `tedge-dot-rs`, instead of republishing the last frame on every poll.
 
+### Value mapping (`map`)
+
+A point can now declare a **value map**, which the connector applies in both directions for
+every protocol. It maps state codes to labels, using exact values, lists or inclusive ranges
+with a catch-all `default`, and it converts with `as = "number" | "string" | "bool"`, so numeric
+text becomes a measurement. Samples carry the mapped value and add the original as
+`source_value`.
+
+Writes carry the mapped value as well, and the connector maps it back to the device's code. This
+covers the `write` and `write-batch` commands, the CLI and Cumulocity device parameters, where
+`tedge-dot describe` offers a mapped parameter's labels as a choice. See
+`doc/mapping-values.md`.
+
+- A point without `map` is unchanged.
+- The demo point libraries show the feature: the Modbus `boiler_state` maps by range, and the
+  OPC UA `run_state` is an enumerated parameter.
+
 ### Notes
 
 - On a fresh install the service starts with **no devices configured**. Add

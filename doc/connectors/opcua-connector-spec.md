@@ -126,6 +126,14 @@ the runtime **reads the node on demand** through the ordinary read path, bounded
 status like a failed poll. The packaged config sets `[connector] report = { max_interval = "30m" }`,
 which keeps a device whose subscribed values never change available in Cumulocity.
 
+### 3.6 Value mapping (`map`)
+
+The SDK runtime applies the point's `map` ([contract §4.3](../contract/ot-connector-contract.md#43-value-mapping)) to polled and subscribed nodes
+alike, after the transform, and maps a written value back before the connector writes the node.
+Two cases are common. An enumeration node (an `Int32` state) can be mapped to labels, and a
+`String` node holding a number can become a number with `map = { as = "number" }`. See
+[Mapping values](../mapping-values.md).
+
 ## 4. The PKI directory
 
 ### 4.1 Layout

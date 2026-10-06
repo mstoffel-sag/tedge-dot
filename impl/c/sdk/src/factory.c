@@ -1,4 +1,5 @@
 #include "tedge_dot/connector.h"
+#include "tedge_dot/map.h"
 
 #include <math.h>
 #include <stdio.h>
@@ -61,8 +62,18 @@ static int write_value(const tdot_point_t *pt, const tdot_value_t *in,
 int tdot_connector_write(tdot_connector_t *conn, tdot_device_t *dev,
                          tdot_point_t *pt, const tdot_value_t *value, char *err,
                          size_t errlen) {
+    /* The value map first (§4.3): a write carries the mapped value, so it is
+     * mapped back to the device value before the transform is inverted. */
+    tdot_value_t unmapped = *value;
+    if (pt->map && pt->mode == TDOT_MODE_TYPED) {
+        char why[TDOT_ERR_MAX];
+        if (tdot_map_invert(pt->map, value, pt->datatype, &unmapped, why, sizeof why) != 0) {
+            snprintf(err, errlen, "point %s: %s", pt->id, why);
+            return -1;
+        }
+    }
     tdot_value_t raw;
-    if (write_value(pt, value, &raw, err, errlen) != 0)
+    if (write_value(pt, &unmapped, &raw, err, errlen) != 0)
         return -1;
     return conn->write_point(conn, dev, pt, &raw, err, errlen);
 }

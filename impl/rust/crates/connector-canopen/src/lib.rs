@@ -472,6 +472,7 @@ impl CanopenConnector {
                     addr,
                     seq: None,
                     error: None,
+                    source_value: None,
                 },
                 Mode::Typed => {
                     let dt = match pt.datatype {
@@ -502,6 +503,7 @@ impl CanopenConnector {
                                 addr,
                                 seq: None,
                                 error: None,
+                                source_value: None,
                             }
                         }
                         Err(e) => {
@@ -634,6 +636,7 @@ fn make_bad_sample(
     addr: serde_json::Value,
 ) -> Sample {
     Sample {
+        source_value: None,
         ts,
         device: device.clone(),
         protocol: PROTOCOL,

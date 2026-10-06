@@ -71,14 +71,20 @@ Set Coil Operation Round-Trips
     ...    fragments={"c8y_SetCoil":{"point":"coil_rw","value":true}}
     ...    description=Set coil_rw true
     Cumulocity.Operation Should Be SUCCESSFUL    ${operation}    timeout=${OP_TIMEOUT}
-    Sleep    1s
-    ${measurements}    Cumulocity.Device Should Have Measurements
-    ...    minimum=1    type=modbus    value=modbus    series=coil_rw
-    ...    timeout=${MEAS_TIMEOUT}
-    Should Be Equal As Numbers    ${measurements[0]["modbus"]["coil_rw"]["value"]}    1.0    precision=1
+    # The newest reading, not the first returned (the library sorts oldest first unless told
+    # otherwise), and retried: a reading taken just before the write can still be the newest.
+    Wait Until Keyword Succeeds    ${MEAS_TIMEOUT}s    2s
+    ...    Newest Coil Reading Should Be    1.0
 
 
 *** Keywords ***
+Newest Coil Reading Should Be
+    [Arguments]    ${expected}
+    ${measurements}=    Cumulocity.Device Should Have Measurements
+    ...    minimum=1    type=modbus    value=modbus    series=coil_rw
+    ...    sort_newest=${True}    timeout=${MEAS_TIMEOUT}
+    Should Be Equal As Numbers    ${measurements[0]["modbus"]["coil_rw"]["value"]}    ${expected}    precision=1
+
 Setup Main Device Context
     Setup Cloud Device
     Set Suite Variable    $CHILD_EXTERNAL_ID    ${DEVICE_ID}:device:${CHILD_NAME}

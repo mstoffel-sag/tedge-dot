@@ -245,6 +245,9 @@ pub enum ConnectorError {
 ///
 /// Only `Send` is required (not `Sync`): the SDK runtime drives a connector from a single task,
 /// so a connector may hold non-`Sync` transport handles (e.g. a `tokio-modbus` `Context`).
+// `#[async_trait]` marks each method `#[must_use]`, and the boxed future it returns is
+// `#[must_use]` already, which clippy reports as `double_must_use` on the generated code.
+#[allow(clippy::double_must_use)]
 #[async_trait]
 pub trait Connector: Send {
     /// Validate & parse the protocol-specific parts of the configuration into a typed model.

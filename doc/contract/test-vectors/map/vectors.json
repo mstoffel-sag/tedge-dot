@@ -1,0 +1,191 @@
+{
+  "maps": {
+    "state": {
+      "cases": [
+        { "eq": 0, "to": "stopped" },
+        { "eq": [1, 5], "to": "running" },
+        { "min": 10, "max": 19, "to": "warning" },
+        { "min": 20, "to": "fault", "write": 20 }
+      ],
+      "default": "unknown"
+    },
+    "bands": {
+      "cases": [
+        { "eq": 0, "to": "ok" },
+        { "min": 1, "max": 9, "to": "warning" },
+        { "min": 10, "to": "fault" }
+      ],
+      "default": "unknown"
+    },
+    "overlap": {
+      "cases": [
+        { "eq": 5, "to": "special" },
+        { "min": 0, "max": 10, "to": "normal" }
+      ]
+    },
+    "gap": {
+      "cases": [
+        { "max": 9, "to": "low" },
+        { "min": 10, "to": "high" }
+      ],
+      "default": "?"
+    },
+    "open_low": {
+      "cases": [{ "max": -0.5, "to": "below" }],
+      "default": "above"
+    },
+    "no_catch_all": {
+      "cases": [{ "eq": 0, "to": "off" }]
+    },
+    "mode_text": {
+      "cases": [
+        { "eq": "AUTO", "to": 1 },
+        { "eq": "MANUAL", "to": 2 }
+      ]
+    },
+    "flag_label": {
+      "cases": [
+        { "eq": true, "to": "on" },
+        { "eq": false, "to": "off" }
+      ]
+    },
+    "to_number": { "as": "number" },
+    "to_number_na": { "as": "number", "cases": [{ "eq": "N/A", "to": -1 }] },
+    "to_string": { "as": "string" },
+    "to_bool": { "as": "bool" },
+    "comfort": {
+      "cases": [
+        { "eq": 21.5, "to": "comfort" },
+        { "eq": 18, "to": "eco" }
+      ]
+    },
+    "big": {
+      "cases": [{ "eq": 9007199254740993, "to": "x" }],
+      "default": "y"
+    },
+    "big_range": {
+      "cases": [{ "min": 9007199254740000, "to": "huge" }],
+      "default": "small"
+    },
+    "codes": {
+      "cases": [
+        { "eq": 0, "to": 100 },
+        { "eq": 1, "to": 200 },
+        { "min": 2, "max": 3, "to": 300 }
+      ]
+    },
+    "duplicate_label": {
+      "cases": [
+        { "min": 10, "max": 19, "to": "warning" },
+        { "eq": 15, "to": "warning" }
+      ]
+    }
+  },
+  "read": [
+    { "name": "eq scalar", "map": "state", "datatype": "uint16", "in": { "num": 0 }, "out": { "str": "stopped" } },
+    { "name": "eq list", "map": "state", "datatype": "uint16", "in": { "num": 5 }, "out": { "str": "running" } },
+    { "name": "range inclusive low edge", "map": "state", "datatype": "uint16", "in": { "num": 10 }, "out": { "str": "warning" } },
+    { "name": "range inclusive high edge", "map": "state", "datatype": "uint16", "in": { "num": 19 }, "out": { "str": "warning" } },
+    { "name": "open-ended range", "map": "state", "datatype": "uint16", "in": { "num": 250 }, "out": { "str": "fault" } },
+    { "name": "default catch-all", "map": "state", "datatype": "uint16", "in": { "num": 7 }, "out": { "str": "unknown" } },
+    { "name": "bands: ok", "map": "bands", "datatype": "int16", "in": { "num": 0 }, "out": { "str": "ok" } },
+    { "name": "bands: warning", "map": "bands", "datatype": "int16", "in": { "num": 4 }, "out": { "str": "warning" } },
+    { "name": "bands: fault", "map": "bands", "datatype": "int16", "in": { "num": 250 }, "out": { "str": "fault" } },
+    { "name": "bands: negative hits default", "map": "bands", "datatype": "int16", "in": { "num": -3 }, "out": { "str": "unknown" } },
+    { "name": "first match wins on overlap", "map": "overlap", "datatype": "uint16", "in": { "num": 5 }, "out": { "str": "special" } },
+    { "name": "later case after overlap", "map": "overlap", "datatype": "uint16", "in": { "num": 6 }, "out": { "str": "normal" } },
+    { "name": "float in a gap between inclusive ranges", "map": "gap", "datatype": "float32", "in": { "num": 9.5 }, "out": { "str": "?" } },
+    { "name": "range open at the bottom", "map": "open_low", "datatype": "float64", "in": { "num": -1e300 }, "out": { "str": "below" } },
+    { "name": "NaN matches no case", "map": "gap", "datatype": "float32", "in": { "nan": true }, "out": { "str": "?" } },
+    { "name": "unmatched without catch-all", "map": "no_catch_all", "datatype": "uint16", "in": { "num": 3 }, "error": "no mapping for value 3" },
+    { "name": "unmatched fraction", "map": "no_catch_all", "datatype": "float64", "in": { "num": 2.5 }, "error": "no mapping for value 2.5" },
+    { "name": "unmatched NaN", "map": "no_catch_all", "datatype": "float64", "in": { "nan": true }, "error": "no mapping for value NaN" },
+    { "name": "string to number by case", "map": "mode_text", "datatype": "string", "in": { "str": "MANUAL" }, "out": { "num": 2 } },
+    { "name": "string match is case-sensitive", "map": "mode_text", "datatype": "string", "in": { "str": "manual" }, "error": "no mapping for value \"manual\"" },
+    { "name": "bool to label", "map": "flag_label", "datatype": "bool", "in": { "bool": false }, "out": { "str": "off" } },
+    { "name": "number codes to number codes", "map": "codes", "datatype": "uint8", "in": { "num": 3 }, "out": { "num": 300 } },
+    { "name": "as number: whitespace trimmed", "map": "to_number", "datatype": "string", "in": { "str": " 21.5 " }, "out": { "num": 21.5 } },
+    { "name": "as number: exponent", "map": "to_number", "datatype": "string", "in": { "str": "-1.5E2" }, "out": { "num": -150 } },
+    { "name": "as number: leading dot", "map": "to_number", "datatype": "string", "in": { "str": ".5" }, "out": { "num": 0.5 } },
+    { "name": "as number: unparsable", "map": "to_number", "datatype": "string", "in": { "str": "abc" }, "error": "cannot convert \"abc\" to a number" },
+    { "name": "as number: empty", "map": "to_number", "datatype": "string", "in": { "str": "" }, "error": "cannot convert \"\" to a number" },
+    { "name": "as number: hex is not a number", "map": "to_number", "datatype": "string", "in": { "str": "0x1A" }, "error": "cannot convert \"0x1A\" to a number" },
+    { "name": "as number: inf is not a number", "map": "to_number", "datatype": "string", "in": { "str": "inf" }, "error": "cannot convert \"inf\" to a number" },
+    { "name": "as number: overflow", "map": "to_number", "datatype": "string", "in": { "str": "1e999" }, "error": "cannot convert \"1e999\" to a number" },
+    { "name": "as number: from bool", "map": "to_number", "datatype": "bool", "in": { "bool": true }, "out": { "num": 1 } },
+    { "name": "as number: a number stays", "map": "to_number", "datatype": "float32", "in": { "num": 2.25 }, "out": { "num": 2.25 } },
+    { "name": "cases override as", "map": "to_number_na", "datatype": "string", "in": { "str": "N/A" }, "out": { "num": -1 } },
+    { "name": "as string: 0.1", "map": "to_string", "datatype": "float64", "in": { "num": 0.1 }, "out": { "str": "0.1" } },
+    { "name": "as string: whole number", "map": "to_string", "datatype": "uint16", "in": { "num": 12 }, "out": { "str": "12" } },
+    { "name": "as string: negative zero", "map": "to_string", "datatype": "float64", "in": { "num": -0.0 }, "out": { "str": "0" } },
+    { "name": "as string: large, no exponent", "map": "to_string", "datatype": "float64", "in": { "num": 1e21 }, "out": { "str": "1000000000000000000000" } },
+    { "name": "as string: small, no exponent", "map": "to_string", "datatype": "float64", "in": { "num": 1.5e-7 }, "out": { "str": "0.00000015" } },
+    { "name": "as string: float32 widened", "map": "to_string", "datatype": "float64", "in": { "num": 0.30000001192092896 }, "out": { "str": "0.30000001192092896" } },
+    { "name": "as string: NaN fails", "map": "to_string", "datatype": "float64", "in": { "nan": true }, "error": "cannot convert NaN to a string" },
+    { "name": "as string: bool", "map": "to_string", "datatype": "bool", "in": { "bool": true }, "out": { "str": "true" } },
+    { "name": "as string: 64-bit text stays", "map": "to_string", "datatype": "uint64", "in": { "str": "18446744073709551615" }, "out": { "str": "18446744073709551615" } },
+    { "name": "as bool: number", "map": "to_bool", "datatype": "uint16", "in": { "num": 2 }, "out": { "bool": true } },
+    { "name": "as bool: zero", "map": "to_bool", "datatype": "uint16", "in": { "num": 0 }, "out": { "bool": false } },
+    { "name": "as bool: text, any case", "map": "to_bool", "datatype": "string", "in": { "str": " ON " }, "out": { "bool": true } },
+    { "name": "as bool: text no", "map": "to_bool", "datatype": "string", "in": { "str": "No" }, "out": { "bool": false } },
+    { "name": "as bool: other text fails", "map": "to_bool", "datatype": "string", "in": { "str": "maybe" }, "error": "cannot convert \"maybe\" to a bool" },
+    { "name": "64-bit integer as text matches exactly", "map": "big", "datatype": "uint64", "in": { "str": "9007199254740993" }, "out": { "str": "x" } },
+    { "name": "64-bit neighbour does not match", "map": "big", "datatype": "uint64", "in": { "str": "9007199254740992" }, "out": { "str": "y" } },
+    { "name": "64-bit text in a range", "map": "big_range", "datatype": "int64", "in": { "str": "9007199254740993" }, "out": { "str": "huge" } },
+    { "name": "transform first, then map", "map": "comfort", "datatype": "uint16", "transform": { "multiplier": 0.1 }, "in": { "num": 215 }, "out": { "str": "comfort" } }
+  ],
+  "write": [
+    { "name": "label to code", "map": "state", "datatype": "uint16", "value": "stopped", "device": 0 },
+    { "name": "list writes its first entry", "map": "state", "datatype": "uint16", "value": "running", "device": 1 },
+    { "name": "range with write", "map": "state", "datatype": "uint16", "value": "fault", "device": 20 },
+    { "name": "range without write is read-only", "map": "state", "datatype": "uint16", "value": "warning", "error": "cannot write \"warning\"; accepted values: \"stopped\", \"running\", \"fault\"" },
+    { "name": "default is not writable", "map": "state", "datatype": "uint16", "value": "unknown", "error": "cannot write \"unknown\"; accepted values: \"stopped\", \"running\", \"fault\"" },
+    { "name": "wrong type", "map": "state", "datatype": "uint16", "value": 1, "error": "cannot write 1: the point's mapped values are strings" },
+    { "name": "a later eq case writes a read-only range's label", "map": "duplicate_label", "datatype": "uint16", "value": "warning", "device": 15 },
+    { "name": "no writable values", "map": "gap", "datatype": "float32", "value": "low", "error": "cannot write \"low\": the point's map has no writable values" },
+    { "name": "number output back to text", "map": "mode_text", "datatype": "string", "value": 2, "device": "MANUAL" },
+    { "name": "number outputs compare numerically", "map": "mode_text", "datatype": "string", "value": 2.0, "device": "MANUAL" },
+    { "name": "bool label back to bool", "map": "flag_label", "datatype": "bool", "value": "on", "device": true },
+    { "name": "number codes", "map": "codes", "datatype": "uint8", "value": 200, "device": 1 },
+    { "name": "as number reverses to text", "map": "to_number", "datatype": "string", "value": 21.5, "device": "21.5" },
+    { "name": "as number reverses a whole number", "map": "to_number", "datatype": "string", "value": 7, "device": "7" },
+    { "name": "as number: case wins over the conversion", "map": "to_number_na", "datatype": "string", "value": -1, "device": "N/A" },
+    { "name": "as string reverses to a number", "map": "to_string", "datatype": "float64", "value": "2.5", "device": 2.5 },
+    { "name": "as string reverses to an integer", "map": "to_string", "datatype": "uint16", "value": "12", "device": 12 },
+    { "name": "as string: unparsable write", "map": "to_string", "datatype": "uint16", "value": "twelve", "error": "cannot write \"twelve\": cannot convert \"twelve\" to a number" },
+    { "name": "as bool reverses to a number", "map": "to_bool", "datatype": "uint16", "value": true, "device": 1 },
+    { "name": "as bool reverses to text", "map": "to_bool", "datatype": "string", "value": false, "device": "false" },
+    { "name": "map then inverse transform", "map": "comfort", "datatype": "uint16", "transform": { "multiplier": 0.1 }, "value": "comfort", "device": 215 },
+    { "name": "map then inverse transform, whole", "map": "comfort", "datatype": "uint16", "transform": { "multiplier": 0.1 }, "value": "eco", "device": 180 },
+    { "name": "raw write bypasses the map", "map": "state", "datatype": "uint16", "raw": "0007", "device_raw": "0007" }
+  ],
+  "invalid": [
+    { "name": "mixed output types", "map": { "cases": [{ "eq": 0, "to": "off" }, { "eq": 1, "to": 1 }] }, "datatype": "uint16", "error": "map.cases[1].to must be a string like the map's other outputs" },
+    { "name": "default of another type", "map": { "cases": [{ "eq": 0, "to": "off" }], "default": 0 }, "datatype": "uint16", "error": "map.default must be a string like the map's other outputs" },
+    { "name": "as and a case of another type", "map": { "as": "number", "cases": [{ "eq": "N/A", "to": "none" }] }, "datatype": "string", "error": "map.cases[0].to must be a number like the map's other outputs" },
+    { "name": "default with as", "map": { "default": 0, "as": "number" }, "datatype": "string", "error": "map.default and map.as cannot be combined" },
+    { "name": "unknown as", "map": { "as": "text" }, "datatype": "uint16", "error": "map.as must be one of \"number\", \"string\", \"bool\"" },
+    { "name": "empty cases and nothing else", "map": { "cases": [] }, "datatype": "uint16", "error": "map needs cases, a default or as" },
+    { "name": "case without to", "map": { "cases": [{ "eq": 0 }] }, "datatype": "uint16", "error": "map.cases[0] needs a to" },
+    { "name": "to of no scalar type", "map": { "cases": [{ "eq": 0, "to": [1] }] }, "datatype": "uint16", "error": "map.cases[0].to must be a number, a string or a bool" },
+    { "name": "eq and range", "map": { "cases": [{ "eq": 1, "min": 0, "to": "x" }] }, "datatype": "uint16", "error": "map.cases[0] cannot have both eq and min/max" },
+    { "name": "neither eq nor range", "map": { "cases": [{ "to": "x" }] }, "datatype": "uint16", "error": "map.cases[0] needs eq, or min and/or max" },
+    { "name": "empty eq list", "map": { "cases": [{ "eq": [], "to": "x" }] }, "datatype": "uint16", "error": "map.cases[0].eq must not be an empty list" },
+    { "name": "eq of no scalar type", "map": { "cases": [{ "eq": [1, [2]], "to": "x" }] }, "datatype": "uint16", "error": "map.cases[0].eq must be a number, a string, a bool or a list of them" },
+    { "name": "min above max", "map": { "cases": [{ "min": 2, "max": 1, "to": "x" }] }, "datatype": "uint16", "error": "map.cases[0].min must not be greater than .max" },
+    { "name": "min not a number", "map": { "cases": [{ "min": "1", "to": "x" }] }, "datatype": "uint16", "error": "map.cases[0].min must be a number" },
+    { "name": "write outside the range", "map": { "cases": [{ "min": 10, "max": 19, "to": "w", "write": 25 }] }, "datatype": "uint16", "error": "map.cases[0].write must lie within the case's range" },
+    { "name": "write on an eq case", "map": { "cases": [{ "eq": 1, "to": "x", "write": 1 }] }, "datatype": "uint16", "error": "map.cases[0].write is only for a range (the eq value is what is written)" },
+    { "name": "write not a number", "map": { "cases": [{ "min": 1, "to": "x", "write": "1" }] }, "datatype": "uint16", "error": "map.cases[0].write must be a number" },
+    { "name": "default of no scalar type", "map": { "default": [1] }, "datatype": "uint16", "error": "map.default must be a number, a string or a bool" },
+    { "name": "cases not a list", "map": { "cases": { "eq": 1, "to": "x" } }, "datatype": "uint16", "error": "map.cases must be an array of tables" },
+    { "name": "case not a table", "map": { "cases": [1] }, "datatype": "uint16", "error": "map.cases[0] must be a table" },
+    { "name": "range on a string point", "map": { "cases": [{ "min": 0, "to": "x" }] }, "datatype": "string", "error": "map.cases[0] is a range, which needs a numeric datatype (got string)" },
+    { "name": "range on a bool point", "map": { "cases": [{ "max": 0, "to": "x" }] }, "datatype": "bool", "error": "map.cases[0] is a range, which needs a numeric datatype (got bool)" },
+    { "name": "eq string on a number point", "map": { "cases": [{ "eq": "a", "to": 1 }] }, "datatype": "uint16", "error": "map.cases[0].eq \"a\" can never match a uint16 value" },
+    { "name": "eq number on a string point", "map": { "cases": [{ "eq": 1, "to": true }] }, "datatype": "string", "error": "map.cases[0].eq 1 can never match a string value" },
+    { "name": "eq number on a bool point", "map": { "cases": [{ "eq": [true, 0], "to": "x" }] }, "datatype": "bool", "error": "map.cases[0].eq 0 can never match a bool value" },
+    { "name": "bytes point", "map": { "as": "string" }, "datatype": "bytes", "error": "map is not allowed on a bytes point" },
+    { "name": "raw point", "map": { "as": "string" }, "datatype": "uint16", "mode": "raw", "error": "map is not allowed on a raw-mode point" }
+  ]
+}

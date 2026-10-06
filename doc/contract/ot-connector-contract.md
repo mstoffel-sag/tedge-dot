@@ -128,6 +128,7 @@ report        = { on_change = true }  # optional: default reporting policy for t
   name     = "<short label>"    # optional human-readable label (§3.1); the id stays an identifier
   description = "<what this signal is>"  # optional longer explanation (§3.1)
   transform = { multiplier = 1, divisor = 1, decimal_shift = 0, offset = 0 } # optional linear scale
+  # map = { cases = [{ eq = 0, to = "stopped" }, { eq = 1, to = "running" }], default = "unknown" } # optional (§4.3)
   report   = { deadband = 0.5, min_interval = "10s" }  # optional reporting policy (§5.3)
   enabled  = true               # optional; false keeps the definition but leaves the point out (§3.3)
 ```
@@ -178,6 +179,7 @@ report        = { on_change = true }  # optional: default reporting policy for t
 | `name` | string | no | Short human-readable label, for wherever a name is displayed instead of the `id` — which is a topic segment and a parameter-set key, so it stays a plain identifier. Feeds a parameter's DTM title (§5.2) and the capability descriptor's `point_labels` (§7). |
 | `description` | string | no | Longer human-readable explanation of the signal. Feeds a parameter's DTM description and `point_labels` (§7). |
 | `transform` | object | no | Per-point linear scale `(value*multiplier*10^decimal_shift/divisor)+offset`; see §4.2. |
+| `map` | object | no | The point's **value map**: state codes to labels, numeric ranges to bands with a catch-all, numeric text to numbers. Applied by the SDK runtime after `transform` on reads and reversed on writes; a later definition replaces it whole. See §4.3. |
 | `report` | object | no | The point's **reporting policy** (report by exception): publish only on change or beyond a deadband, rate-limit, debounce, and a heartbeat. Applied by the SDK runtime, not the module; merged key by key over the device's and `[connector]`'s `report`. See §5.3. |
 | `meta` | object | no | Free-form signal metadata echoed verbatim as `meta` in every sample envelope. Never interpreted by the connector; flows and tooling read it for per-signal behaviour, for naming the point's measurement or, with `meta.measurement = false`, keeping it out of the measurements, for declaring the signal's alarms and events (`meta.alarm`, `meta.event`, read by the `ot-alarm` / `ot-event` flows), and for exposing the point as an operator-editable *parameter* (`meta.parameter`, see §5.2). |
 | `subscribe` | boolean | no | Default `true`. `false` keeps the point on the polling schedule even when the connector supports push delivery. |
@@ -256,13 +258,16 @@ that they are objects and that each connector documents and schema-validates the
   at load, naming the point (or device, or `[connector]`) and the field: an enumerated field
   (`mode`, `datatype`, `endianness`, `word_order`, `access`, `default_mode`) spelt exactly as
   listed, a `poll_interval` that is a duration, `unit`/`name`/`description` strings, `address`,
-  `transform` and `meta` tables, `transform` numbers (`decimal_shift` a 32-bit integer), and
-  `subscribe`/`enabled` booleans. A value read leniently instead — an unknown `access` as
+  `transform` and `meta` tables, `transform` numbers (`decimal_shift` a 32-bit integer),
+  `subscribe`/`enabled` booleans, and a `map` table whose shape and output types are valid
+  (§4.3). The checks of a `map` against the point's `mode` and `datatype` apply to the
+  resolved point, since a library may declare the map and the site the datatype. A value read leniently instead — an unknown `access` as
   `"read"`, an unparseable `poll_interval` as the device's — would load and quietly do the
   wrong thing.
 - A key the contract does not define MUST be rejected — at the top level, in `[connector]` and
   `[mqtt]`, in a `[[device]]` (a disabled one included), in a point, inline or in a point
-  library (§3.4), in its `transform`, and in a library's `[library]` — naming the key and the
+  library (§3.4), in its `transform`, its `map` and each of the map's `cases`, and in a
+  library's `[library]` — naming the key and the
   table it is in, and the known key it most resembles when one is close. A misspelt setting
   (`polling_interval` for `poll_interval`) would otherwise be accepted and do nothing. The
   protocol-specific objects (`connection`, `protocol_address`, `address`) are delegated to the
@@ -329,6 +334,8 @@ one collected so far rather than adding a second point:
 
 - `meta` and `transform` are merged key by key (recursively for `meta`), so one field can be
   adjusted without restating the rest;
+- `map` (§4.3) is **replaced** whole: its cases are an ordered list, so merging two would mean
+  nothing. `map = {}` removes an inherited map;
 - every other field, `address` included, is **replaced** when the overriding definition
   declares it (a partly-inherited protocol address is not a meaningful thing). `name` and
   `description` (§3.1) are ordinary scalars under this rule, which is what lets a site relabel
@@ -426,7 +433,8 @@ Decoding semantics:
   the **declared per-point linear transform** (`point.transform`, §4.2): because scaling is an
   intrinsic property of a signal rather than flow logic, it is a contract-level point field whose
   math is owned by the SDK. The driver only invokes the SDK helper; it MUST NOT invent any other
-  scaling, offset, or rounding.
+  scaling, offset, or rounding. The declared value map (`point.map`, §4.3) is the non-linear
+  counterpart; the **SDK runtime** applies it, never the driver.
 - Bit-field extraction (start bit / bit count within a word) MAY be supported by a connector
   as a `typed` refinement and, if so, MUST be declared in that connector's spec. It is the
   one decoding refinement allowed beyond whole-primitive decode, because doing it in JS is
@@ -487,7 +495,90 @@ raw = (value - offset) * divisor / (multiplier * 10^decimal_shift)
   whose raw result is not finite cannot be written: the write is `failed` with a reason and
   nothing is sent to the device.
 - The SDK applies the inverse once, on every write path (`write`, each entry of `write-batch`,
-  and the CLI `write`); connectors never apply the transform on write.
+  and the CLI `write`); connectors never apply the transform on write. A point with a value
+  map (§4.3) has the written value mapped back to the device value first.
+
+### 4.3 Value mapping
+
+A point MAY declare a `map` that converts its value between the device's representation and
+the one its samples carry: an operating state code to a label, ranges of codes to a band with
+a catch-all, a number stored as text to a number (so it can become a measurement). It is the
+non-linear, type-changing counterpart of `transform` and, like it, a contract-level point field
+whose rules the SDK owns: the **SDK runtime** applies it to every connector alike, and a
+connector never sees it.
+
+```toml
+[[device.point]]
+id       = "op_state"
+datatype = "uint16"
+access   = "read_write"
+map.cases = [
+  { eq = 0,             to = "stopped" },
+  { eq = [1, 5],        to = "running" },              # several codes, one label
+  { min = 10, max = 19, to = "warning" },              # inclusive range: read-only
+  { min = 20,           to = "fault", write = 20 },    # open range with a write value
+]
+map.default = "unknown"                                 # catch-all
+
+[[device.point]]
+id       = "level_text"
+datatype = "string"
+map      = { as = "number" }                            # "21.5" <-> 21.5
+```
+
+| Key | Type | Meaning |
+| --- | --- | --- |
+| `cases` | array of tables | Evaluated in order; the **first** matching case gives the output. |
+| `cases[].eq` | number, string, bool, or a non-empty list of them | Match a value equal to this one (or to any entry of the list). |
+| `cases[].min` / `cases[].max` | number | A numeric range, both bounds **inclusive**, either one omitted for an open range. A case has `eq` or a range, not both. |
+| `cases[].to` | number, string or bool | The output. |
+| `cases[].write` | number | Range cases only: the device value a write of `to` sends. It MUST lie within the range. |
+| `default` | number, string or bool | The output for a value no case matches. |
+| `as` | `"number"`, `"string"` or `"bool"` | Convert a value no case matches to this type. Cannot be combined with `default`. |
+
+**Reads.** The map applies after primitive decode and `transform`, so range bounds are in the
+point's engineering units, and before the reporting policy (§5.3), which therefore compares the
+mapped value. Matching:
+
+- Numbers compare numerically; a 64-bit integer carried as a string (§4.1) compares as that
+  integer, exactly. Strings compare exactly and case-sensitively; a bool matches only a bool.
+  There is no coercion: a numeric `eq` never matches the text `"1"` (use `as`). `NaN` matches
+  no case.
+- A value no case matches takes `default`, else the `as` conversion, else the sample is
+  published `quality = "bad"` with no `value` and
+  `error = "point <id>: no mapping for value <v>"`. That is a mapping failure, not a failed
+  read: it does not affect the link status (§8), reconnects or liveness.
+- `as` conversions: **number** — a string is parsed as a decimal
+  (`[+-]?(digits[.digits?] | .digits)([eE][+-]?digits)?`, surrounding whitespace ignored, finite;
+  no hexadecimal, `inf` or `nan`), a bool is `1`/`0`; **string** — a number becomes the shortest
+  decimal digits that read back as the same number, in positional notation (`0.1`, `12`,
+  `1000000000000000000000`, never an exponent; `-0` is `0`), a bool `"true"`/`"false"`;
+  **bool** — a number is `true` unless it is `0`, a string is `true` for `true`/`1`/`on`/`yes`
+  and `false` for `false`/`0`/`off`/`no` (any case, whitespace trimmed). A value already of the
+  type is unchanged; one that cannot be converted makes the sample bad, as above.
+- A mapped sample carries `source_value` (and `source_value_repr`): the value before the map,
+  after `transform` — the code behind the label (§5). `bad` samples of failed reads carry no
+  value and are untouched.
+
+**Writes.** A write carries the **mapped** value (§6.2), so the SDK maps it back to the device
+value before the inverse transform (§4.2) and the encoding: it takes the first case whose `to`
+equals the written value (compared as above) and writes that case's `eq` (the first entry of a
+list) or its range's `write`. A range without `write` is read-only, so a later case with the
+same `to` may still supply the write. With no such case and an `as`, it writes the reverse
+conversion into the point's own type (`21.5` → `"21.5"` for a `string` point). The write is
+`failed`, and nothing is sent to the device, when the written value's type is not the map's
+output type, when it matches only `default` (never writable) or nothing, or when the reverse
+conversion fails; the reason lists the accepted values. A `raw` write (§6.2) bypasses the map.
+
+**Validation** (at load and on reload, naming the device, the point and the key or case):
+`default` and `as` together; outputs (`to`, `default`, the `as` type) of more than one type —
+every map publishes one `value_repr`; a case without `to`, with both `eq` and a range, with
+neither, with an empty `eq` list or with `min > max`; `write` outside its range or on an `eq`
+case; a range on a `string` or `bool` point; an `eq` of a type the point's value can never be;
+a map on a `raw`-mode or `bytes` point. A map with none of `cases`, `default` and `as` is
+refused, except the empty table, which means no map.
+
+Test vectors both SDKs run are in [test-vectors/map/](test-vectors/map/).
 
 ## 5. The sample envelope
 
@@ -529,7 +620,7 @@ native address so flows can route or debug). The example below uses Modbus to ma
 | `mode` | `"raw"` \| `"typed"` | yes | Echoes the point mode. |
 | `datatype` | string | when `typed` | The primitive type decoded. |
 | `value` | number \| boolean \| string | when `quality = good` | Decoded value (`typed`) — absent for `raw`. |
-| `value_repr` | `"number"` \| `"boolean"` \| `"string"` | when `value` present | Tells flows how to interpret `value`. |
+| `value_repr` | `"number"` \| `"boolean"` \| `"string"` | when `value` present | Tells flows how to interpret `value`. For a mapped point (§4.3) it is the map's output type, while `datatype` still names the device primitive. |
 | `raw` | string (hex, space-grouped per word) | yes | The bytes read; always present in both modes. |
 | `quality` | `"good"` \| `"bad"` \| `"stale"` | yes | See §5.1. |
 | `unit` | string | no | Echo of the point's `unit` hint. |
@@ -537,6 +628,8 @@ native address so flows can route or debug). The example below uses Modbus to ma
 | `addr` | object | yes | Protocol-specific address echo (for flow routing/debug). |
 | `seq` | integer | no | Monotonic per-point counter of **published** samples; helps detect drops. Readings withheld by the reporting policy (§5.3) do not consume a number, so a gap always means a published sample was lost. |
 | `error` | string | when `quality = bad` | Human-readable failure reason. |
+| `source_value` | number \| boolean \| string | no | Mapped points only (§4.3): the value before the point's `map`, after `transform` — the code behind a label. Present whenever the read produced a value, including when the map has no output for it. |
+| `source_value_repr` | `"number"` \| `"boolean"` \| `"string"` | with `source_value` | Tells flows how to interpret `source_value`. |
 | `meta` | object | no | The point's `meta` table echoed verbatim by the runtime (§3.1); carries per-signal hints for flows. |
 
 ### 5.1 Quality semantics
@@ -615,6 +708,13 @@ retained message rather than published as `{}`. A fragment the flow no longer ho
 published before the mapper restarted, for a set with no configured point left — is the one
 case it cannot see, and is cleared by hand (see RFC 0005).
 
+A mapped point (§4.3) is a parameter like any other: its fragment holds the mapped value (the
+label), an operator's edit is written as that label and the SDK maps it back, and
+`tedge-dot describe` renders the property with the map's output type and, when its writable
+values form a closed set (no `as`), lists them as the property's `enum`, so the cloud offers a
+choice. The datatype's range does not apply to a mapped property; `meta.parameter.enum`,
+`min` and `max` still win.
+
 See [RFC 0003](../rfc/0003-parameter-writes.md) and
 [RFC 0005](../rfc/0005-device-types-and-parameter-sets.md).
 
@@ -672,7 +772,9 @@ point.
    percent deadband and a last value of 0, any change). `NaN` equals only `NaN`. Everything
    else — booleans, strings, 64-bit integers carried as strings (§4.1), raw points — compares by
    exact equality of `value_repr` and `value` (or `raw` when there is no value); the deadband
-   does not apply to them.
+   does not apply to them. A mapped point (§4.3) is compared by its **mapped** value, so two
+   codes with one label are no change, and a deadband applies only when the map's output is a
+   number.
 3. **Deadband drift.** Differences are measured from the last *published* value, so a slow
    drift is reported once it adds up to the deadband.
 4. **Heartbeat.** A heartbeat never re-publishes an old reading. A polled point's next poll is
@@ -732,9 +834,10 @@ Request (`status: "init"`):
 ```
 
 - For a `typed`-writable point, `value` is the logical value in **engineering units** — the same
-  units as the sample's `value`, i.e. after the point's `transform`. The SDK maps it back to the
-  raw value (§4.2) and the connector encodes that per the point's
-  `datatype`/`endianness`/`word_order`.
+  units as the sample's `value`, i.e. after the point's `transform` and `map`. The SDK maps it
+  back through the value map (§4.3) and then to the raw value (§4.2), and the connector encodes
+  that per the point's `datatype`/`endianness`/`word_order`. A mapped point is written with its
+  mapped value (`"running"`, not `1`); a value with no inverse fails the write.
 - For a `raw`-writable point, the request MUST instead provide `raw` (hex) and the connector
   writes those bytes verbatim.
 - The connector MUST reject (`failed`) a write to a point whose `access` does not permit it.

@@ -44,6 +44,7 @@ add_library(tedge_dot_sdk STATIC
   sdk/src/descriptor.c
   sdk/src/envelope.c
   sdk/src/report.c
+  sdk/src/map.c
   sdk/src/runtime.c
   sdk/src/factory.c
 )
@@ -312,6 +313,13 @@ target_link_libraries(tedge-dot-report PRIVATE tedge_dot_sdk)
 add_test(NAME report-vectors
          COMMAND tedge-dot-report
                  ${CMAKE_CURRENT_SOURCE_DIR}/../../doc/contract/test-vectors/report/vectors.json)
+
+# Value mapping (contract §4.3): the shared vectors the Rust SDK's map.rs runs too.
+add_executable(tedge-dot-map tests/map.c)
+target_link_libraries(tedge-dot-map PRIVATE tedge_dot_sdk)
+add_test(NAME map-vectors
+         COMMAND tedge-dot-map
+                 ${CMAKE_CURRENT_SOURCE_DIR}/../../doc/contract/test-vectors/map/vectors.json)
 
 # Device parameters / `describe`: the same assertions as the Rust SDK's
 # descriptor tests (impl/rust/crates/sdk/src/descriptor.rs), over the same fixture config.
