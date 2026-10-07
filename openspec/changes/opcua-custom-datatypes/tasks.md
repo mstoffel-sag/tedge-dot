@@ -18,7 +18,8 @@
 
 - [x] 3.1 Declare the capability `opcua-structures` known and missing in C (`KNOWN_CAPABILITIES`, `C_MISSING_CAPABILITIES`), and tag the new e2e cases `requires:opcua-structures`.
 - [x] 3.2 Record the gap in the parity table of `impl/c/README.md` (structured values, array elements by index, the additional built-in types, and the C SDK's missing `bytes` datatype), and in TODO.md as a follow-up.
-- [x] 3.3 Keep the shared e2e configuration loadable in C: no `bytes` point in it (ByteString is covered by the Rust connector's own tests), and the structure device in its own connector instance (`connector-structures.toml`, passed by `entrypoint.sh`; the C Dockerfile copies `connector-*.toml`), so it cannot slow the C build's other devices.
+- [x] 3.3 Keep the shared e2e configuration loadable in C (its `bytes` points load there since 3.4), and the structure device in its own connector instance (`connector-structures.toml`, passed by `entrypoint.sh`; the C Dockerfile copies `connector-*.toml`), so it cannot slow the C build's other devices.
+- [x] 3.4 Add `bytes` to the C SDK and read a top-level ByteString as `bytes` in the C module (hex value, bytes as `raw`, "accepted: bytes" for another declared datatype, refused on write, refused over 127 bytes); advertise it in the C capabilities and manifests; cover it in the e2e suite for both builds and in `impl/c/tests/config.c`. SNMP refuses `bytes` as the Rust module does.
 
 ## 4. Simulator, e2e, interop and parity
 

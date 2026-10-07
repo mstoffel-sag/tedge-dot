@@ -575,6 +575,24 @@ Built-in Types Are Rendered As SDK Datatypes
     Struct Point Should Be    device_uid    72962b91-fa75-4ae6-8d28-b404dc7daf63    string
     Struct Point Should Be    ref    nsu=urn:tedge:opcua-sim;s=Pump    string
 
+A ByteString Is Published As Bytes
+    [Documentation]    `bytes`: lowercase hex as the value and the bytes as `raw`. A raw point
+    ...                carries the bytes only, and a point declaring another datatype is refused
+    ...                per sample. Not a structure feature: both builds run it.
+    Struct Point Should Be    blob    deadbeef    bytes
+    ${payload}=    Wait For Sample    ${STRUCT_PREFIX}/blob    timeout=${READY_TIMEOUT}
+    ${raw}=    Get Json Field    ${payload}    raw
+    Should Be Equal    ${raw}    de ad be ef
+    ${payload}=    Wait For Sample    ${STRUCT_PREFIX}/blob_raw    timeout=${READY_TIMEOUT}
+    ${quality}=    Get Json Field    ${payload}    quality
+    Should Be Equal    ${quality}    good    blob_raw: ${payload}
+    ${mode}=    Get Json Field    ${payload}    mode
+    Should Be Equal    ${mode}    raw
+    Should Not Contain    ${payload}    "value"
+    ${raw}=    Get Json Field    ${payload}    raw
+    Should Be Equal    ${raw}    de ad be ef
+    Struct Point Should Fail With    blob_as_string    value is ByteString, point declares string (accepted: bytes)
+
 Pushed Structure Fields And Array Elements Follow The Server
     [Documentation]    Drive.Current and Levels[1] change every second; both arrive by
     ...                subscription with strictly increasing values.

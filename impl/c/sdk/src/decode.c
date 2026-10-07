@@ -82,6 +82,11 @@ int tdot_decode(tdot_datatype_t dt, const uint8_t *bytes, size_t len,
     }
 
     size_t want = tdot_datatype_len(dt);
+    if (dt == TDOT_DT_BYTES) {
+        /* Same wording as the Rust SDK's DecodeError::NoValue. */
+        snprintf(err, errlen, "datatype bytes has no decoded value (raw only)");
+        return -1;
+    }
     if (want == 0) {
         snprintf(err, errlen, "unsupported datatype for decode");
         return -1;
@@ -170,6 +175,10 @@ int tdot_encode(tdot_datatype_t dt, const tdot_value_t *value,
         return 0;
     }
     size_t want = tdot_datatype_len(dt);
+    if (dt == TDOT_DT_BYTES) {
+        snprintf(err, errlen, "datatype bytes has no decoded value (raw only)");
+        return -1;
+    }
     if (want == 0) {
         snprintf(err, errlen, "unsupported datatype for encode");
         return -1;

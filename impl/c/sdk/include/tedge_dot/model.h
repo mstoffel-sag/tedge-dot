@@ -30,6 +30,10 @@ typedef enum {
     TDOT_DT_FLOAT32,
     TDOT_DT_FLOAT64,
     TDOT_DT_STRING,
+    /* Opaque byte run, published as lowercase hex text (contract §4). No
+     * connector decodes it from a register buffer: the protocol module renders
+     * it itself (an OPC UA ByteString), so tdot_decode/tdot_encode refuse it. */
+    TDOT_DT_BYTES,
 } tdot_datatype_t;
 
 /* Fixed byte length of a datatype, or 0 for variable-length/none. */

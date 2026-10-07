@@ -49,8 +49,8 @@
       - **C port.** The C build lists `opcua-structures` as missing (parity table in
         `impl/c/README.md`). It needs a walker held to `doc/contract/test-vectors/opcua-struct/`,
         resolution through open62541 (`UA_Client_readDatatypeDefinitionAttribute`), per-tick shared
-        reads like the SNMP module's, and a `bytes` datatype in the C SDK, which has none:
-        `datatype = "bytes"` is rejected there as a typed point without a datatype.
+        reads like the SNMP module's. (The C SDK has `bytes` now, and a top-level ByteString is
+        already read as `bytes`.)
       - Writes of a structure field or array element (read-modify-write of the body, or a write
         with `IndexRange` for an element).
       - Whole arrays, arrays whose length is known only at runtime (one sample per element: the

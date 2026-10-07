@@ -135,8 +135,7 @@ default_mode     = "typed"
   datatype  = "float64"
   address   = { node_id = "ns=2;s=Temperatures", index = 9 }
 
-  # Built-in types rendered into SDK datatypes. (ByteString -> `bytes` is covered by the Rust
-  # connector's own tests: this config is shared with the C build, which has no `bytes`.)
+  # Built-in types rendered into SDK datatypes.
   [[device.point]]
   id        = "serviced"
   subscribe = false
@@ -178,6 +177,26 @@ default_mode     = "typed"
   subscribe = false
   datatype  = "string"
   address   = { node_id = "ns=2;s=Ref" }
+
+  # A ByteString: `bytes` (hex) when typed, the bytes themselves as `raw`. Both builds have it,
+  # unlike the types above, so its test is not tagged requires:opcua-structures.
+  [[device.point]]
+  id        = "blob"
+  subscribe = false
+  datatype  = "bytes"
+  address   = { node_id = "ns=2;s=Blob" }
+
+  [[device.point]]
+  id        = "blob_raw"
+  subscribe = false
+  mode      = "raw"
+  address   = { node_id = "ns=2;s=Blob" }
+
+  [[device.point]]
+  id        = "blob_as_string"
+  subscribe = false
+  datatype  = "string"
+  address   = { node_id = "ns=2;s=Blob" }
 
   # Pushed: a field of a structure and an array element that change every second.
   [[device.point]]

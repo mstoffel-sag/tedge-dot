@@ -692,6 +692,13 @@ static int configure_point(tdot_device_t *dev, tdot_point_t *pt, char *err,
     cJSON *addr = NULL;
     if (has_oid < 0 || has_type < 0)
         goto out;
+    /* As the Rust module: an OCTET STRING is already `string` or a raw run. */
+    if (pt->datatype == TDOT_DT_BYTES) {
+        snprintf(err, errlen,
+                 "point %s/%s: datatype \"bytes\" is not supported; use mode = \"raw\"",
+                 dev->name, pt->id);
+        goto out;
+    }
     if (ntraps == 0 && !has_oid) {
         snprintf(err, errlen, "point %s/%s: address requires oid or trap",
                  dev->name, pt->id);

@@ -275,14 +275,17 @@ deferred.
 
 ### D10: Rust only; the C build records the gap
 The C implementation is not part of this change. It would need its own walker, resolution through
-open62541, per-tick shared reads (as its SNMP module does), and a `bytes` datatype in the C SDK,
-which does not have one: `datatype = "bytes"` is rejected there as a typed point without a
-datatype. Instead:
+open62541, and per-tick shared reads (as its SNMP module does). Instead:
 
 - the C build declares the capability `opcua-structures` missing (`C_MISSING_CAPABILITIES` in
   the justfile, the parity table in `impl/c/README.md`), so its e2e runs skip those cases;
-- the shared e2e configuration avoids `bytes`, so it still loads in C, where `field` and `index`
-  are ignored and those points give bad samples;
+- the shared e2e configuration still loads in C, where `field` and `index` are ignored and those
+  points give bad samples;
+- *added in implementation*: the C SDK gains the `bytes` datatype after all, and the C module reads
+  a top-level ByteString as `bytes`, so the one built-in type outside the structure walker is at
+  parity. Before, `datatype = "bytes"` parsed to "no datatype", and a Rust configuration failed to
+  load in C with "typed point requires a datatype". A `bytes` value is limited to 127 bytes there
+  (the hex fills the fixed 256-byte value buffer); a longer one is a bad sample, never truncated;
 - the structure device of the e2e harness is a connector instance of its own
   (`connectors/opcua/connector-structures.toml`). The C runtime runs one loop per configuration
   file, and in a single file the extra device's reads, all timing out while the suite freezes

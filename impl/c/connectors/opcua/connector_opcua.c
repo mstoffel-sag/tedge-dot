@@ -164,7 +164,7 @@ static const char CAPABILITIES[] =
     "\"modes\":[\"raw\",\"typed\"],"
     "\"datatypes\":[\"bool\",\"int8\",\"uint8\",\"int16\",\"uint16\","
     "\"int32\",\"uint32\",\"int64\",\"uint64\",\"float32\",\"float64\","
-    "\"string\"],"
+    "\"string\",\"bytes\"],"
     "\"point_kinds\":[\"variable\"],"
     "\"command_verbs\":[\"write\",\"write-batch\"],"
     "\"features\":[\"polling\",\"subscribe\"],\"subscribe\":true}";
@@ -1399,6 +1399,44 @@ static int variant_to_sample(const UA_Variant *v, tdot_point_t *pt,
         out->raw_group = 1;
         out->value = raw_val;
         return 0;
+    } else if (UA_Variant_hasScalarType(v, &UA_TYPES[UA_TYPES_BYTESTRING])) {
+        /* `bytes` only, as in the Rust module (structure.rs `accepted`): the
+         * value is the lowercase hex of the bytes, `raw` the bytes themselves.
+         * A null ByteString is an empty run. */
+        const UA_ByteString *bs = (const UA_ByteString *)v->data;
+        size_t n = bs->data ? bs->length : 0;
+        if (pt->mode == TDOT_MODE_TYPED && pt->datatype != TDOT_DT_BYTES) {
+            tdot_sample_bad(out,
+                            "value is ByteString, point declares %s "
+                            "(accepted: bytes)",
+                            tdot_datatype_str(pt->datatype));
+            return 0;
+        }
+        if (pt->mode == TDOT_MODE_TYPED && 2 * n >= sizeof raw_val.str) {
+            /* Refused rather than cut: a truncated hex run reads as a
+             * different, valid value. */
+            tdot_sample_bad(out,
+                            "ByteString of %zu bytes is longer than a bytes "
+                            "value holds in the C build (%zu bytes)",
+                            n, (sizeof raw_val.str - 1) / 2);
+            return 0;
+        }
+        static const char HEX[] = "0123456789abcdef";
+        raw_val.kind = TDOT_VAL_STR;
+        if (pt->mode == TDOT_MODE_TYPED) {
+            for (size_t i = 0; i < n; i++) {
+                raw_val.str[2 * i] = HEX[bs->data[i] >> 4];
+                raw_val.str[2 * i + 1] = HEX[bs->data[i] & 0x0f];
+            }
+        }
+        raw_val.str[pt->mode == TDOT_MODE_TYPED ? 2 * n : 0] = '\0';
+        size_t rn = n < TDOT_RAW_MAX ? n : TDOT_RAW_MAX;
+        if (rn)
+            memcpy(out->raw, bs->data, rn);
+        out->raw_len = rn;
+        out->raw_group = 1;
+        out->value = raw_val;
+        return 0;
     } else {
         tdot_sample_bad(out, "unsupported OPC-UA value type");
         return 0;
@@ -1544,6 +1582,9 @@ static int write_point(tdot_connector_t *self, tdot_device_t *dev,
         vs = UA_STRING((char *)value->str);
         UA_Variant_setScalar(&v, &vs, &UA_TYPES[UA_TYPES_STRING]);
         break;
+    case TDOT_DT_BYTES: /* read-only in both builds */
+        snprintf(err, errlen, "datatype bytes is not writable over OPC-UA");
+        return -1;
     default:
         snprintf(err, errlen, "write requires a datatype on the point");
         return -1;
