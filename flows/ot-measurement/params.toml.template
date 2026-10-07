@@ -53,7 +53,8 @@ combine_interval = "10s"
 # only its twin fragment (ot-parameter-state) instead of also being stored as a time series:
 #   meta = { measurement = false }
 # The engineering unit is a per-signal property declared on the connector point (point.unit) and
-# echoed in the sample, so it is applied automatically (series value becomes { value, unit }).
+# echoed in the sample. The series value stays a bare number; the unit is published as retained
+# measurement metadata on <measurement topic>/meta, which thin-edge.io 2.x adds to the measurement.
 target_topic = ""
 group = ""
 series = ""

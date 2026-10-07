@@ -1,0 +1,10 @@
+# ot-measurement/units-state: which measurement units are published, for ot-measurement (see
+# units-state.js).
+#
+# A second flow in the ot-measurement directory because ot-measurement cannot subscribe to the
+# metadata topics it publishes: the mapper drops a flow's output to its own input topics to
+# prevent loops.
+input.mqtt.topics = ["te/+/+/+/+/m/+/meta"]
+
+[[steps]]
+script = "units-state.js"

@@ -42,6 +42,24 @@ check_absent() {
   fi
 }
 
+# check_count <name> <flows-dir> <stdin> <substring> <count>
+# Asserts that the output contains the substring exactly <count> times (e.g. "published once").
+check_count() {
+  local name="$1" dir="$2" input="$3" needle="$4" want="$5"
+  local out got
+  out="$(printf '%s\n' "$input" | tedge flows test --flows-dir "$dir" 2>/dev/null)"
+  got="$(printf '%s\n' "$out" | grep -cF -- "$needle")"
+  if [[ "$got" == "$want" ]]; then
+    echo "ok   - $name"
+    pass=$((pass + 1))
+  else
+    echo "FAIL - $name (expected $want x, got $got)"
+    echo "       substring: $needle"
+    echo "       got:       $out"
+    fail=$((fail + 1))
+  fi
+}
+
 # check_empty <name> <flows-dir> <stdin>
 check_empty() {
   local name="$1" dir="$2" input="$3"
@@ -138,6 +156,75 @@ check "measurement: bool coil -> 1" ot-measurement \
   '{"modbus":{"coil_rw":1}'
 check_empty "measurement: bad quality dropped" ot-measurement \
   "[te/device/plc1/ot/modbus/sample/level_f32] $SBAD"
+
+# --- ot-measurement units (sample.unit -> retained measurement metadata on <topic>/meta) ---
+# A sample of point p with unit $2, value $3 and optional extra fields $4 (e.g. a meta table).
+unit_sample() {
+  printf '{"ts":"2026-05-30T10:00:0%s.000Z","device":"plc1","protocol":"modbus","point":"%s","mode":"typed","datatype":"float32","value":%s,"value_repr":"number","raw":"00","quality":"good","addr":{}%s%s}' \
+    "${5:-0}" "$1" "$3" "${2:+,\"unit\":\"$2\"}" "${4:+,$4}"
+}
+UL1="$(unit_sample level_f32 m 1.5)"
+ULSAME="$(unit_sample level_f32 m 1.6 '' 1)"
+ULCM="$(unit_sample level_f32 cm 160 '' 2)"
+ULNONE="$(unit_sample level_f32 '' 1.7 '' 3)"
+UA="$(unit_sample a V 230 '"meta":{"measurement":{"group":"power","series":"a"}}')"
+UB="$(unit_sample b A 4.2 '"meta":{"measurement":{"group":"power","series":"b"}}' 1)"
+UOPT="$(unit_sample hidden % 50 '"meta":{"measurement":false}')"
+
+check "units: first sample publishes the metadata" ot-measurement \
+  "[te/device/plc1/ot/modbus/sample/level_f32] $UL1" \
+  '[te/device/plc1///m/modbus/meta] {"modbus.level_f32":{"unit":"m"}}'
+check "units: measurement body stays a bare number" ot-measurement \
+  "[te/device/plc1/ot/modbus/sample/level_f32] $UL1" \
+  '[te/device/plc1///m/modbus] {"modbus":{"level_f32":1.5},"time":"2026-05-30T10:00:00.000Z"}'
+check_count "units: an unchanged unit is published once" ot-measurement \
+  "$(printf '[te/device/plc1/ot/modbus/sample/level_f32] %s\n[te/device/plc1/ot/modbus/sample/level_f32] %s' "$UL1" "$ULSAME")" \
+  '[te/device/plc1///m/modbus/meta]' 1
+check "units: a changed unit is published again" ot-measurement \
+  "$(printf '[te/device/plc1/ot/modbus/sample/level_f32] %s\n[te/device/plc1/ot/modbus/sample/level_f32] %s' "$UL1" "$ULCM")" \
+  '[te/device/plc1///m/modbus/meta] {"modbus.level_f32":{"unit":"cm"}}'
+# The clearing message is an empty retained payload: a line holding only the topic. Matched as a
+# whole line, since the first metadata message starts with the same text.
+uout="$(printf '[te/device/plc1/ot/modbus/sample/level_f32] %s\n[te/device/plc1/ot/modbus/sample/level_f32] %s\n' "$UL1" "$ULNONE" | tedge flows test --flows-dir ot-measurement 2>/dev/null)"
+if printf '%s\n' "$uout" | grep -qx '\[te/device/plc1///m/modbus/meta\] '; then
+  echo "ok   - units: a removed unit clears the topic when it was the last one"
+  pass=$((pass + 1))
+else
+  echo "FAIL - units: a removed unit clears the topic when it was the last one"
+  echo "       got: $uout"
+  fail=$((fail + 1))
+fi
+check "units: two series of one group share one message" ot-measurement \
+  "$(printf '[te/device/plc1/ot/modbus/sample/a] %s\n[te/device/plc1/ot/modbus/sample/b] %s' "$UA" "$UB")" \
+  '[te/device/plc1///m/power/meta] {"power.a":{"unit":"V"},"power.b":{"unit":"A"}}'
+check_empty "units: an opted-out point publishes nothing" ot-measurement \
+  "[te/device/plc1/ot/modbus/sample/hidden] $UOPT"
+check_empty "units: bad quality publishes no metadata" ot-measurement \
+  "[te/device/plc1/ot/modbus/sample/level_f32] $(printf '%s' "$SBAD" | sed 's/}$/,"unit":"m"}/')"
+check_empty "units: units-state records metadata and outputs nothing" ot-measurement \
+  '[te/device/plc1///m/power/meta] {"power.a":{"unit":"V"}}'
+check "units: a new series merges into the units already standing (after a restart)" ot-measurement \
+  "$(printf '[te/device/plc1///m/power/meta] {"power.a":{"unit":"V"}}\n[te/device/plc1/ot/modbus/sample/b] %s' "$UB")" \
+  '[te/device/plc1///m/power/meta] {"power.a":{"unit":"V"},"power.b":{"unit":"A"}}'
+check_params "units: on_change suppresses the value but not a unit change" ot-measurement \
+  'on_change = "true"' \
+  "$(printf '[te/device/plc1/ot/modbus/sample/level_f32] %s\n[te/device/plc1/ot/modbus/sample/level_f32] %s' "$UL1" "$(unit_sample level_f32 cm 1.5 '' 1)")" \
+  '[te/device/plc1///m/modbus/meta] {"modbus.level_f32":{"unit":"cm"}}'
+check_params "units: combine mode covers every combined series" ot-measurement \
+  'combine = "true"' \
+  "$(printf '[te/device/plc1/ot/modbus/sample/x] %s\n[te/device/plc1/ot/modbus/sample/y] %s' "$(unit_sample x V 1)" "$(unit_sample y A 2 '' 1)")" \
+  '[te/device/plc1///m/modbus/meta] {"modbus.x":{"unit":"V"},"modbus.y":{"unit":"A"}}'
+utmp="$(flow_with_params ot-measurement 'target_topic = "plant/line1/measurements"')"
+uout="$(printf '%s\n' "[te/device/plc1/ot/modbus/sample/level_f32] $UL1" | tedge flows test --flows-dir "$utmp" 2>/dev/null)"
+rm -rf "$utmp"
+if [[ "$uout" == *'[plant/line1/measurements] {"modbus":{"level_f32":1.5}'* && "$uout" != *'/meta]'* ]]; then
+  echo "ok   - units: no metadata for a non-measurement target_topic"
+  pass=$((pass + 1))
+else
+  echo "FAIL - units: no metadata for a non-measurement target_topic"
+  echo "       got: $uout"
+  fail=$((fail + 1))
+fi
 
 # --- ot-measurement extended config (on_change / point_separator / combine) ---
 # Scaling is applied by the connector (per-point transform), so the sample already carries the

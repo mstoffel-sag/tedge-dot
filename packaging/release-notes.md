@@ -137,6 +137,19 @@ that a raw point on a structure now publishes good samples where it published ba
 package does not support this yet. See `doc/connectors/opcua-connector-spec.md` §3.7 and the
 `demo-sim-structures` point library.
 
+### Measurement units reach Cumulocity
+
+A point's `unit` now arrives in Cumulocity with every measurement (`{"value": 6.6, "unit": "l/m"}`)
+on thin-edge.io 2.x. `ot-measurement` publishes the units as retained measurement metadata on
+`te/<device>/m/<type>/meta`, which the c8y mapper adds to the measurement. The measurement body is
+unchanged, so mappers without that support behave as before.
+
+- The metadata is published only when a unit appears, changes or goes away, one message per
+  measurement type. It survives a mapper restart.
+- If you published unit metadata by hand as a workaround, remove that: the flow now owns these
+  topics.
+- The first measurement after a unit appears can still go without it.
+
 ### Notes
 
 - On a fresh install the service starts with **no devices configured**. Add

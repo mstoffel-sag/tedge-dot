@@ -83,8 +83,8 @@ function deepMerge(target, src) {
 //   { <group>: { <series>: value } }
 // Series values are BARE numbers on purpose: the tedge c8y mapper's measurement converter
 // silently drops any object-shaped series value ({ value } and { value, unit } alike), so
-// embedding sample.unit here would strand the measurement on the device. The unit remains
-// available to consumers in the sample envelope (sample.unit).
+// embedding sample.unit here would strand the measurement on the device. The unit travels as
+// retained measurement metadata instead (see unitMessages).
 function shapeBody(cfg, sample, scaled) {
   const { group, series } = resolveNaming(cfg, sample);
   return { [group]: { [series]: scaled } };
@@ -131,6 +131,37 @@ function measurementDisabled(meta) {
   return meta ? meta.measurement === false : false;
 }
 
+// A thin-edge.io measurement topic: te/<4 entity segments>/m/<type>. Only such a topic has a
+// metadata topic, <topic>/meta, for the units.
+const MEASUREMENT_TOPIC = /^te\/[^/]*\/[^/]*\/[^/]*\/[^/]*\/m\/[^/]+$/;
+
+// Units (contract §5, sample.unit) as retained thin-edge.io measurement metadata: one message per
+// measurement topic, on <measurement topic>/meta, holding every series of that topic that has a
+// unit: { "<group>.<series>": { "unit": "<unit>" }, ... }. thin-edge.io's units flow keeps it, and
+// the c8y mapper adds the unit to each series of the measurements on that topic. Mappers without
+// that support ignore the retained message, and the measurement body stays bare numbers.
+//
+// The message is published only when this series' unit appears, changes or goes away. The map is
+// kept in the mapper-wide store, which units-state.js also fills from the retained messages: after
+// a mapper restart a change merges into the units already standing instead of replacing them with
+// only the series seen since. An emptied map clears the topic with an empty retained message.
+function unitMessages(context, measurementTopic, group, series, unit) {
+  if (!MEASUREMENT_TOPIC.test(measurementTopic)) return [];
+  const metaTopic = `${measurementTopic}/meta`;
+  const storeKey = `ot-measurement-units:${metaTopic}`;
+  const stored = context.mapper.get(storeKey) || {};
+  const key = `${group}.${series}`;
+  const current = stored[key] && typeof stored[key] === "object" ? stored[key].unit : undefined;
+  const wanted = typeof unit === "string" && unit !== "" ? unit : undefined;
+  if (current === wanted) return [];
+  const next = Object.assign({}, stored);
+  if (wanted === undefined) delete next[key];
+  else next[key] = { unit: wanted };
+  context.mapper.set(storeKey, next);
+  const payload = Object.keys(next).length === 0 ? "" : JSON.stringify(next);
+  return [{ topic: metaTopic, payload, mqtt: { retain: true, qos: 1 } }];
+}
+
 export function onMessage(message, context) {
   const sample = JSON.parse(decoder.decode(message.payload));
   const cfg = context.config || {};
@@ -161,6 +192,15 @@ export function onMessage(message, context) {
   }
   const scaled = value;
 
+  // Name the measurement and settle its units before the (deprecated) value filters below: they
+  // suppress values, not units, so a unit edit is published even while the value is unchanged.
+  // Derive the device from the source topic: te/device/<device>/ot/<protocol>/sample/<point>
+  const parts = message.topic.split("/");
+  const device = parts[2] || "main";
+  const { group, series } = resolveNaming(cfg, sample);
+  const targetTopic = cfg.target_topic || `te/device/${device}///m/${group}`;
+  const units = unitMessages(context, targetTopic, group, series, sample.unit);
+
   // Per-signal settings from the sample's meta (echoed from the connector point config),
   // falling back to the flow-wide params.
   const meta = sample.meta || {};
@@ -181,10 +221,10 @@ export function onMessage(message, context) {
     const key = `debounce:${sample.point}`;
     const cand = context.script.get(key);
     if (cand && Math.abs(cand.v - scaled) < 1e-9) {
-      if (now - cand.since < debounceMs) return []; // still settling
+      if (now - cand.since < debounceMs) return units; // still settling
     } else {
       context.script.set(key, { v: scaled, since: now });
-      return []; // new candidate: wait for it to prove stable
+      return units; // new candidate: wait for it to prove stable
     }
   }
 
@@ -193,23 +233,18 @@ export function onMessage(message, context) {
   if (onChange) {
     const last = context.script.get(`last:${sample.point}`);
     const minDelta = deadband > 0 ? deadband : 1e-9;
-    if (last !== undefined && last !== null && Math.abs(scaled - last) < minDelta) return [];
+    if (last !== undefined && last !== null && Math.abs(scaled - last) < minDelta) return units;
   }
 
   // Rate limit: drop readings that arrive within min_interval of the last emitted one.
   if (minIntervalMs > 0) {
     const lastTs = context.script.get(`lastts:${sample.point}`);
-    if (lastTs !== undefined && lastTs !== null && now - lastTs < minIntervalMs) return [];
+    if (lastTs !== undefined && lastTs !== null && now - lastTs < minIntervalMs) return units;
   }
 
   context.script.set(`last:${sample.point}`, scaled);
   context.script.set(`lastts:${sample.point}`, now);
 
-  // Derive the device from the source topic: te/device/<device>/ot/<protocol>/sample/<point>
-  const parts = message.topic.split("/");
-  const device = parts[2] || "main";
-  const { group } = resolveNaming(cfg, sample);
-  const targetTopic = cfg.target_topic || `te/device/${device}///m/${group}`;
   const body = shapeBody(cfg, sample, scaled);
 
   // Combine mode: buffer each device's series and flush one merged measurement on interval.
@@ -220,11 +255,13 @@ export function onMessage(message, context) {
     merged.time = sample.ts;
     buffer[targetTopic] = merged;
     context.flow.set("buffer", buffer);
-    return [];
+    return units;
   }
 
+  // The metadata first, so the mapper is likely to know the unit by the time it converts this
+  // measurement (it learns it through the broker, so the first one may still go without).
   const payload = Object.assign({}, body, { time: sample.ts });
-  return [{ topic: targetTopic, payload: JSON.stringify(payload) }];
+  return [...units, { topic: targetTopic, payload: JSON.stringify(payload) }];
 }
 
 // Flush the combine buffer: one merged measurement per target topic. A no-op unless combine is on.
