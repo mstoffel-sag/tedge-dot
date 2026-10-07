@@ -982,7 +982,9 @@ static int library_search_path(toml_table_t *connector, const char *base_dir,
     const char *env = getenv(TDOT_LIBRARY_PATH_ENV);
     if (env && *env) {
         char *copy = strdup(env);
-        for (char *tok = strtok(copy, ":"); tok; tok = strtok(NULL, ":"))
+        char *save = NULL; /* strtok_r: connectors load configs on their own threads */
+        for (char *tok = strtok_r(copy, ":", &save); tok;
+             tok = strtok_r(NULL, ":", &save))
             if (*tok)
                 search_path_push(&sp, tok, base_dir);
         free(copy);
