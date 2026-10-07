@@ -67,6 +67,7 @@ are still inert. CI runs it.
 | OPC UA security (policies, certificates, user identities) | ✅ | ✅ | Same PKI layout, trust rules and reasons: the C build links mbedTLS statically, and [`ua_pki.c`](connectors/opcua/ua_pki.c) mirrors the Rust trust store. Checked by the shared PKI vectors (`tests/opcua_pki.c` and `connector-opcua/tests/pki.rs`), `conformance-secure*.toml`, the secured e2e suite and [`ci/pki-parity.sh`](ci/pki-parity.sh) for `tedge-dot pki`. ECC policies are in neither build. |
 | `snmpv3-sha2` | ✅ `SHA224`–`SHA512`, `AES192`/`AES256` | ❌ `MD5`/`SHA` + `DES`/`AES` | SHA-2 authentication and the Blumenthal AES key extension need a real OpenSSL; this build links net-snmp's bundled crypto and has no system OpenSSL dependency. A configuration naming one of them **loads** — one such device must not take a gateway's whole config down — and that device stays `disconnected` with a reason naming this capability, while every other device works. Tests needing it are tagged `requires:snmpv3-sha2`. |
 | `opcua-basic128rsa15` | ✅ | ❌ | open62541 cannot complete a Basic128Rsa15 handshake against the OPC Foundation UA-.NETStandard reference server: it aborts with `BadDecodingError` where async-opcua connects to the same endpoint, so the fault is in the policy implementation rather than the server or the configuration. The policy is deprecated -- open62541 itself warns that its encryption is broken -- and is refused anyway unless a device sets `allow_deprecated_security`. `Basic256`, the other deprecated policy, works in both builds. Tests needing it are tagged `requires:opcua-basic128rsa15`. |
+| `opcua-structures` | ✅ | ❌ | OPC UA structured values (ExtensionObject): `address.field` points decoded from the server's `DataTypeDefinition`, `raw` points carrying the encoded body, array elements by `address.index`, and the built-in types without an SDK primitive of their own (DateTime, LocalizedText, StatusCode, Guid, NodeId, QualifiedName). The C module ignores `field` and `index` and reports such values as unsupported, so a configuration using them still **loads**. A top-level ByteString is the exception: it is read as `bytes` (hex) in both builds. The Rust behaviour is pinned by language-neutral vectors in `doc/contract/test-vectors/opcua-struct/`, which a C port would run. Tests needing it are tagged `requires:opcua-structures`. |
 | `canbus-fd` | ✅ | ❌ | Classic CAN frames only. **No test yet.** |
 | `profibus-serial` | ✅ serial + `tcp://` | ❌ `tcp://` only | No serial PHY and no FDL token timing — fine against a device server or the simulator, not yet for a multi-master RS-485 bus. **No test yet.** |
 | CANopen segmented SDO | ❌ | ❌ | Neither implements it; expedited transfers (≤ 4 bytes) only. Not a parity gap. |
@@ -75,9 +76,10 @@ are still inert. CI runs it.
 
 ### Push delivery
 
-OPC UA points are delivered by monitored items, exactly as in the Rust module:
+OPC UA points are delivered by monitored items, as in the Rust module:
 one subscription per device publishing at the fastest requested point rate, one
-monitored item per point, and the point's own `poll_interval` as the sampling
+monitored item per point (Rust shares one item between points on the same node and
+array element), and the point's own `poll_interval` as the sampling
 hint. Points opting out with `subscribe = false` stay on the polling schedule,
 as does every point of a device whose subscription could not be established.
 

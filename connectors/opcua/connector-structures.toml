@@ -1,0 +1,210 @@
+# The `opc3` device of the OPC UA e2e harness: structured values, array elements and the
+# built-in types without an SDK primitive of their own (openspec change opcua-custom-datatypes,
+# Rust build only). It is its own connector instance (entrypoint.sh passes both files), so in the
+# C build -- which runs one loop per file, and reads these nodes only to report them unsupported
+# -- its reads cannot delay the devices of connector.toml.
+
+[connector]
+protocol      = "opcua"
+service_name  = "tedge-dot-structures"
+poll_interval = "1s"
+log_level     = "info"
+operation_timeout = "5s"
+
+[mqtt]
+host = "broker"
+port = 1883
+
+[connection]
+application_name = "tedge-dot-structures"
+security_policy  = "None"
+security_mode    = "none"
+
+# Structured values, array elements and the built-in types without an SDK primitive of their
+# own (openspec change opcua-custom-datatypes). The simulator creates its structure types with
+# their DataTypeDefinition (sim/server.py, add_structures); the connector reads the definitions
+# once per session and decodes single fields. Static nodes are polled (subscribe = false, a
+# subscription would report them once); Drive and Levels change every second and are pushed.
+[[device]]
+name             = "opc3"
+protocol_address = { endpoint = "opc.tcp://simulator:4840/", security_policy = "None", security_mode = "none" }
+default_mode     = "typed"
+
+  # Fields of one SimPumpStatus value: several points, one Read per poll cycle.
+  [[device.point]]
+  id        = "pump_speed"
+  subscribe = false
+  datatype  = "float64"
+  unit      = "rpm"
+  address   = { node_id = "ns=2;s=Pump", field = "Speed" }
+
+  [[device.point]]
+  id        = "pump_current"
+  subscribe = false
+  datatype  = "float32"
+  address   = { node_id = "ns=2;s=Pump", field = "Motor.Current" }
+
+  [[device.point]]
+  id        = "pump_label"
+  subscribe = false
+  datatype  = "string"
+  address   = { node_id = "ns=2;s=Pump", field = "Label" }
+
+  # An Enumeration field, mapped to its name like any int32 point.
+  [[device.point]]
+  id        = "pump_mode"
+  subscribe = false
+  datatype  = "int32"
+  address   = { node_id = "ns=2;s=Pump", field = "Mode" }
+  map       = { cases = [{ eq = 0, to = "stopped" }, { eq = 1, to = "running" }, { eq = 2, to = "fault" }] }
+
+  [[device.point]]
+  id        = "pump_sample_2"
+  subscribe = false
+  datatype  = "float64"
+  address   = { node_id = "ns=2;s=Pump", field = "Samples[2]" }
+
+  [[device.point]]
+  id        = "pump_item_1_value"
+  subscribe = false
+  datatype  = "float64"
+  address   = { node_id = "ns=2;s=Pump", field = "Items[1].Value" }
+
+  [[device.point]]
+  id        = "pump_item_1_name"
+  subscribe = false
+  datatype  = "string"
+  address   = { node_id = "ns=2;s=Pump", field = "Items[1].Name" }
+
+  [[device.point]]
+  id        = "pump_stamp"
+  subscribe = false
+  datatype  = "string"
+  address   = { node_id = "ns=2;s=Pump", field = "Stamp" }
+
+  # The field after an absent optional field, and the absent field itself (bad sample).
+  [[device.point]]
+  id        = "pump_tail"
+  subscribe = false
+  datatype  = "uint16"
+  address   = { node_id = "ns=2;s=Pump", field = "Tail" }
+
+  [[device.point]]
+  id        = "pump_comment"
+  subscribe = false
+  datatype  = "string"
+  address   = { node_id = "ns=2;s=Pump", field = "Comment" }
+
+  # Declares the wrong type: bad samples that name the field's real type.
+  [[device.point]]
+  id        = "pump_speed_wrong_type"
+  subscribe = false
+  datatype  = "int32"
+  address   = { node_id = "ns=2;s=Pump", field = "Speed" }
+
+  # The whole structure as its encoded body, for a flow to decode.
+  [[device.point]]
+  id        = "pump_raw"
+  subscribe = false
+  mode      = "raw"
+  address   = { node_id = "ns=2;s=Pump" }
+
+  # A union: the active member, and an inactive one (bad sample).
+  [[device.point]]
+  id        = "choice_count"
+  subscribe = false
+  datatype  = "uint32"
+  address   = { node_id = "ns=2;s=Choice", field = "Count" }
+
+  [[device.point]]
+  id        = "choice_name"
+  subscribe = false
+  datatype  = "string"
+  address   = { node_id = "ns=2;s=Choice", field = "Name" }
+
+  # Array elements of an array variable, selected on the server through IndexRange.
+  [[device.point]]
+  id        = "temperatures_2"
+  subscribe = false
+  datatype  = "float64"
+  address   = { node_id = "ns=2;s=Temperatures", index = 2 }
+
+  [[device.point]]
+  id        = "temperatures_9"
+  subscribe = false
+  datatype  = "float64"
+  address   = { node_id = "ns=2;s=Temperatures", index = 9 }
+
+  # Built-in types rendered into SDK datatypes.
+  [[device.point]]
+  id        = "serviced"
+  subscribe = false
+  datatype  = "string"
+  address   = { node_id = "ns=2;s=Serviced" }
+
+  [[device.point]]
+  id        = "serviced_ms"
+  subscribe = false
+  datatype  = "int64"
+  address   = { node_id = "ns=2;s=Serviced" }
+
+  [[device.point]]
+  id        = "state"
+  subscribe = false
+  datatype  = "string"
+  address   = { node_id = "ns=2;s=State" }
+
+  [[device.point]]
+  id        = "last_error"
+  subscribe = false
+  datatype  = "string"
+  address   = { node_id = "ns=2;s=LastError" }
+
+  [[device.point]]
+  id        = "last_error_code"
+  subscribe = false
+  datatype  = "uint32"
+  address   = { node_id = "ns=2;s=LastError" }
+
+  [[device.point]]
+  id        = "device_uid"
+  subscribe = false
+  datatype  = "string"
+  address   = { node_id = "ns=2;s=DeviceUid" }
+
+  [[device.point]]
+  id        = "ref"
+  subscribe = false
+  datatype  = "string"
+  address   = { node_id = "ns=2;s=Ref" }
+
+  # A ByteString: `bytes` (hex) when typed, the bytes themselves as `raw`. Both builds have it,
+  # unlike the types above, so its test is not tagged requires:opcua-structures.
+  [[device.point]]
+  id        = "blob"
+  subscribe = false
+  datatype  = "bytes"
+  address   = { node_id = "ns=2;s=Blob" }
+
+  [[device.point]]
+  id        = "blob_raw"
+  subscribe = false
+  mode      = "raw"
+  address   = { node_id = "ns=2;s=Blob" }
+
+  [[device.point]]
+  id        = "blob_as_string"
+  subscribe = false
+  datatype  = "string"
+  address   = { node_id = "ns=2;s=Blob" }
+
+  # Pushed: a field of a structure and an array element that change every second.
+  [[device.point]]
+  id        = "drive_current"
+  datatype  = "float32"
+  address   = { node_id = "ns=2;s=Drive", field = "Current" }
+
+  [[device.point]]
+  id        = "levels_1"
+  datatype  = "float64"
+  address   = { node_id = "ns=2;s=Levels", index = 1 }

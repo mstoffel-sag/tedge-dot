@@ -38,6 +38,8 @@ COPY --from=build /usr/local/bin/tedge-dot /usr/bin/tedge-dot
 # `tedge-dot /etc/connector.toml` form is accepted by both binaries).
 COPY connectors/${PROTOCOL} /opt/connector
 RUN cp /opt/connector/connector.toml /etc/connector.toml \
+    # A stack may run a second connector instance from connector-<name>.toml (see its entrypoint).
+    && for f in /opt/connector/connector-*.toml; do if [ -f "$f" ]; then cp "$f" /etc/; fi; done \
     && cp /opt/connector/entrypoint.sh /entrypoint.sh && chmod +x /entrypoint.sh \
     # Point libraries the stack's config references (contract §3.4); only some stacks
     # have them. Installed twice over, matching the Rust image: at the packaged

@@ -58,6 +58,59 @@ protocol_address = { endpoint = "opc.tcp://ref-all:4840/UA/TestServer", security
   subscribe = false
   address = { node_id = "ns=@NS_REF_ALL@;s=TestServer/DataTypes/Scalar/StringValue" }
 
+# Structured values (openspec change opcua-custom-datatypes; Rust build only). The reference
+# server declares these variables with the abstract Structure DataType, so the connector finds
+# the concrete type (TestPointXYZ, TestRangeStruct) through the value's encoding, then reads its
+# DataTypeDefinition. Nothing about these types is configured or compiled in.
+[[device]]
+name             = "structures"
+protocol_address = { endpoint = "opc.tcp://ref-all:4840/UA/TestServer", security_policy = "None", security_mode = "none" }
+default_mode     = "typed"
+
+  [[device.point]]
+  id = "point_x"
+  datatype = "float64"
+  subscribe = false
+  address = { node_id = "ns=@NS_REF_ALL@;s=TestServer/ExtensionObjects/PointValue", field = "X" }
+
+  [[device.point]]
+  id = "point_z"
+  datatype = "float64"
+  subscribe = false
+  address = { node_id = "ns=@NS_REF_ALL@;s=TestServer/ExtensionObjects/PointValue", field = "Z" }
+
+  [[device.point]]
+  id = "range_high"
+  datatype = "float64"
+  subscribe = false
+  address = { node_id = "ns=@NS_REF_ALL@;s=TestServer/ExtensionObjects/RangeValue", field = "High" }
+
+  [[device.point]]
+  id = "range_value"
+  datatype = "float64"
+  subscribe = false
+  address = { node_id = "ns=@NS_REF_ALL@;s=TestServer/ExtensionObjects/RangeValue", field = "Value" }
+
+  # A field the type does not have: the error lists the ones it does.
+  [[device.point]]
+  id = "range_max"
+  datatype = "float64"
+  subscribe = false
+  address = { node_id = "ns=@NS_REF_ALL@;s=TestServer/ExtensionObjects/RangeValue", field = "Max" }
+
+  [[device.point]]
+  id = "point_raw"
+  mode = "raw"
+  subscribe = false
+  address = { node_id = "ns=@NS_REF_ALL@;s=TestServer/ExtensionObjects/PointValue" }
+
+  # An array element, selected by the server through IndexRange.
+  [[device.point]]
+  id = "double_array_2"
+  datatype = "float64"
+  subscribe = false
+  address = { node_id = "ns=@NS_REF_ALL@;s=TestServer/DataTypes/Array/DoubleArray", index = 2 }
+
 # Signed only: the message is authenticated but not encrypted.
 [[device]]
 name             = "b256-sign"

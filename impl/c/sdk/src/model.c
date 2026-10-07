@@ -37,6 +37,7 @@ static const struct {
     {TDOT_DT_UINT32, "uint32"},   {TDOT_DT_INT64, "int64"},
     {TDOT_DT_UINT64, "uint64"},   {TDOT_DT_FLOAT32, "float32"},
     {TDOT_DT_FLOAT64, "float64"}, {TDOT_DT_STRING, "string"},
+    {TDOT_DT_BYTES, "bytes"},
 };
 
 const char *tdot_datatype_str(tdot_datatype_t dt) {

@@ -19,6 +19,7 @@
 #include "cjson/cJSON.h"
 #include "tedge_dot/config.h"
 #include "tedge_dot/connector.h"
+#include "tedge_dot/decode.h"
 #include "tedge_dot/runtime.h"
 
 static int failures = 0;
@@ -1572,6 +1573,56 @@ static void check_valid_field_values(void) {
     scratch_free(&s);
 }
 
+/* `bytes` (contract §4) is a datatype of its own, not an unknown name: a point
+ * declaring it loads, and the name round-trips. Before the C SDK had it, the
+ * name parsed to "no datatype" and the whole file failed with the misleading
+ * "typed point requires a datatype". The generic register decode refuses it
+ * (only a protocol module renders a byte run, as OPC UA does for a
+ * ByteString), and so does a `map`, both with the Rust SDK's messages. */
+static void check_bytes_datatype(void) {
+    CHECK(tdot_datatype_parse("bytes") == TDOT_DT_BYTES, "\"bytes\" parses");
+    CHECK(strcmp(tdot_datatype_str(TDOT_DT_BYTES), "bytes") == 0, "bytes round-trips");
+    CHECK(tdot_datatype_len(TDOT_DT_BYTES) == 0, "bytes is variable length");
+
+    tdot_config_t *cfg = load("", "\n  [[device.point]]\n  id = \"blob\"\n"
+                                  "  datatype = \"bytes\"\n"
+                                  "  address = { table = \"holding\", address = 4, count = 2 }\n");
+    if (cfg) {
+        tdot_point_t *p = &cfg->devices[0].points[1];
+        CHECK(p->datatype == TDOT_DT_BYTES, "blob is bytes, got %d", (int)p->datatype);
+        tdot_config_free(cfg);
+    }
+
+    char err[160] = "";
+    uint8_t buf[4] = {0xde, 0xad, 0xbe, 0xef};
+    tdot_value_t v = {0};
+    CHECK(tdot_decode(TDOT_DT_BYTES, buf, sizeof buf, TDOT_ORDER_BIG, TDOT_ORDER_BIG, &v, err,
+                      sizeof err) == -1 &&
+              strcmp(err, "datatype bytes has no decoded value (raw only)") == 0,
+          "decode refuses bytes, got '%s'", err);
+    size_t len = sizeof buf;
+    v.kind = TDOT_VAL_STR;
+    CHECK(tdot_encode(TDOT_DT_BYTES, &v, TDOT_ORDER_BIG, TDOT_ORDER_BIG, buf, &len, err,
+                      sizeof err) == -1,
+          "encode refuses bytes");
+
+    scratch_t s;
+    scratch_init(&s);
+    write_file(&s, "etc/modbus.toml",
+               "[connector]\nprotocol = \"modbus\"\n\n"
+               "[[device]]\nname = \"plc-1\"\nprotocol_address = { unit_id = 1 }\n\n"
+               "  [[device.point]]\n  id = \"blob\"\n  datatype = \"bytes\"\n"
+               "  address = { address = 1 }\n"
+               "  map = { cases = [{ eq = \"00\", to = \"zero\" }] }\n");
+    err[0] = '\0';
+    cfg = tdot_config_load(scratch_path(&s, "etc/modbus.toml"), err, sizeof err);
+    CHECK(cfg == NULL && strstr(err, "map is not allowed on a bytes point"),
+          "map on a bytes point is refused, got '%s'", err);
+    if (cfg)
+        tdot_config_free(cfg);
+    scratch_free(&s);
+}
+
 #ifdef TDOT_FEATURE_OPCUA
 /* OPC UA security configuration (doc/connectors/opcua-connector-spec.md §3):
  * the same rules as impl/rust/crates/connector-opcua/src/config.rs. Every
@@ -2021,6 +2072,7 @@ int main(void) {
     check_invalid_point_field_values();
     check_invalid_device_field_values();
     check_valid_field_values();
+    check_bytes_datatype();
     check_unknown_keys();
     check_disabled_devices();
     check_disabled_points();

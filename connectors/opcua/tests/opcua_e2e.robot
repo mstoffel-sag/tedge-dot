@@ -47,6 +47,9 @@ ${SUBSCRIPTION_INACTIVITY_WAIT}     35s
 ${PUSH_ONLY_DEVICE}         opc2
 ${PUSH_ONLY_SAMPLE_PREFIX}  te/device/${PUSH_ONLY_DEVICE}/ot/${PROTOCOL}/sample
 ${PUSH_ONLY_LINK_TOPIC}     te/device/${PUSH_ONLY_DEVICE}/ot/${PROTOCOL}/status/link
+# Structured values, array elements and extra built-in types (openspec opcua-custom-datatypes).
+${STRUCT_DEVICE}            opc3
+${STRUCT_PREFIX}            te/device/${STRUCT_DEVICE}/ot/${PROTOCOL}/sample
 # Longer than async-opcua's own session retries (1s, 2s and 4s apart), after which the client's
 # event loop ends.
 ${LONG_OUTAGE}              20s
@@ -502,7 +505,142 @@ Literal Parameter Is Published As A Bare Value
     Should Be Equal    ${payload}    617001
 
 
+Structure Fields Are Decoded From The Server's Definition
+    [Documentation]    Points select single fields of a SimPumpStatus value: top level, nested,
+    ...                an array element and a field of a structure element. The connector has no
+    ...                compiled-in type: it reads the DataTypeDefinition from the server.
+    [Tags]    requires:opcua-structures
+    Struct Point Should Be    pump_speed    1450    float64
+    Struct Point Should Be    pump_current    3.25    float32
+    Struct Point Should Be    pump_label    P1    string
+    Struct Point Should Be    pump_sample_2    4.5    float64
+    Struct Point Should Be    pump_item_1_value    7    float64
+    Struct Point Should Be    pump_item_1_name    second    string
+    Struct Point Should Be    pump_tail    7    uint16
+    ${payload}=    Wait For Sample    ${STRUCT_PREFIX}/pump_speed    timeout=${READY_TIMEOUT}
+    ${field}=    Get Json Field    ${payload}    addr.field
+    Should Be Equal    ${field}    Speed
+
+An Enumeration Field Is Mapped Like Any Int32 Point
+    [Tags]    requires:opcua-structures
+    ${payload}=    Wait For Sample    ${STRUCT_PREFIX}/pump_mode    timeout=${READY_TIMEOUT}
+    Sample Should Be Good    ${payload}
+    ${value}=    Get Json Field    ${payload}    value
+    Should Be Equal    ${value}    running
+    ${source}=    Get Json Field    ${payload}    source_value
+    Should Be Equal As Numbers    ${source}    1
+
+Absent Optional Fields And Inactive Union Members Are Bad Samples
+    [Tags]    requires:opcua-structures
+    Struct Point Should Fail With    pump_comment    optional field "Comment" is absent
+    Struct Point Should Fail With    choice_name    union field "Name" is not set (active: "Count")
+    Struct Point Should Be    choice_count    5    uint32
+
+A Wrong Declared Type Names The Field's Real Type
+    [Tags]    requires:opcua-structures
+    Struct Point Should Fail With    pump_speed_wrong_type
+    ...    field "Speed" is Double, point declares int32 (accepted: float64)
+    # The device stays connected: a definition mismatch is not a transport fault.
+    ${link}=    Wait For Retained    te/device/${STRUCT_DEVICE}/ot/${PROTOCOL}/status/link    timeout=${READY_TIMEOUT}
+    ${status}=    Get Json Field    ${link}    status
+    Should Be Equal    ${status}    connected
+
+A Raw Point Publishes The Structure Body And Its Type
+    [Documentation]    For a flow to decode: the encoded body, with the DataType and encoding
+    ...                named by namespace URI rather than by an unstable index.
+    [Tags]    requires:opcua-structures
+    ${payload}=    Wait For Sample    ${STRUCT_PREFIX}/pump_raw    timeout=${READY_TIMEOUT}
+    ${quality}=    Get Json Field    ${payload}    quality
+    Should Be Equal    ${quality}    good
+    ${raw}=    Get Json Field    ${payload}    raw
+    # EncodingMask 0 (Comment absent), Running true, Speed 1450.0
+    Should Start With    ${raw}    00 00 00 00 01 00 00 00 00 00 a8 96 40
+    ${data_type}=    Get Json Field    ${payload}    addr.data_type
+    Should Start With    ${data_type}    nsu=urn:tedge:opcua-sim;
+    ${encoding}=    Get Json Field    ${payload}    addr.encoding_id
+    Should Start With    ${encoding}    nsu=urn:tedge:opcua-sim;
+
+Array Elements Are Selected By Index
+    [Tags]    requires:opcua-structures
+    Struct Point Should Be    temperatures_2    22.5    float64
+    Struct Point Should Fail With    temperatures_9    index 9 out of range
+
+Built-in Types Are Rendered As SDK Datatypes
+    [Tags]    requires:opcua-structures
+    Struct Point Should Be    serviced    2026-10-06T08:15:30.25Z    string
+    Struct Point Should Be    serviced_ms    1791274530250    int64
+    Struct Point Should Be    state    Betrieb    string
+    Struct Point Should Be    last_error    BadNodeIdUnknown    string
+    Struct Point Should Be    last_error_code    2150891520    uint32
+    Struct Point Should Be    device_uid    72962b91-fa75-4ae6-8d28-b404dc7daf63    string
+    Struct Point Should Be    ref    nsu=urn:tedge:opcua-sim;s=Pump    string
+
+A ByteString Is Published As Bytes
+    [Documentation]    `bytes`: lowercase hex as the value and the bytes as `raw`. A raw point
+    ...                carries the bytes only, and a point declaring another datatype is refused
+    ...                per sample. Not a structure feature: both builds run it.
+    Struct Point Should Be    blob    deadbeef    bytes
+    ${payload}=    Wait For Sample    ${STRUCT_PREFIX}/blob    timeout=${READY_TIMEOUT}
+    ${raw}=    Get Json Field    ${payload}    raw
+    Should Be Equal    ${raw}    de ad be ef
+    ${payload}=    Wait For Sample    ${STRUCT_PREFIX}/blob_raw    timeout=${READY_TIMEOUT}
+    ${quality}=    Get Json Field    ${payload}    quality
+    Should Be Equal    ${quality}    good    blob_raw: ${payload}
+    ${mode}=    Get Json Field    ${payload}    mode
+    Should Be Equal    ${mode}    raw
+    Should Not Contain    ${payload}    "value"
+    ${raw}=    Get Json Field    ${payload}    raw
+    Should Be Equal    ${raw}    de ad be ef
+    Struct Point Should Fail With    blob_as_string    value is ByteString, point declares string (accepted: bytes)
+
+Pushed Structure Fields And Array Elements Follow The Server
+    [Documentation]    Drive.Current and Levels[1] change every second; both arrive by
+    ...                subscription with strictly increasing values.
+    [Tags]    requires:opcua-structures    requires:subscribe
+    FOR    ${point}    IN    drive_current    levels_1
+        ${first}=    Wait For Sample    ${STRUCT_PREFIX}/${point}    timeout=${READY_TIMEOUT}
+        Sample Should Be Good    ${first}
+        ${a}=    Get Json Field    ${first}    value
+        ${second}=    Wait For Sample    ${STRUCT_PREFIX}/${point}    timeout=${SAMPLE_TIMEOUT}
+        ${b}=    Get Json Field    ${second}    value
+        Should Be True    ${b} > ${a}    ${point}: ${b} did not follow ${a}
+    END
+
+Structure Fields Recover After The Server Restarts
+    [Documentation]    Definitions belong to a session: after the simulator restarts the
+    ...                connector resolves them again and the fields decode as before.
+    [Tags]    requires:opcua-structures
+    Restart Stack Service    simulator
+    ${payload}=    Wait For Message Containing    ${STRUCT_PREFIX}/pump_speed    "quality":"good"    timeout=${RECOVERY_TIMEOUT}
+    ${value}=    Get Json Field    ${payload}    value
+    Should Be Equal As Numbers    ${value}    1450
+
+
 *** Keywords ***
+Struct Point Should Be
+    [Documentation]    The next sample of an opc3 point is good, with this value and datatype.
+    [Arguments]    ${point}    ${expected}    ${datatype}
+    ${payload}=    Wait For Sample    ${STRUCT_PREFIX}/${point}    timeout=${READY_TIMEOUT}
+    ${quality}=    Get Json Field    ${payload}    quality
+    Should Be Equal    ${quality}    good    ${point}: ${payload}
+    ${got}=    Get Json Field    ${payload}    datatype
+    Should Be Equal    ${got}    ${datatype}    ${point}
+    ${value}=    Get Json Field    ${payload}    value
+    IF    $datatype in ('string', 'bytes')
+        Should Be Equal    ${value}    ${expected}    ${point}
+    ELSE
+        Should Be Equal As Numbers    ${value}    ${expected}    ${point}
+    END
+
+Struct Point Should Fail With
+    [Documentation]    The next sample of an opc3 point is bad, and its error contains `text`.
+    [Arguments]    ${point}    ${text}
+    ${payload}=    Wait For Sample    ${STRUCT_PREFIX}/${point}    timeout=${READY_TIMEOUT}
+    ${quality}=    Get Json Field    ${payload}    quality
+    Should Be Equal    ${quality}    bad    ${point}: ${payload}
+    ${error}=    Get Json Field    ${payload}    error
+    Should Contain    ${error}    ${text}
+
 Write Running
     [Documentation]    Write the running point through a connector write command and wait for it.
     [Arguments]    ${id}    ${value}

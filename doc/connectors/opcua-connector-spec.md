@@ -34,12 +34,12 @@ cloud-side certificate operations, keys in an HSM/TPM.
 
 ```json
 { "protocol": "opcua", "modes": ["raw", "typed"],
-  "datatypes": ["bool","int8","uint8","int16","uint16","int32","uint32","int64","uint64","float32","float64","string"],
+  "datatypes": ["bool","int8","uint8","int16","uint16","int32","uint32","int64","uint64","float32","float64","string","bytes"],
   "point_kinds": ["variable"], "command_verbs": ["write", "write-batch"],
   "features": ["polling", "subscribe"], "subscribe": true }
 ```
 
-Security is configuration, not a capability: both builds support all of §3.
+`bytes` (ByteString values, §3.7) is advertised by both builds. Security is configuration, not a capability: both builds support all of §3.
 
 ## 3. Configuration
 
@@ -113,6 +113,16 @@ security_mode 'none' cannot be used with security_policy 'Basic256Sha256' …`.
 
 `{ node_id = "ns=2;s=Temperature" }` or `{ namespace = 2, identifier = "Temperature" | 1001 }`.
 
+Two optional keys select one value out of a structured or array value (§3.7):
+
+| Key | Meaning |
+| --- | --- |
+| `field` | A dotted path into a structure: `"Speed"`, `"Motor.Current"`, `"Items[1].Value"`. A segment may carry one zero-based element index `[n]`. |
+| `index` | One zero-based element of an array variable, selected on the server through `IndexRange`. May be combined with `field` when the elements are structures. |
+
+Points with either key are read-only (`access = "write"` or `"read_write"` is a configuration
+error). `field` needs `mode = "typed"`: a raw point reads the whole structure body.
+
 ### 3.5 Reporting policy (`report`)
 
 The SDK runtime applies the point's `report` table ([contract §5.3](../contract/ot-connector-contract.md#53-reporting-policy-report-by-exception)) to polled and
@@ -133,6 +143,76 @@ alike, after the transform, and maps a written value back before the connector w
 Two cases are common. An enumeration node (an `Int32` state) can be mapped to labels, and a
 `String` node holding a number can become a number with `map = { as = "number" }`. See
 [Mapping values](../mapping-values.md).
+
+### 3.7 Structured values, array elements and other built-in types (Rust build)
+
+An OPC UA structure (a custom data type) arrives as an ExtensionObject: an encoding id and a
+binary body that has no meaning without the type's layout. The connector compiles no type in. It
+reads the layout from the server instead: once per session, for each node with `field` points,
+it reads the variable's `DataType` and that type's `DataTypeDefinition` attribute (OPC UA 1.04),
+along with the definitions of nested structures. A variable declared with the abstract
+`Structure` (or `BaseDataType`) is resolved through its value: the encoding id of the structure it
+holds leads to the concrete DataType by the `HasEncoding` reference. Only the types a point needs
+are read. They are read again after every reconnect, so a server update is picked up.
+
+**Datapoint mode.** Browse the server (for example with UaExpert), find the variable, and add
+one point per field you want:
+
+```toml
+[[device.point]]
+id       = "pump1_speed"
+datatype = "float64"
+address  = { node_id = "ns=2;s=Pump1.Status", field = "Speed" }
+
+[[device.point]]
+id       = "pump1_motor_current"
+datatype = "float32"
+address  = { node_id = "ns=2;s=Pump1.Status", field = "Motor.Current" }
+```
+
+Each field is published as an ordinary typed sample, so `transform`, `map`, `report`, `meta`
+and every flow work as for any other point. Fields that share a node are served by one Read
+per poll cycle and one monitored item.
+
+- Selectable field types: Boolean, the integers, Float, Double, String, Enumerations (as
+  `int32`), and the built-in types below. The declared `datatype` is checked when the definition
+  is read; a mismatch gives bad samples such as `field "Speed" is Double, point declares int32
+  (accepted: float64)`.
+- Structures, StructureWithOptionalFields and Unions are supported. An absent optional field or
+  an inactive union member gives a bad sample that says so.
+- Every other built-in type, arrays and nested structures before the selected field are skipped
+  by their encoded length.
+- Not supported: StructureWithSubtypedValues, multi-dimensional fields, XML or JSON encoded
+  bodies. Such a definition, or a server without `DataTypeDefinition` (OPC UA 1.03), gives bad
+  samples starting `data type definition unavailable`. The device link is not degraded.
+
+**Raw mode.** A `mode = "raw"` point on a structure publishes the encoded body as `raw`, with
+`addr.data_type` and `addr.encoding_id` in namespace-URI form (`nsu=urn:…;i=3000`), so a flow
+can decode types the connector cannot, such as those of a 1.03 server.
+
+**Array elements.** `index = n` selects one element of an array variable, `field = "A[n]"` one
+of an array field. An index beyond the current length gives bad samples naming the index; the
+point recovers when the array grows. A server that ignores `IndexRange` and returns the whole
+array (python-asyncua does) is handled: the connector selects the element itself.
+
+**Other built-in types.** Values of these types are read as top-level variables, fields and
+array elements; the declared `datatype` chooses the rendering:
+
+| OPC UA type | `datatype` | Example value |
+| --- | --- | --- |
+| DateTime | `string` / `int64` | `2026-10-06T08:15:30.25Z` / `1791274530250` (Unix ms) |
+| LocalizedText | `string` | `Betrieb` (the text; the locale is dropped) |
+| StatusCode | `uint32` / `string` | `2150891520` / `BadNodeIdUnknown` |
+| Guid | `string` | `72962b91-fa75-4ae6-8d28-b404dc7daf63` |
+| NodeId, ExpandedNodeId | `string` | `nsu=urn:acme:types;i=1001` |
+| QualifiedName | `string` | `2:Speed` |
+| ByteString | `bytes` | `deadbeef` (hex) |
+
+Writes are limited to the primitive types and String. The exact rendering rules and messages
+are pinned by the vectors in `doc/contract/test-vectors/opcua-struct/`. The C build does not
+implement this section yet (capability `opcua-structures`, see `impl/c/README.md`), except for a
+top-level ByteString variable: it is read as `bytes` in both builds, and the C build refuses a value
+longer than 127 bytes with a bad sample (its fixed value buffer) instead of truncating it.
 
 ## 4. The PKI directory
 

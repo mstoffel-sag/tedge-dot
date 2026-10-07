@@ -526,7 +526,13 @@ static void on_message(struct mosquitto *mosq, void *ud,
     snprintf(topic, sizeof topic, "%s", msg->topic);
     char *seg[10] = {0};
     int nseg = 0;
-    for (char *p = strtok(topic, "/"); p && nseg < 10; p = strtok(NULL, "/"))
+    /* strtok_r, never strtok: every connector of the process runs this on its
+     * own thread, and all of them receive the same command at once (see
+     * below). strtok's one hidden cursor is shared by those threads, so they
+     * cut each other's topics short and the command is dropped unanswered. */
+    char *save = NULL;
+    for (char *p = strtok_r(topic, "/", &save); p && nseg < 10;
+         p = strtok_r(NULL, "/", &save))
         seg[nseg++] = p;
 
     /* Every instance of the protocol on the broker receives every device

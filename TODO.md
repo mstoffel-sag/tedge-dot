@@ -44,6 +44,31 @@
       `namespace_uri` alongside `namespace`, resolve it from `Server.NamespaceArray` once per
       session, and re-resolve on reconnect.
 
+* [ ] **OPC UA structured values follow-ups** (openspec change `opcua-custom-datatypes`, Rust
+      only; thin-edge/tedge-dot#57):
+      - **C port.** The C build lists `opcua-structures` as missing (parity table in
+        `impl/c/README.md`). It needs a walker held to `doc/contract/test-vectors/opcua-struct/`,
+        resolution through open62541 (`UA_Client_readDatatypeDefinitionAttribute`), per-tick shared
+        reads like the SNMP module's. (The C SDK has `bytes` now, and a top-level ByteString is
+        already read as `bytes`.)
+      - Writes of a structure field or array element (read-modify-write of the body, or a write
+        with `IndexRange` for an element).
+      - Whole arrays, arrays whose length is known only at runtime (one sample per element: the
+        same "rows at runtime" question as SNMP table walks), and multi-dimensional fields.
+      - Servers without `DataTypeDefinition` (OPC UA 1.03 `DataTypeDictionary`): parse the
+        `.bsd`, or let a point library declare the layout. Raw points plus a flow cover them today.
+      - Make `datatype` optional on field points (the definition states the type), and an
+        `inspect` CLI command that prints a structure's fields as `[[device.point]]` blocks.
+      - Automatic decoding in a flow: publish resolved definitions on a retained typedef topic for
+        a generic `ot-struct` flow (design D9).
+      - File `doc/upstream/async-opcua-index-range-applied-twice.md`.
+* [ ] **The e2e harness can run a stale connector binary.** `_prebuild-stack-images` discards the
+      build output, and the Rust connector images compile with a cargo `target` cache mount shared
+      between checkouts; an OPC UA run once used a binary built before the last source change,
+      so a fix appeared not to work until `docker compose build --no-cache`. The same step once
+      hung for 27 minutes: every image had finished building, but `docker buildx bake` never
+      exited, and with its output discarded the suite just looked slow. Show the build output,
+      bound the step with a timeout, and make sure a source change reaches the binary.
 * [ ] SNMP connector follow-ups (`doc/connectors/snmp-connector-spec.md`; polling, SET writes,
       v1/v2c/v3 traps and informs shipped):
       - **File the `snmp2` issues upstream** and drop the patches as they are released: six drafts
