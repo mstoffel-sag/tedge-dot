@@ -49,6 +49,17 @@ The service SHALL NOT reload while a watched file is still changing. A change tr
 - **WHEN** three config files are replaced within one watch interval
 - **THEN** one reload applies all three
 
+### Requirement: A change made during a reload is not lost
+A file that changes while a reload is in progress SHALL be reloaded again afterwards. Whether a later change counts as new SHALL be judged against the state of the watched files when the running reload was triggered, not when it finished. Files watched for the first time after a reload SHALL count as changed, which may cause one extra reload that applies nothing.
+
+#### Scenario: Edit while connectors are reloading
+- **WHEN** a config file is saved again while the reload caused by its previous save is still running
+- **THEN** once the second save has settled, another reload runs and the connector ends up with the second version
+
+#### Scenario: Newly referenced library
+- **WHEN** a reload applies a config that now references a point library that was not watched before
+- **THEN** that library is watched from then on, and at most one further reload follows, which finds every config unchanged
+
 ### Requirement: An unusable file does not disturb running connectors
 A reload caused by a file change SHALL handle an unusable file exactly as a SIGHUP reload does: the error is logged and that connector keeps the configuration it has. The file SHALL be read again on its next change.
 

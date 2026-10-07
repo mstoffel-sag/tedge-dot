@@ -51,6 +51,20 @@ A reload is triggered when the fingerprint changed at some poll and is then the 
 poll. A file still being written keeps changing and keeps deferring the reload, and several files
 replaced together cause one reload. The worst-case delay is two intervals (4 s with the default).
 
+**Baseline:** the fingerprint that triggered a reload becomes the "last seen" state *before* the
+reload runs. After the reload, the watched set is rebuilt (D4) and compared against that baseline
+at the next poll. So:
+- A file saved while the reload is still reading or applying differs from the baseline, and gets
+  a reload of its own once it has settled. Taking the baseline after the reload instead would
+  record the new version as already seen, and the change would never be applied.
+- A file that is watched for the first time (a library newly referenced by a config) is absent
+  from the baseline, so it counts as added. That causes at most one extra reload, which finds
+  every config unchanged and does nothing. This costs a no-op reload instead of a window in which
+  that library's changes could be missed.
+
+In C, the trigger is the reload generation: several bumps while connectors are still busy lead
+each connector to one more reload, not one per bump. That fits the same rule.
+
 ### D3: One reload path
 The watcher does not reload anything itself. In Rust it is one more branch in `run()`'s
 `select!`, which calls the same code as SIGHUP (extract the branch body into a function). In C it
