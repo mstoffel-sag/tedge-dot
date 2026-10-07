@@ -119,7 +119,8 @@ tedge mqtt sub 'te/+/+/+/+/m/+'    # watch the measurements arrive
 ```
 
 Changes are detected by checking the config files and the point libraries they reference every
-`TEDGE_DOT_CONFIG_WATCH_INTERVAL` (default `2s`; `0` turns it off, leaving only the reload). A
+`TEDGE_DOT_CONFIG_WATCH_INTERVAL` (default `2s`). To apply changes only on a reload, run the
+service with `tedge-dot run --no-watch` (or set the variable to `0`). A
 change is applied once it has stopped changing, so a file that is still being written is not
 read half-done. Either way the service runs the same reload:
 

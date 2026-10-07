@@ -3,7 +3,7 @@
  *   tedge-dot read  -c <config> [-d <device-glob>] [-p <point-glob>]...
  *                   [--poll] [--interval 1s] [--count N] [--json]
  *   tedge-dot write -c <config> -d <device> -p <point> --value <v>
- *   tedge-dot run   -c <config> [--output stdout|mqtt] [--duration 10s]
+ *   tedge-dot run   -c <config> [--output stdout|mqtt] [--duration 10s] [--no-watch]
  *   tedge-dot describe [-c <config>] [-d <device-glob>] [--set <name>]
  *                      [--format c8y-dtm] [--compact]
  */
@@ -35,7 +35,7 @@ static void usage(void) {
         "[--poll] [--interval <dur>] [--count <n>] [--json]\n"
         "  tedge-dot write -c <config> -d <device> -p <point> --value <v>\n"
         "  tedge-dot run   -c <config> [--output stdout|mqtt] "
-        "[--duration <dur>]\n"
+        "[--duration <dur>] [--no-watch]\n"
         "  tedge-dot describe [-c <config-or-dir>]... [-d <device>] "
         "[--set <name>] [--format c8y-dtm] [--compact]\n"
         "      Print the Cumulocity DTM definitions of the parameter sets\n"
@@ -95,6 +95,7 @@ typedef struct {
     bool poll;
     bool json;
     bool compact;
+    bool no_watch;
 } args_t;
 
 static int add_config(args_t *a, const char *path) {
@@ -152,6 +153,8 @@ static int parse_args(int argc, char **argv, args_t *a) {
             a->poll = true;
         else if (!strcmp(arg, "--json"))
             a->json = true;
+        else if (!strcmp(arg, "--no-watch"))
+            a->no_watch = true;
         else if (arg[0] != '-') {
             if (add_config(a, arg) != 0) /* positional config path */
                 return -1;
@@ -537,6 +540,7 @@ static int cmd_run(const args_t *a) {
         .output = strcmp(a->output, "stdout") == 0 ? TDOT_OUTPUT_STDOUT
                                                    : TDOT_OUTPUT_MQTT,
         .duration_s = a->duration_s,
+        .no_watch = a->no_watch,
         .discover = rediscover_configs,
         .discover_ctx = (void *)a->config, /* only ever read */
     };

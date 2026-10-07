@@ -213,6 +213,10 @@ struct RunArgs {
     /// Ctrl-C/SIGTERM.
     #[arg(long, value_name = "DURATION", value_parser = parse_cli_duration)]
     duration: Option<Duration>,
+    /// Do not reload when the config files or the point libraries they reference change: apply
+    /// changes only on SIGHUP (`systemctl reload`). Overrides $TEDGE_DOT_CONFIG_WATCH_INTERVAL.
+    #[arg(long)]
+    no_watch: bool,
 }
 
 #[derive(Args)]
@@ -421,8 +425,12 @@ async fn run(args: RunArgs) -> ExitCode {
         connectors.start(path);
     }
 
-    let (watch_interval, watch_warning) =
-        watch::interval_from(std::env::var(watch::INTERVAL_ENV).ok().as_deref());
+    let (watch_interval, watch_warning) = if args.no_watch {
+        info!("config file watching is off (--no-watch): changes are applied on SIGHUP only");
+        (None, None)
+    } else {
+        watch::interval_from(std::env::var(watch::INTERVAL_ENV).ok().as_deref())
+    };
     if let Some(warning) = watch_warning {
         warn!("{warning}");
     }
@@ -1887,6 +1895,7 @@ protocol_address = { host = "127.0.0.2" }
             config: vec!["b.toml".into()],
             output: Output::Mqtt,
             duration: None,
+            no_watch: false,
         };
         assert_eq!(
             combined_config_args(&args.configs, &args.config),
@@ -1916,6 +1925,17 @@ protocol_address = { host = "127.0.0.2" }
             combined_config_args(&args.configs, &args.config),
             vec![DEFAULT_CONFIG_DIR]
         );
+    }
+
+    /// `--no-watch` turns config file watching off for `run`; it is off unless given.
+    #[test]
+    fn run_accepts_no_watch() {
+        let parse = |args: &[&str]| match Cli::try_parse_from(args).expect("parses").command {
+            Command::Run(run) => run.no_watch,
+            _ => panic!("not run"),
+        };
+        assert!(parse(&["tedge-dot", "run", "/etc/ot", "--no-watch"]));
+        assert!(!parse(&["tedge-dot", "run", "/etc/ot"]));
     }
 
     #[test]

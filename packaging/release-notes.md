@@ -160,8 +160,9 @@ was written by thin-edge.io configuration management, a provisioning tool or an 
   changed one applies its file in place, and an invalid file is logged and ignored.
 - A file is read only once it has stopped changing. A save that lands while a reload runs gets a
   reload of its own.
-- `TEDGE_DOT_CONFIG_WATCH_INTERVAL` sets how often the files are checked (default `2s`). Set it to
-  `0`, for example in a systemd drop-in, to reload only on SIGHUP as before.
+- `TEDGE_DOT_CONFIG_WATCH_INTERVAL` sets how often the files are checked (default `2s`).
+- To reload only on SIGHUP as before, run `tedge-dot run --no-watch`, for example in a systemd
+  drop-in (see the comments in the unit file), or set the variable to `0`.
 - Workarounds that send SIGHUP after a configuration update can be removed.
 - The C package now starts with an empty config directory as the Rust one does, and waits for a
   config to appear.

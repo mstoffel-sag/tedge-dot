@@ -25,6 +25,9 @@ typedef struct {
      * or -1 to keep the running set unchanged. NULL: the paths never change. */
     int (*discover)(void *ctx, char ***paths, size_t *npaths);
     void *discover_ctx;
+    /* True: no reload on a detected config change (`run --no-watch`), only on
+     * SIGHUP. Overrides TEDGE_DOT_CONFIG_WATCH_INTERVAL. */
+    bool no_watch;
 } tdot_run_opts_t;
 
 /* Build the sample envelope JSON for one read result, stamped now. Caller

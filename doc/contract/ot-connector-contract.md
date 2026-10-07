@@ -169,8 +169,8 @@ report        = { on_change = true }  # optional: default reporting policy for t
 
 **Reloading.** The long-running service applies changed configuration without a restart: on SIGHUP,
 and on its own when a config file or a point library it references changes. Changes are polled
-every `TEDGE_DOT_CONFIG_WATCH_INTERVAL` (default `2s`; `0` leaves SIGHUP as the only trigger) and
-applied once they have settled. Both triggers run the same reload. A new file starts a connector
+every `TEDGE_DOT_CONFIG_WATCH_INTERVAL` (default `2s`) and applied once they have settled;
+`run --no-watch` (or the variable set to `0`) leaves SIGHUP as the only trigger. Both triggers run the same reload. A new file starts a connector
 and a removed one stops it. Every other connector re-reads its file and applies what changed,
 keeping the configuration it has when the file cannot be used.
 

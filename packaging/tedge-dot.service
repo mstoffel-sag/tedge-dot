@@ -20,9 +20,11 @@ ExecStart=/usr/bin/tedge-dot run /etc/tedge/plugins/ot
 # Edited, added and removed configs are applied without a restart: the service notices the
 # change within a few seconds, and `systemctl reload tedge-dot` (SIGHUP) applies it at once. A
 # connector whose file is unchanged keeps running untouched. The check runs every
-# TEDGE_DOT_CONFIG_WATCH_INTERVAL (default 2s); set it to 0 in a drop-in to reload only on SIGHUP:
+# TEDGE_DOT_CONFIG_WATCH_INTERVAL (default 2s). To reload only on SIGHUP, add --no-watch in a
+# drop-in (systemctl edit tedge-dot):
 #   [Service]
-#   Environment=TEDGE_DOT_CONFIG_WATCH_INTERVAL=0
+#   ExecStart=
+#   ExecStart=/usr/bin/tedge-dot run /etc/tedge/plugins/ot --no-watch
 ExecReload=/bin/kill -HUP $MAINPID
 Restart=always
 RestartSec=5

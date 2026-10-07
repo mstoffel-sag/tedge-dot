@@ -104,6 +104,11 @@ because it concerns the process, not one connector. A connector config key would
 with several files. The minimum is 200 ms, the C supervisor's tick, so neither build polls
 faster; below that the minimum is used and a warning logged.
 
+**`--no-watch`** (added after review): a `run` flag that turns watching off whatever the variable
+says, for setups that want configs applied only on an explicit reload. It goes in the unit's
+`ExecStart` or a drop-in. A flag is explicit and visible in `systemctl cat` and `ps`, which an
+environment variable is not. The variable remains for tuning the interval.
+
 ### D7: The C service idles on an empty config directory
 *Found in implementation:* `tedge-dot run <dir>` with no `*.toml` exited with an error in C, but
 idled in Rust ("no connector configs found … idle"). With watching, starting empty and receiving

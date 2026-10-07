@@ -2294,7 +2294,10 @@ int tdot_runtime_run_configs(const char *const *paths, size_t npaths,
      * path below. TEDGE_DOT_CONFIG_WATCH_INTERVAL=0 turns it off. */
     tdot_watch_t *files = NULL;
     double watch_s = 0, next_watch = 0;
-    if (service) {
+    if (service && opts->no_watch) {
+        logmsg("info", "config file watching is off (--no-watch): changes are applied on "
+                       "SIGHUP only");
+    } else if (service) {
         char warning[256];
         watch_s = tdot_watch_interval(getenv(TDOT_WATCH_INTERVAL_ENV), warning, sizeof warning);
         if (warning[0])

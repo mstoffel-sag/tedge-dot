@@ -76,11 +76,15 @@ When the service itself writes a config file, for example a management command (
 - **THEN** the resulting reload changes nothing: no device reconnects and the connector's service health stays up
 
 ### Requirement: Watching can be turned off
-The watch interval SHALL come from `TEDGE_DOT_CONFIG_WATCH_INTERVAL`, a duration such as `2s` (the default) or `500ms`. `0` SHALL turn watching off, leaving SIGHUP as the only trigger. An invalid value SHALL be logged and the default used.
+The watch interval SHALL come from `TEDGE_DOT_CONFIG_WATCH_INTERVAL`, a duration such as `2s` (the default) or `500ms`. `0` SHALL turn watching off, leaving SIGHUP as the only trigger. An invalid value SHALL be logged and the default used. The `run` flag `--no-watch` SHALL turn watching off regardless of the variable, and the service SHALL log that it is off.
 
 #### Scenario: Disabled
 - **WHEN** the service runs with `TEDGE_DOT_CONFIG_WATCH_INTERVAL=0` and a config file is changed
 - **THEN** nothing is reloaded until SIGHUP
+
+#### Scenario: Turned off with --no-watch
+- **WHEN** the service runs as `tedge-dot run /etc/tedge/plugins/ot --no-watch`, with `TEDGE_DOT_CONFIG_WATCH_INTERVAL=500ms` set, and a config file is added
+- **THEN** no connector starts for it until SIGHUP, and the log says watching is off
 
 #### Scenario: Invalid value
 - **WHEN** `TEDGE_DOT_CONFIG_WATCH_INTERVAL=often` is set
