@@ -20,7 +20,7 @@ modules that run inside a mapper and are hot-reloaded without restarts.
 
 | Flow | Direction | Reads | Emits |
 | --- | --- | --- | --- |
-| [ot-measurement](ot-measurement/) | OT → thin-edge | `ot/<protocol>/sample/<point>` | `m/<group>` measurement |
+| [ot-measurement](ot-measurement/) | OT → thin-edge | `ot/<protocol>/sample/<point>` | `m/<group>` measurement, `m/<group>/meta` units (retained) |
 | [ot-alarm](ot-alarm/) | OT → thin-edge | `sample/<point>` (`meta.alarm`), `status/link`; or one `m/<group>` series | `a/<type>` alarm, retained: raised and cleared |
 | [ot-event](ot-event/) | OT → thin-edge | `sample/<point>` (`meta.event`); or one `m/<group>` series | `e/<type>` event |
 | [ot-registration](ot-registration/) | OT → thin-edge | `ot/<protocol>/status/link` | `te/device/<device>//` child registration (+ optional `twin/<fragment>`) |
@@ -188,6 +188,22 @@ connector points with a separator and set `point_separator` (e.g. `"."`): the po
 `group`/`series` still win, and an empty `point_separator` (the default) leaves dotted ids
 untouched. For per-signal shaping beyond this convention, run one filtered instance per signal
 (set `point`) or copy the flow and customise `main.js`.
+
+**Units.** A point's `unit` reaches the cloud as retained thin-edge.io measurement metadata. The
+measurement body keeps bare numbers, and `ot-measurement` publishes the units of each measurement
+topic on `<topic>/meta`, keyed by series:
+
+```
+te/device/Pump01///m/flow       {"flow":{"flow":6.6},"time":"…"}
+te/device/Pump01///m/flow/meta  {"flow.flow":{"unit":"l/m"}}            (retained)
+```
+
+thin-edge.io 2.x adds the unit to every measurement on that topic, so Cumulocity receives
+`{"flow":{"flow":{"value":6.6,"unit":"l/m"}}}`. The metadata is published only when a unit
+appears, changes or goes away, and one message holds every series of the topic. The companion
+flow `ot-measurement/units-state.toml` reads it back after a mapper restart. A custom
+`target_topic` gets metadata only if it is a `te/…/m/<type>` topic. The first measurement after a
+unit appears can reach the mapper before the metadata does, and then goes without the unit.
 
 `ot-measurement` also covers the legacy register mapping option of batching a device's series
 into one measurement (`combine` + `combine_interval`). Publishing only on a change, beyond a

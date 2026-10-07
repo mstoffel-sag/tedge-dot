@@ -60,9 +60,12 @@ default_mode     = "typed"
   datatype = "uint32"
   address  = { table = "holding", address = 4, count = 2 }
 
+  # A unit: ot-measurement publishes it as retained measurement metadata (m/modbus/meta), and the
+  # c8y mapper adds it to the measurement ("Measurement Units Reach Cumulocity").
   [[device.point]]
   id       = "level_f32"
   datatype = "float32"
+  unit     = "m"
   address  = { table = "holding", address = 6, count = 2 }
 
   [[device.point]]

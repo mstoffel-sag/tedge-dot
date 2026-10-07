@@ -51,6 +51,15 @@ Measurements Are Sent To Cumulocity
     Cumulocity.Device Should Have Measurements
     ...    minimum=1    type=modbus    value=modbus    series=temp_u16    timeout=${MEAS_TIMEOUT}
 
+Measurement Units Reach Cumulocity
+    [Documentation]    level_f32 declares unit = "m". The measurement body stays a bare number,
+    ...                ot-measurement publishes the unit as retained metadata on m/modbus/meta, and the
+    ...                c8y mapper adds it to the series. The first measurement may still go without it
+    ...                (the mapper learns the unit through the broker), so the newest one is checked.
+    Cumulocity.Device Should Exist    ${CHILD_EXTERNAL_ID}
+    Wait Until Keyword Succeeds    ${MEAS_TIMEOUT}s    2s
+    ...    Newest Measurement Unit Should Be    level_f32    m
+
 Set Register Operation Round-Trips
     [Documentation]    c8y_SetRegister writes 4242 to temp_u16; the next reading reflects it.
     # Cumulocity.Execute Shell Command    text=tedge mqtt pub te/device/plc1//cmd/
@@ -78,6 +87,12 @@ Set Coil Operation Round-Trips
 
 
 *** Keywords ***
+Newest Measurement Unit Should Be
+    [Arguments]    ${series}    ${unit}
+    ${measurements}=    Cumulocity.Device Should Have Measurements
+    ...    minimum=1    type=modbus    value=modbus    series=${series}    sort_newest=${True}
+    Should Be Equal    ${measurements[0]["modbus"]["${series}"]["unit"]}    ${unit}
+
 Newest Coil Reading Should Be
     [Arguments]    ${expected}
     ${measurements}=    Cumulocity.Device Should Have Measurements
