@@ -17,8 +17,12 @@ AmbientCapabilities=CAP_NET_RAW CAP_NET_BIND_SERVICE
 # One process runs every connector config found in the directory, each in an
 # in-process restart loop (backoff via TEDGE_DOT_RESTART_DELAY, default 5s).
 ExecStart=/usr/bin/tedge-dot run /etc/tedge/plugins/ot
-# `systemctl reload tedge-dot` applies edited, added and removed configs (SIGHUP) without a
-# restart: a connector whose file is unchanged keeps running untouched.
+# Edited, added and removed configs are applied without a restart: the service notices the
+# change within a few seconds, and `systemctl reload tedge-dot` (SIGHUP) applies it at once. A
+# connector whose file is unchanged keeps running untouched. The check runs every
+# TEDGE_DOT_CONFIG_WATCH_INTERVAL (default 2s); set it to 0 in a drop-in to reload only on SIGHUP:
+#   [Service]
+#   Environment=TEDGE_DOT_CONFIG_WATCH_INTERVAL=0
 ExecReload=/bin/kill -HUP $MAINPID
 Restart=always
 RestartSec=5

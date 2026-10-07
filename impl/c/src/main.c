@@ -557,11 +557,9 @@ static int cmd_run(const args_t *a) {
     size_t n = 0;
     if (collect_configs(&a->config, 1, &paths, &n) != 0)
         return 1;
-    if (n == 0) {
-        fprintf(stderr, "error: no *.toml configs in %s\n", a->config);
-        free_paths(paths, n);
-        return 1;
-    }
+    /* No configs yet is not an error, as in the Rust build: the service idles
+     * and starts a connector for each config that appears (reload or a
+     * detected file change). */
     int rc = tdot_runtime_run_configs((const char *const *)paths, n, &opts);
     free_paths(paths, n);
     return rc == 0 ? 0 : 1;

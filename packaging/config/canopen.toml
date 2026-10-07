@@ -2,7 +2,8 @@
 #
 # No devices are configured out of the box, so the service starts and stays
 # active on a fresh install. Add `[[device]]` sections (see the demo configs in
-# /usr/share/tedge-dot/demo/ or the project README) and reload the service:
+# /usr/share/tedge-dot/demo/ or the project README) and save
+# it: the service applies the change within a few seconds. To apply it at once:
 #
 #   sudo systemctl reload tedge-dot
 #

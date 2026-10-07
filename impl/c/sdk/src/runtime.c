@@ -14,6 +14,7 @@
 
 #include "cjson/cJSON.h"
 #include "mosquitto.h"
+#include "tedge_dot/watch.h"
 
 #define TICK_MS 200
 #define BACKOFF_INITIAL_S 1.0
@@ -2237,7 +2238,7 @@ static void supervise_reload(workers_t *ws, const tdot_run_opts_t *opts,
 
 int tdot_runtime_run_configs(const char *const *paths, size_t npaths,
                              const tdot_run_opts_t *opts) {
-    if (npaths == 0) {
+    if (npaths == 0 && !opts->discover) {
         logmsg("error", "no connector configs to run");
         return -1;
     }
@@ -2274,13 +2275,35 @@ int tdot_runtime_run_configs(const char *const *paths, size_t npaths,
     pthread_t wd_thread;
     bool watching = false;
     if (started == 0) {
-        logmsg("error", "no valid connector configs");
-        rc = -1;
+        if (npaths == 0)
+            logmsg("warn", "no connector configs found in %s -- idle; add configs, then "
+                           "reload (SIGHUP) or let the change be detected",
+                   opts->discover_ctx ? (const char *)opts->discover_ctx : "the config path");
+        else {
+            logmsg("error", "no valid connector configs");
+            rc = -1;
+        }
         if (!service)
             goto out;
     }
     if (watchdog_wanted(opts))
         watching = start_thread(&wd_thread, watchdog_main, &wd) == 0;
+
+    /* The service also reloads when the files a reload reads change (see
+     * watch.h), polled on this loop's tick; the reload itself is the SIGHUP
+     * path below. TEDGE_DOT_CONFIG_WATCH_INTERVAL=0 turns it off. */
+    tdot_watch_t *files = NULL;
+    double watch_s = 0, next_watch = 0;
+    if (service) {
+        char warning[256];
+        watch_s = tdot_watch_interval(getenv(TDOT_WATCH_INTERVAL_ENV), warning, sizeof warning);
+        if (warning[0])
+            logmsg("warn", "%s", warning);
+        if (watch_s > 0) {
+            files = tdot_watch_new(opts->discover, opts->discover_ctx);
+            next_watch = tdot_mono() + watch_s;
+        }
+    }
 
     while (!g_stop) {
         struct timespec ts = {.tv_sec = 0, .tv_nsec = TICK_MS * 1000000L};
@@ -2316,12 +2339,27 @@ int tdot_runtime_run_configs(const char *const *paths, size_t npaths,
         if (alive == 0 && !service)
             break;
 
+        if (files && now >= next_watch) {
+            next_watch = now + watch_s;
+            char changed[1024];
+            if (tdot_watch_poll(files, changed, sizeof changed)) {
+                logmsg("info", "config change detected (%s): reloading the connector configs",
+                       changed);
+                /* Exactly what SIGHUP does: the connectors re-read their files. */
+                atomic_fetch_add(&g_reload_gen, 1);
+            }
+        }
+
         unsigned gen = atomic_load(&g_reload_gen);
         if (gen != seen_gen) {
             seen_gen = gen;
             supervise_reload(&ws, opts, &wd);
+            /* The configs may now reference other point libraries. */
+            if (files)
+                tdot_watch_rebuild(files);
         }
     }
+    tdot_watch_free(files);
 
 out:
     /* Stop whatever still runs (a signal already stopped every connector;

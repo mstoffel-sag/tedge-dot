@@ -67,8 +67,10 @@ each connector to one more reload, not one per bump. That fits the same rule.
 
 ### D3: One reload path
 The watcher does not reload anything itself. In Rust it is one more branch in `run()`'s
-`select!`, which calls the same code as SIGHUP (extract the branch body into a function). In C it
-is a thread that does `atomic_fetch_add(&g_reload_gen, 1)`, exactly as `on_hangup` does. Ordering,
+`select!`. Both branches fall through to the same reload code after the `select!`. In C it is
+polled from the supervisor's loop (which already ticks every 200 ms), and it does
+`atomic_fetch_add(&g_reload_gen, 1)`, exactly as `on_hangup` does. *Found in implementation:* a
+separate thread isn't needed. Ordering,
 error handling ("reload failed; the running connectors are unchanged") and restart rules are
 therefore shared with SIGHUP, and SIGHUP stays a valid trigger at any time.
 
@@ -78,12 +80,16 @@ After each reload (and at start), the watched set is rebuilt:
 - every discovered `*.toml`
 - every library file that a successfully loaded config resolved
 
-Referenced files come from the loaders, which resolve each `points_from` reference to a path. The
-C loader keeps those paths (`lib_paths`, the cache key, in `config.h`). The Rust loader resolves
-them into a cache local to the load (`library.rs`, keyed by `PathBuf`) and drops it, so it must
-return the resolved paths with the config. Use these lists rather than resolving the search path a
-second time, so the watcher and the loader cannot disagree. A library that fails to load is
-still watched, by the path it resolved to, so fixing it triggers a reload.
+Referenced files come from a small function in each loader: `library::referenced_library_files`
+(Rust) and `tdot_config_referenced_libraries` (C). It parses a config file and resolves its
+`points_from` with the loader's own search path and lookup (`search_path`/`locate`,
+`library_search_path`/`locate_library`), so the watcher and the loader cannot disagree. A
+reference that does not resolve contributes every path it was looked for at, so creating the
+library is noticed.
+*Found in implementation:* the design first planned to take the resolved paths from the loaded
+configs. In Rust each connector's supervisor loads its own config, so that would have meant
+passing paths back from every supervisor. A config that failed to load would also have
+contributed nothing. The lookup function avoids both.
 
 ### D5: The service's own writes
 They are not filtered. A write by `persist_config` changes the fingerprint and causes a reload that
@@ -95,7 +101,14 @@ writes. The spec scenario pins the no-op.
 `TEDGE_DOT_CONFIG_WATCH_INTERVAL`, a duration in the format the configs use (`500ms`, `2s`, `1m`),
 default `2s`, with `0` to disable. It's an environment variable, like `TEDGE_DOT_RESTART_DELAY`,
 because it concerns the process, not one connector. A connector config key would be ambiguous
-with several files. The minimum is 100 ms; below that the minimum is used and a warning logged.
+with several files. The minimum is 200 ms, the C supervisor's tick, so neither build polls
+faster; below that the minimum is used and a warning logged.
+
+### D7: The C service idles on an empty config directory
+*Found in implementation:* `tedge-dot run <dir>` with no `*.toml` exited with an error in C, but
+idled in Rust ("no connector configs found … idle"). With watching, starting empty and receiving
+a config later is a real path, and the spec requires both builds to start a connector for an
+added file. So C now idles too, with the same warning, and exits 0 when its run ends normally.
 
 ## Risks / Trade-offs
 

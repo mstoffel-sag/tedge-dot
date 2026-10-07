@@ -109,13 +109,19 @@ installing a downloaded file. The package installs:
 - demo configs in `/usr/share/tedge-dot/demo/`, pre-wired to the Docker
   simulators in [demo/](demo/) — see there for the all-protocols demo.
 
-Add `[[device]]` sections to a config (each file documents the syntax), then reload the
-service — it applies edited, added and removed configs without restarting:
+Add `[[device]]` sections to a config (each file documents the syntax). The service notices the
+change and applies it within a few seconds, without restarting. That includes a file written by
+thin-edge.io configuration management or any other tool. A reload does the same right away:
 
 ```sh
-sudo systemctl reload tedge-dot    # SIGHUP; a restart works too
+sudo systemctl reload tedge-dot    # SIGHUP; optional, a change is also detected on its own
 tedge mqtt sub 'te/+/+/+/+/m/+'    # watch the measurements arrive
 ```
+
+Changes are detected by checking the config files and the point libraries they reference every
+`TEDGE_DOT_CONFIG_WATCH_INTERVAL` (default `2s`; `0` turns it off, leaving only the reload). A
+change is applied once it has stopped changing, so a file that is still being written is not
+read half-done. Either way the service runs the same reload:
 
 A reload re-reads every config file and the point libraries they reference. A connector whose
 configuration is unchanged keeps running untouched; one whose file changed applies it in place,

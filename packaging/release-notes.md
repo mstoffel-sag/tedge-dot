@@ -150,6 +150,22 @@ unchanged, so mappers without that support behave as before.
   topics.
 - The first measurement after a unit appears can still go without it.
 
+### Config changes are applied on their own
+
+The service now notices when its config files, or the point libraries they reference, change.
+It applies the change within a few seconds, with no `systemctl reload` needed, whether the file
+was written by thin-edge.io configuration management, a provisioning tool or an editor.
+
+- It runs the same reload as SIGHUP, which keeps working: unchanged connectors keep running, a
+  changed one applies its file in place, and an invalid file is logged and ignored.
+- A file is read only once it has stopped changing. A save that lands while a reload runs gets a
+  reload of its own.
+- `TEDGE_DOT_CONFIG_WATCH_INTERVAL` sets how often the files are checked (default `2s`). Set it to
+  `0`, for example in a systemd drop-in, to reload only on SIGHUP as before.
+- Workarounds that send SIGHUP after a configuration update can be removed.
+- The C package now starts with an empty config directory as the Rust one does, and waits for a
+  config to appear.
+
 ### Notes
 
 - On a fresh install the service starts with **no devices configured**. Add

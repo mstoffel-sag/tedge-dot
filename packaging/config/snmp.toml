@@ -3,7 +3,8 @@
 # No devices are configured out of the box, so the service starts, stays active, polls nothing and
 # does NOT listen on udp/162 on a fresh install (a host's own trap receiver keeps the port). Add
 # `[[device]]` sections (see /usr/share/tedge-dot/demo/snmp.toml or
-# doc/connectors/snmp-connector-spec.md) and reload the service:
+# doc/connectors/snmp-connector-spec.md) and save
+# it: the service applies the change within a few seconds. To apply it at once:
 #
 #   sudo systemctl reload tedge-dot
 #

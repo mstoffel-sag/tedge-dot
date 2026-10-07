@@ -301,7 +301,8 @@ single process**: each gets its own protocol module and SDK runtime instance
 in-process restart loop. A crashing or misconfigured connector is restarted
 with a backoff without disturbing the others, and its config file is re-read
 on every attempt — so fixing a bad config is picked up automatically.
-`systemctl reload tedge-dot` (SIGHUP) applies edited, added and removed configs
+The service applies edited, added and removed configs on its own within a few seconds;
+`systemctl reload tedge-dot` (SIGHUP) applies them at once. Either way it
 without a restart: an unchanged connector keeps running untouched.
 `systemctl stop tedge-dot` shuts every connector down cleanly (each publishes
 its final health status before exiting).

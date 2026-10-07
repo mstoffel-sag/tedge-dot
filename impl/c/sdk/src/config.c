@@ -1063,6 +1063,89 @@ static char *locate_library(const char *ref, const char *protocol,
     return NULL;
 }
 
+static void paths_push(char ***paths, size_t *n, char *path) {
+    for (size_t i = 0; i < *n; i++)
+        if (strcmp((*paths)[i], path) == 0) {
+            free(path);
+            return;
+        }
+    *paths = realloc(*paths, (*n + 1) * sizeof **paths);
+    (*paths)[(*n)++] = path;
+}
+
+static int path_cmp(const void *a, const void *b) {
+    return strcmp(*(char *const *)a, *(char *const *)b);
+}
+
+/* The point-library files a configuration file's devices reference
+ * (points_from), looked up as tdot_config_load looks them up. A reference that
+ * does not resolve contributes every file it was looked for at, so creating the
+ * library is noticed too. The run service watches these next to the config
+ * (mirrors library::referenced_library_files in the Rust SDK). A file that
+ * cannot be read or parsed gives none: the config itself is watched anyway. */
+void tdot_config_referenced_libraries(const char *path, char ***out, size_t *nout) {
+    *out = NULL;
+    *nout = 0;
+    FILE *fp = fopen(path, "r");
+    if (!fp)
+        return;
+    char tomlerr[256];
+    toml_table_t *root = toml_parse_file(fp, tomlerr, sizeof tomlerr);
+    fclose(fp);
+    if (!root)
+        return;
+    toml_table_t *conn = toml_table_in(root, "connector");
+    toml_datum_t protocol = conn ? toml_string_in(conn, "protocol") : (toml_datum_t){0};
+    char base_dir[PATH_MAX];
+    snprintf(base_dir, sizeof base_dir, "%s", path);
+    char *slash = strrchr(base_dir, '/');
+    if (slash)
+        *slash = '\0';
+    else
+        snprintf(base_dir, sizeof base_dir, ".");
+    search_path_t sp = {0};
+    char err[512];
+    if (!protocol.ok || library_search_path(conn, base_dir, &sp, err, sizeof err) != 0)
+        goto done;
+    toml_array_t *devices = toml_array_in(root, "device");
+    for (int i = 0; devices && i < toml_array_nelem(devices); i++) {
+        toml_table_t *dt = toml_table_at(devices, i);
+        toml_array_t *refs = dt ? toml_array_in(dt, "points_from") : NULL;
+        for (int j = 0; refs && j < toml_array_nelem(refs); j++) {
+            toml_datum_t ref = toml_string_at(refs, j);
+            if (!ref.ok)
+                continue;
+            if (*ref.u.s) {
+                char *found = locate_library(ref.u.s, protocol.u.s, base_dir, &sp, err, sizeof err);
+                char candidate[PATH_MAX];
+                if (found) {
+                    paths_push(out, nout, found);
+                } else if (is_path_reference(ref.u.s)) {
+                    if (ref.u.s[0] == '/')
+                        snprintf(candidate, sizeof candidate, "%s", ref.u.s);
+                    else
+                        snprintf(candidate, sizeof candidate, "%s/%s", base_dir, ref.u.s);
+                    paths_push(out, nout, strdup(candidate));
+                } else {
+                    for (size_t k = 0; k < sp.ndirs; k++) {
+                        snprintf(candidate, sizeof candidate, "%s/%s/%s.toml", sp.dirs[k],
+                                 protocol.u.s, ref.u.s);
+                        paths_push(out, nout, strdup(candidate));
+                    }
+                }
+            }
+            free(ref.u.s);
+        }
+    }
+    if (*nout > 1)
+        qsort(*out, *nout, sizeof **out, path_cmp);
+done:
+    search_path_free(&sp);
+    if (protocol.ok)
+        free(protocol.u.s);
+    toml_free(root);
+}
+
 /* Validate a parsed library document and return its [[point]] array. */
 static toml_array_t *library_points(toml_table_t *root, const char *path,
                                     const char *protocol, char *err,

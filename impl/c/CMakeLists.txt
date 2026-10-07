@@ -46,6 +46,7 @@ add_library(tedge_dot_sdk STATIC
   sdk/src/report.c
   sdk/src/map.c
   sdk/src/runtime.c
+  sdk/src/watch.c
   sdk/src/factory.c
 )
 target_include_directories(tedge_dot_sdk PUBLIC sdk/include)
@@ -332,6 +333,11 @@ add_test(NAME describe COMMAND tedge-dot-describe)
 add_executable(tedge-dot-config tests/config.c)
 target_link_libraries(tedge-dot-config PRIVATE tedge_dot_sdk)
 add_test(NAME config COMMAND tedge-dot-config)
+
+# Config file watching (watch.h): the same cases as impl/rust/src/watch.rs.
+add_executable(tedge-dot-watch tests/watch.c)
+target_link_libraries(tedge-dot-watch PRIVATE tedge_dot_sdk)
+add_test(NAME watch COMMAND tedge-dot-watch)
 
 # The write direction of the per-point transform (contract §4.2): the inverse math and the
 # one write path every command and the CLI take.

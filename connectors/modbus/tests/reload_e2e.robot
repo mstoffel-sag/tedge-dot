@@ -1,6 +1,8 @@
 *** Settings ***
 Documentation       SIGHUP reloads the connector configuration without restarting the service —
-...                 what `systemctl reload tedge-dot` sends through the unit's ExecReload.
+...                 what `systemctl reload tedge-dot` sends through the unit's ExecReload. A change
+...                 to the config directory triggers the same reload on its own (the last tests,
+...                 which never send SIGHUP; openspec change config-file-watch-reload).
 ...
 ...                 Runs against the multi-device stack (docker-compose.multi-device.yaml): one
 ...                 process running a directory of ten connector configs, one per simulated device,
@@ -32,6 +34,10 @@ ${SAMPLE_TIMEOUT}       15
 # Time for every connector to act on a reload: re-reading a file and reconnecting a device takes
 # well under a second against the simulator, and each polls once a second.
 ${SETTLE}               5s
+# A change is acted on once it has settled, within two watch intervals (2s by default,
+# TEDGE_DOT_CONFIG_WATCH_INTERVAL); the margin covers a connector starting.
+${WATCH_TIMEOUT}        15
+${WATCH_SETTLE}         6s
 
 
 *** Test Cases ***
@@ -120,8 +126,40 @@ A Config That Could Not Start Is Tried Again On Reload
     ...    "status":"up"    timeout=${SAMPLE_TIMEOUT}
     Point Should Read    plc-12    device_id    2
 
+A Config Added To The Directory Starts Its Connector Without A Reload
+    [Documentation]    A new file is applied without SIGHUP: its connector reports its service up
+    ...                and polls its device. The file is renamed into place, as thin-edge.io
+    ...                configuration management writes it.
+    Write Config Without Reload    watch
+    ...    sed -e 's/@N@/watch/g' -e 's/@PORT@/502/g' ${TEMPLATE}
+    Wait For Message Containing    te/device/main/service/tedge-dot-watch/status/health
+    ...    "status":"up"    timeout=${WATCH_TIMEOUT}
+    Point Should Read    plc-watch    device_id    1
+
+An Invalid Config Saved Without A Reload Leaves Its Connector Running
+    [Documentation]    A file saved with invalid TOML is logged and ignored: the connector keeps the
+    ...                configuration it has, stays up and keeps polling.
+    Clear Messages
+    Write Config Without Reload    watch    printf '[connector\\nbroken'
+    Sleep    ${WATCH_SETTLE}
+    Health Should Not Have Gone Down    tedge-dot-watch
+    Point Should Read    plc-watch    device_id    1
+
+A Config Removed Without A Reload Stops Its Connector
+    [Documentation]    Deleting the file stops its connector, which reports its service down.
+    DeviceLibrary.Execute Command    cmd=rm -f ${CONFIG_DIR}/watch.toml
+    Wait For Message Containing    te/device/main/service/tedge-dot-watch/status/health
+    ...    "status":"down"    timeout=${WATCH_TIMEOUT}
+
 
 *** Keywords ***
+Write Config Without Reload
+    [Documentation]    Write the output of `producer` to `name`.toml in the config directory through a
+    ...                temporary file and a rename. No SIGHUP: the change must be detected.
+    [Arguments]    ${name}    ${producer}
+    DeviceLibrary.Execute Command
+    ...    cmd=${producer} > ${CONFIG_DIR}/.${name}.tmp && mv ${CONFIG_DIR}/.${name}.tmp ${CONFIG_DIR}/${name}.toml
+
 Send Reload
     [Documentation]    SIGHUP to the tedge-dot process, PID 1 of the connector container.
     DeviceLibrary.Execute Command    cmd=kill -HUP 1

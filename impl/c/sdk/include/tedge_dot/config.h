@@ -211,6 +211,11 @@ double tdot_duration_parse(const char *s);
  * through a management command, which is a different trust boundary from a
  * config file: see tdot_runtime's handling of set-config/define-device. */
 bool tdot_is_path_reference(const char *ref);
+/* The point-library files a config file references (points_from), resolved as
+ * tdot_config_load resolves them, sorted, without duplicates; for a reference
+ * that does not resolve, every path it was looked for at. Empty when the file
+ * cannot be read or parsed. Free each path and the array. */
+void tdot_config_referenced_libraries(const char *path, char ***out, size_t *nout);
 
 /* Refuse local-only settings that a management command (contract §6.3) added
  * or changed: keys (NULL-terminated list, matched at any depth of [connection]

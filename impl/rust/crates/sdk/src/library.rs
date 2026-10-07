@@ -391,6 +391,52 @@ pub fn load(path: &Path) -> Result<ConnectorConfig, String> {
         .map_err(|e| format!("failed to load config '{}': {e}", path.display()))
 }
 
+/// The point-library files a configuration file's devices reference (`points_from`), looked up
+/// exactly as [`load`] looks them up. A reference that does not resolve contributes every file
+/// it was looked for at, so creating the library is noticed too. The `run` service watches these
+/// files next to the configuration itself. A file that cannot be read or parsed gives an empty
+/// list: the configuration file is watched anyway, and fixing it is the change that counts.
+pub fn referenced_library_files(path: &Path) -> Vec<PathBuf> {
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return Vec::new();
+    };
+    let Ok(doc) = toml::from_str::<Value>(&text) else {
+        return Vec::new();
+    };
+    let Some(protocol) = doc
+        .get("connector")
+        .and_then(|c| c.get("protocol"))
+        .and_then(Value::as_str)
+    else {
+        return Vec::new();
+    };
+    let base_dir = config_base_dir(path);
+    let Ok(search_path) = search_path(&doc, base_dir) else {
+        return Vec::new();
+    };
+    let mut files = Vec::new();
+    let devices = doc.get("device").and_then(Value::as_array).into_iter().flatten();
+    for device in devices {
+        let name = device.get("name").and_then(Value::as_str).unwrap_or("<unnamed>");
+        for reference in device_refs(device, name).unwrap_or_default() {
+            match locate(&reference, protocol, base_dir, &search_path) {
+                Ok(found) => files.push(found),
+                Err(_) if is_path_reference(&reference) => {
+                    files.push(absolutise(&reference, base_dir))
+                }
+                Err(_) => files.extend(
+                    search_path
+                        .iter()
+                        .map(|dir| dir.join(protocol).join(format!("{reference}.toml"))),
+                ),
+            }
+        }
+    }
+    files.sort();
+    files.dedup();
+    files
+}
+
 /// A TOML syntax error as `line L, column C: message`, without the excerpt of the offending
 /// line the `Display` of [`toml::de::Error`] includes: that line may hold a credential (a
 /// device's `protocol_address` with a password), and the error ends up in logs and command
@@ -1129,6 +1175,26 @@ points_from      = [{refs}]
         assert_eq!(ids, ["boiler_temp", "pump_run"]);
         assert_eq!(device.points[0].unit.as_deref(), Some("°C"));
         assert_eq!(device.points[1].access.as_deref(), Some("read_write"));
+    }
+
+    /// What the `run` service watches for a config: the library files `load` would read, and
+    /// for a name that does not resolve, every place it was looked for.
+    #[test]
+    fn referenced_library_files_are_the_files_load_reads() {
+        let dir = Dir::new("referenced");
+        let found = dir.write("modbus/acme-meter.toml", LIBRARY);
+        dir.write("modbus/unused.toml", LIBRARY);
+        let config = dir.write(
+            "plant.toml",
+            &config_with(Some(dir.path()), "\"acme-meter\", \"later\"", ""),
+        );
+        assert_eq!(
+            referenced_library_files(&config),
+            vec![found, dir.path().join("modbus").join("later.toml")]
+        );
+
+        let broken = dir.write("broken.toml", "[connector\nprotocol = ");
+        assert!(referenced_library_files(&broken).is_empty());
     }
 
     /// A library is the point list of one device *type*, so it is where the type is named
