@@ -55,12 +55,17 @@ typedef struct tdot_point {
      * definitions (contract §3.4): a point that resolves to false is dropped
      * before the config is returned (§3.3), so every loaded point has it set. */
     bool enabled;
-    /* Resolved: point ?? device ?? connector. Drives the polling schedule AND,
-     * for a subscribe-capable module, the per-point sampling-interval hint (an
-     * OPC UA monitored item's samplingInterval). The Rust runtime resolves
-     * PointRef::interval the same way, so the same config samples at the same
-     * rate in both builds. */
+    /* Resolved: point ?? device ?? connector. Drives the polling schedule. */
     double poll_interval_s;
+    /* The sampling interval of a pushed point (contract §3.1): how often the
+     * source samples it, e.g. an OPC UA monitored item's samplingInterval.
+     * While the loader merges definitions it holds the point's own setting
+     * (negative: unset); once loaded it is resolved: the first
+     * sampling_interval of point, device and connector, else poll_interval_s.
+     * 0 asks for the source's fastest rate. The Rust runtime resolves
+     * PointRef::interval the same way (ConnectorConfig::sampling_interval), so
+     * the same config samples at the same rate in both builds. */
+    double sampling_interval_s;
     toml_table_t *address;  /* protocol-specific, borrowed from the doc */
     /* The point's own `report` table (contract §5.3) as a cJSON object, every
      * definition merged key by key (a library's, then the site's), numbers
@@ -113,6 +118,7 @@ typedef struct tdot_device {
     char *type;
     toml_table_t *protocol_address; /* protocol-specific, borrowed */
     double poll_interval_s;
+    double sampling_interval_s; /* as written; negative: unset */
     tdot_point_t *points;
     size_t npoints;
     /* Point libraries this device inherited its points from, in order
@@ -142,6 +148,7 @@ typedef struct tdot_config {
     char *service_name; /* default "tedge-dot-<protocol>" */
     char *log_level;    /* default "info" */
     double poll_interval_s; /* default 2.0 */
+    double sampling_interval_s; /* as written; negative: unset */
 
     /* Liveness bounds (contract §8.1), mirroring the Rust runtime's
      * [connector] operation_timeout / stall_timeout.

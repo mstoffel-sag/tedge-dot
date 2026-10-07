@@ -342,6 +342,11 @@ add_test(NAME write COMMAND tedge-dot-write)
 # OPC UA: the PKI directory and certificate trust over the PKI vectors the Rust build
 # validates too (connectors/opcua/conformance/tools/genpki.py; needs Python + cryptography).
 if(TDOT_OPCUA)
+  add_executable(tedge-dot-opcua-sampling tests/opcua_sampling.c)
+  target_include_directories(tedge-dot-opcua-sampling PRIVATE connectors/opcua)
+  target_link_libraries(tedge-dot-opcua-sampling PRIVATE tedge_dot_sdk)
+  add_test(NAME opcua-sampling COMMAND tedge-dot-opcua-sampling)
+
   add_executable(tedge-dot-opcua-pki tests/opcua_pki.c)
   target_include_directories(tedge-dot-opcua-pki PRIVATE connectors/opcua)
   target_link_libraries(tedge-dot-opcua-pki PRIVATE tedge_dot_sdk)

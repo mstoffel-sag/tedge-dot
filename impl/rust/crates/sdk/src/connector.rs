@@ -42,8 +42,11 @@ pub struct PointRef {
     pub unit: Option<String>,
     /// Per-point linear transform applied to the decoded numeric value.
     pub transform: Transform,
-    /// Effective poll interval resolved by the runtime. Subscribe-capable connectors should
-    /// use it as the per-point sampling-interval hint (e.g. OPC-UA monitored item sampling).
+    /// The interval resolved by the runtime. For a point handed to `subscribe` it is the
+    /// effective *sampling* interval (`sampling_interval`, falling back to `poll_interval`):
+    /// how often the source should sample the point, e.g. an OPC UA monitored item's sampling
+    /// interval. Zero asks for the fastest rate the source supports. For a polled point it is
+    /// the effective poll interval.
     pub interval: Option<std::time::Duration>,
 }
 

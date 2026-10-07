@@ -66,6 +66,7 @@ const CONNECTOR_KEYS: &[&str] = &[
     "protocol",
     "service_name",
     "poll_interval",
+    "sampling_interval",
     "log_level",
     "operation_timeout",
     "stall_timeout",
@@ -78,6 +79,7 @@ const DEVICE_KEYS: &[&str] = &[
     "type",
     "protocol_address",
     "poll_interval",
+    "sampling_interval",
     "default_mode",
     "points_from",
     "point",
@@ -91,6 +93,7 @@ const POINT_KEYS: &[&str] = &[
     "endianness",
     "word_order",
     "poll_interval",
+    "sampling_interval",
     "address",
     "access",
     "unit",
@@ -285,6 +288,7 @@ fn check_point_values(point: &Value) -> Result<(), String> {
     check_one_of(point, "endianness", ORDERS)?;
     check_one_of(point, "word_order", ORDERS)?;
     check_duration(point, "poll_interval")?;
+    check_duration(point, "sampling_interval")?;
     check_type(point, "address", Value::is_table, "a table")?;
     check_one_of(point, "access", ACCESSES)?;
     for key in ["unit", "name", "description"] {
@@ -422,6 +426,7 @@ pub fn resolve(text: &str, base_dir: &Path) -> Result<ConnectorConfig, String> {
     // Before the devices, as the C loader reads it; the typed parse would only catch a non-string.
     if let Some(connector) = doc.get("connector") {
         check_duration(connector, "poll_interval")
+            .and_then(|()| check_duration(connector, "sampling_interval"))
             .and_then(|()| check_report(connector))
             .map_err(|e| format!("[connector] {e}"))?;
     }
@@ -486,6 +491,7 @@ fn expand(doc: &mut Value, base_dir: &Path) -> Result<(), String> {
         }
         check_one_of(device, "default_mode", MODES)
             .and_then(|()| check_duration(device, "poll_interval"))
+            .and_then(|()| check_duration(device, "sampling_interval"))
             .and_then(|()| check_report(device))
             .map_err(|e| format!("device '{name}': {e}"))?;
         // Checked here rather than left to the typed parse, because an empty string would
@@ -1791,6 +1797,10 @@ protocol_address = { unit_id = 1 }
             "unknown key 'polling_interval' in device 'plc-1' (did you mean 'poll_interval'?)"
         );
         assert_eq!(
+            refused(config("", "sample_interval = \"1s\"", "")),
+            "unknown key 'sample_interval' in device 'plc-1' (did you mean 'sampling_interval'?)"
+        );
+        assert_eq!(
             refused(config("log_levle = \"debug\"", "", "")),
             "unknown key 'log_levle' in [connector] (did you mean 'log_level'?)"
         );
@@ -1872,6 +1882,10 @@ protocol_address = { unit_id = 1 }
             "poll_interval must be a duration such as \"500ms\", \"2s\" or \"5m\" (got '1.5ms')",
         ),
         ("poll_interval = 5", "poll_interval must be a duration such as \"500ms\", \"2s\" or \"5m\""),
+        (
+            "sampling_interval = \"fast\"",
+            "sampling_interval must be a duration such as \"500ms\", \"2s\" or \"5m\" (got 'fast')",
+        ),
         ("address = \"holding:1\"", "address must be a table"),
         (
             "access = \"bogus\"",
@@ -1958,6 +1972,8 @@ protocol_address = { unit_id = 1 }
                 format!("[connector] poll_interval {duration} (got '2 fortnights')"),
             ),
             ("poll_interval = 5", "", format!("[connector] poll_interval {duration}")),
+            ("", "sampling_interval = \"fast\"", format!("device 'plc-1': sampling_interval {duration} (got 'fast')")),
+            ("sampling_interval = 5", "", format!("[connector] sampling_interval {duration}")),
         ] {
             let err = resolve(&config(connector, device), dir.path()).unwrap_err();
             assert_eq!(err, message);
@@ -2002,6 +2018,57 @@ poll_interval    = " 250ms "
         assert_eq!(duration(device.poll_interval.as_deref()), Some(std::time::Duration::from_millis(250)));
         assert_eq!(duration(device.points[0].poll_interval.as_deref()), Some(std::time::Duration::from_secs(90)));
         assert_eq!(device.points[0].access.as_deref(), Some("write"));
+    }
+
+    /// A pushed point's effective sampling interval: the first `sampling_interval` of point,
+    /// device and connector, else its effective poll interval; zero kept. Mirrors
+    /// `check_sampling_interval_resolution` in impl/c/tests/config.c (same files, same values).
+    #[test]
+    fn sampling_interval_resolution() {
+        let dir = Dir::new("sampling-interval");
+        let resolved = |text: &str| -> Vec<(String, u128, u128)> {
+            let cfg = resolve(text, dir.path()).unwrap();
+            cfg.devices
+                .iter()
+                .flat_map(|d| d.points.iter().map(move |p| (d, p)))
+                .map(|(d, p)| {
+                    (p.id.clone(), cfg.poll_interval(d, p).as_millis(), cfg.sampling_interval(d, p).as_millis())
+                })
+                .collect()
+        };
+        let point = |id: &str, extra: &str| {
+            format!("  [[device.point]]\n  id = \"{id}\"\n  datatype = \"uint16\"\n  address = {{ address = 1 }}\n  {extra}\n")
+        };
+        let without_connector_default = format!(
+            "[connector]\nprotocol = \"modbus\"\npoll_interval = \"3s\"\n\n\
+             [[device]]\nname = \"d1\"\nprotocol_address = {{ unit_id = 1 }}\npoll_interval = \"5s\"\n{}{}\n\
+             [[device]]\nname = \"d2\"\nprotocol_address = {{ unit_id = 2 }}\nsampling_interval = \"1s\"\n{}{}{}{}",
+            point("a", ""),
+            point("b", "poll_interval = \"250ms\""),
+            point("c", ""),
+            point("d", "sampling_interval = \"100ms\""),
+            point("e", "poll_interval = \"250ms\""),
+            point("f", "sampling_interval = \"0\""),
+        );
+        let expected: Vec<(String, u128, u128)> = [
+            ("a", 5000, 5000), // no sampling_interval anywhere: the poll interval, as before
+            ("b", 250, 250),
+            ("c", 3000, 1000), // the device's sampling_interval
+            ("d", 3000, 100),  // the point's beats the device's
+            ("e", 250, 1000),  // any sampling_interval beats every poll_interval
+            ("f", 3000, 0),    // zero: the source's fastest rate
+        ]
+        .into_iter()
+        .map(|(id, poll, sampling)| (id.to_string(), poll, sampling))
+        .collect();
+        assert_eq!(resolved(&without_connector_default), expected);
+
+        let connector_default = format!(
+            "[connector]\nprotocol = \"modbus\"\nsampling_interval = \"750ms\"\n\n\
+             [[device]]\nname = \"d1\"\nprotocol_address = {{ unit_id = 1 }}\npoll_interval = \"5s\"\n{}",
+            point("g", "poll_interval = \"250ms\""),
+        );
+        assert_eq!(resolved(&connector_default), vec![("g".to_string(), 250, 750)]);
     }
 
     /// The datatype names the loader accepts are the names the typed parse accepts.

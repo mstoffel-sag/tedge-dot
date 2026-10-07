@@ -90,6 +90,7 @@ future protocol.
 protocol      = "<protocol>"    # protocol module id (MUST match a compiled-in module)
 service_name  = "tedge-dot-modbus"
 poll_interval = "2s"            # default poll interval (duration string); per-point override allowed
+sampling_interval = "500ms"     # optional: default sampling interval of pushed points (§3.1); else poll_interval
 log_level     = "info"
 operation_timeout = "30s"       # optional: upper bound on one protocol-module call (§8.1)
 stall_timeout     = "120s"      # optional: restart the connector if its loop stops moving (§8.1)
@@ -110,6 +111,7 @@ name     = "<device-name>"      # -> te/device/<device-name>
 type     = "<device-type>"      # optional; what this device IS (§3.1), else from its library
 protocol_address = { } # protocol-specific: how to reach this device. Shape per connector spec.
 poll_interval = "2s"            # optional per-device override
+sampling_interval = "500ms"     # optional per-device override (pushed points only)
 default_mode  = "typed"         # optional; default output mode for this device's points
 points_from   = []              # optional; point libraries to inherit points from, in order (§3.4)
 enabled       = true            # optional; false keeps the definition but leaves the device out (§3.3)
@@ -122,6 +124,7 @@ report        = { on_change = true }  # optional: default reporting policy for t
   endianness    = "big"         # byte order: "big" | "little" (typed only)
   word_order    = "big"         # multi-word order: "big" | "little" (typed only)
   poll_interval = "1s"          # optional per-point override
+  sampling_interval = "200ms"   # optional: how often the source samples this point when pushed (§3.1)
   address  = { } # protocol-specific: how to address this point. Shape per connector spec.
   access   = "read"             # "read" | "write" | "read_write" (default "read")
   unit     = "raw"              # optional free-form hint passed through in the sample
@@ -174,6 +177,7 @@ report        = { on_change = true }  # optional: default reporting policy for t
 | `endianness` | `"big"` \| `"little"` | no | Byte order for `typed`; default `"big"`. |
 | `word_order` | `"big"` \| `"little"` | no | Word order for multi-word `typed`; default `"big"`. |
 | `poll_interval` | duration string | no | Overrides device/connector default. |
+| `sampling_interval` | duration string | no | How often the *source* samples the point when it is delivered by push, e.g. an OPC UA monitored item's sampling interval. Overrides the device/connector `sampling_interval`; with none set, the effective `poll_interval` is used. Ignored for a polled point. See *Sampling interval* below. |
 | `access` | `"read"` \| `"write"` \| `"read_write"` | no | Default `"read"`. |
 | `unit` | string | no | Opaque hint echoed into the sample for flows. |
 | `name` | string | no | Short human-readable label, for wherever a name is displayed instead of the `id` — which is a topic segment and a parameter-set key, so it stays a plain identifier. Feeds a parameter's DTM title (§5.2) and the capability descriptor's `point_labels` (§7). |
@@ -191,6 +195,18 @@ so the connector publishes them once in its retained capability descriptor (§7)
 every read. `meta.parameter.title` / `meta.parameter.description` override them for a
 parameter's cloud-facing labels, so a point can carry a general-purpose label and still say
 something different in the parameter UI.
+
+**Sampling interval.** A point delivered by push (see `subscribe` above, and the
+[SDK](../sdk/connector-sdk.md) on `subscribe`) is not polled, but its
+source may still sample it on a timer and only send changes; an OPC UA server samples each
+monitored item, for example. `sampling_interval` sets that timer. The runtime resolves a pushed
+point's effective sampling interval as the first one set among the point's, its device's and
+`[connector]`'s `sampling_interval`, and otherwise uses the point's effective `poll_interval`
+(so a configuration without the key behaves as before it existed). A `sampling_interval` at any
+level wins over every `poll_interval`. `"0"` asks the source for its fastest rate; it is never a
+default. The value reaches the module as the point's sampling hint (`PointRef::interval`); a
+source without a sampling timer (an SNMP trap, a CAN frame) ignores it, and it never changes the
+polling schedule. To limit how often a point is *published*, use `report.min_interval` (§5.3).
 
 A device MAY inherit these same point fields from a **point library** instead of declaring
 them inline; see §3.4.

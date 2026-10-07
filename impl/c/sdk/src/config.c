@@ -25,16 +25,18 @@
  * the same message. */
 static const char *const TOP_KEYS[] = {"connector", "mqtt", "connection", "device", NULL};
 static const char *const CONNECTOR_KEYS[] = {
-    "protocol",          "service_name",  "poll_interval",      "log_level",
-    "operation_timeout", "stall_timeout", "point_library_path", "report", NULL};
+    "protocol",          "service_name",  "poll_interval",      "sampling_interval",
+    "log_level",         "operation_timeout", "stall_timeout",  "point_library_path",
+    "report",            NULL};
 static const char *const MQTT_KEYS[] = {"host", "port", NULL};
 static const char *const DEVICE_KEYS[] = {
     "name",         "type",        "protocol_address", "poll_interval",
-    "default_mode", "points_from", "point",            "enabled",
-    "report",       NULL};
+    "sampling_interval", "default_mode", "points_from", "point",
+    "enabled",      "report",      NULL};
 static const char *const POINT_KEYS[] = {
     "id",      "mode",   "datatype", "endianness",  "word_order",
-    "poll_interval", "address", "access", "unit", "name", "description",
+    "poll_interval", "sampling_interval", "address", "access", "unit", "name",
+    "description",
     "transform", "meta", "subscribe", "enabled", "report", "map", NULL};
 static const char *const MAP_KEYS[] = {"cases", "default", "as", NULL};
 static const char *const CASE_KEYS[] = {"eq", "min", "max", "to", "write", NULL};
@@ -514,6 +516,7 @@ static void init_point(tdot_point_t *point, double device_interval,
     point->subscribe = true;
     point->enabled = true;
     point->poll_interval_s = device_interval;
+    point->sampling_interval_s = -1.0; /* unset until a definition sets it */
     tdot_transform_init(&point->transform);
 }
 
@@ -705,6 +708,7 @@ static int check_point_values(toml_table_t *pt, char *err, size_t errlen) {
         check_one_of(pt, "endianness", ORDERS, err, errlen) ||
         check_one_of(pt, "word_order", ORDERS, err, errlen) ||
         check_duration(pt, "poll_interval", err, errlen) ||
+        check_duration(pt, "sampling_interval", err, errlen) ||
         check_shape(pt, "address", SHAPE_TABLE, "", err, errlen) ||
         check_one_of(pt, "access", ACCESSES, err, errlen) ||
         check_shape(pt, "unit", SHAPE_STRING, "", err, errlen) ||
@@ -852,6 +856,11 @@ static void apply_point_table(toml_table_t *pt, tdot_point_t *point) {
     d = toml_string_in(pt, "poll_interval");
     if (d.ok) {
         point->poll_interval_s = tdot_duration_parse(d.u.s);
+        free(d.u.s);
+    }
+    d = toml_string_in(pt, "sampling_interval");
+    if (d.ok) {
+        point->sampling_interval_s = tdot_duration_parse(d.u.s);
         free(d.u.s);
     }
 
@@ -1435,6 +1444,25 @@ static bool raises_event_per_reading(const tdot_point_t *pt) {
  * can -- a point's `min_interval = "1h"` under a connector-wide
  * `max_interval = "30m"` -- and that config is not refused: the heartbeat is
  * raised, with a warning naming the point. */
+/* Each point's effective sampling interval (contract §3.1): the first
+ * sampling_interval of point, device and connector, else its effective poll
+ * interval. An explicit sampling_interval at any level wins over every
+ * poll_interval; 0 is kept. Same rule as the Rust loader's
+ * ConnectorConfig::sampling_interval. */
+static void resolve_sampling_intervals(const tdot_config_t *cfg, tdot_device_t *dev) {
+    for (size_t j = 0; j < dev->npoints; j++) {
+        tdot_point_t *pt = &dev->points[j];
+        if (pt->sampling_interval_s >= 0)
+            continue;
+        if (dev->sampling_interval_s >= 0)
+            pt->sampling_interval_s = dev->sampling_interval_s;
+        else if (cfg->sampling_interval_s >= 0)
+            pt->sampling_interval_s = cfg->sampling_interval_s;
+        else
+            pt->sampling_interval_s = pt->poll_interval_s;
+    }
+}
+
 static void resolve_point_reports(const tdot_config_t *cfg, tdot_device_t *dev) {
     for (size_t j = 0; j < dev->npoints; j++) {
         tdot_point_t *pt = &dev->points[j];
@@ -1514,6 +1542,16 @@ tdot_config_t *tdot_config_load(const char *path, char *err, size_t errlen) {
     d = toml_string_in(conn, "poll_interval");
     if (d.ok) {
         cfg->poll_interval_s = tdot_duration_parse(d.u.s);
+        free(d.u.s);
+    }
+    cfg->sampling_interval_s = -1.0;
+    if (check_duration(conn, "sampling_interval", why, sizeof why) != 0) {
+        snprintf(err, errlen, "%s: [connector] %s", path, why);
+        goto fail;
+    }
+    d = toml_string_in(conn, "sampling_interval");
+    if (d.ok) {
+        cfg->sampling_interval_s = tdot_duration_parse(d.u.s);
         free(d.u.s);
     }
     /* Before the devices, as the Rust loader checks it. */
@@ -1652,6 +1690,7 @@ tdot_config_t *tdot_config_load(const char *path, char *err, size_t errlen) {
         dev->name = d.u.s;
         if (check_one_of(dt, "default_mode", MODES, why, sizeof why) != 0 ||
             check_duration(dt, "poll_interval", why, sizeof why) != 0 ||
+            check_duration(dt, "sampling_interval", why, sizeof why) != 0 ||
             check_report_values(dt, why, sizeof why) != 0) {
             snprintf(err, errlen, "%s: device '%s': %s", path, dev->name, why);
             goto fail;
@@ -1688,6 +1727,12 @@ tdot_config_t *tdot_config_load(const char *path, char *err, size_t errlen) {
             dev->poll_interval_s = tdot_duration_parse(d.u.s);
             free(d.u.s);
         }
+        dev->sampling_interval_s = -1.0;
+        d = toml_string_in(dt, "sampling_interval");
+        if (d.ok) {
+            dev->sampling_interval_s = tdot_duration_parse(d.u.s);
+            free(d.u.s);
+        }
 
         /* Point libraries first (contract §3.4), then the device's own inline
          * points; a repeated id patches what came before. */
@@ -1698,6 +1743,7 @@ tdot_config_t *tdot_config_load(const char *path, char *err, size_t errlen) {
         if (dev_report)
             dev->report_table = report_to_json(dev_report);
         resolve_point_reports(cfg, dev);
+        resolve_sampling_intervals(cfg, dev);
     }
     return cfg;
 

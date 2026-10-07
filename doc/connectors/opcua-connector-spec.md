@@ -214,6 +214,49 @@ implement this section yet (capability `opcua-structures`, see `impl/c/README.md
 top-level ByteString variable: it is read as `bytes` in both builds, and the C build refuses a value
 longer than 127 bytes with a bad sample (its fixed value buffer) instead of truncating it.
 
+### 3.8 Subscription timing (`sampling_interval`)
+
+A subscribed node is not sent the moment it changes. The server runs two timers:
+
+- **Sampling**, per monitored item: how often the server checks the node's value. The
+  connector requests the point's effective `sampling_interval`
+  ([contract §3.1](../contract/ot-connector-contract.md#31-common-protocol-neutral-point-fields)):
+  the point's, else its device's, else `[connector]`'s, else the point's effective
+  `poll_interval`. Each item has `queueSize = 1` and `discardOldest = true`, so only the
+  latest value per publish is sent.
+- **Publishing**, per subscription (one per device): how often the server sends the queued
+  changes. It is not configurable. The connector requests the fastest effective sampling
+  interval among the device's subscribed points.
+
+A change therefore arrives up to about **one sampling interval plus one publishing interval**
+after it happens. With the default `poll_interval = "2s"` and no `sampling_interval`, that is
+about 4 s. To get changes faster without polling the other points faster:
+
+```toml
+[[device]]
+name              = "opc-server-1"
+protocol_address  = { endpoint = "opc.tcp://plc:4840/" }
+poll_interval     = "10s"     # polled nodes (subscribe = false)
+sampling_interval = "200ms"   # subscribed nodes: sampled and published about every 200 ms
+```
+
+`sampling_interval = "0"` asks the server for its fastest rate. The server decides what that
+means; it can be far more traffic, and more load on whatever the server reads the value from.
+One point at `"0"` also makes the whole device's subscription publish at the server's fastest
+rate. Use it only when you need it.
+
+The server may grant other rates than requested. When the revised sampling interval of an item,
+or the revised publishing interval of a subscription, differs from the requested one, both
+builds log an `info` line naming the device (and the point), the requested and the revised
+value. The connector keeps what the server granted.
+
+The publishing interval also paces the subscription keep-alive that the connector's
+`check_subscription` ([SDK](../sdk/connector-sdk.md)) relies on to notice a dead session: it
+allows about `publishing interval × 20 + publishing interval` without a publish. That is one
+reason the publishing interval is not used as a rate limit. To limit how often a point is
+published, use `report.min_interval` (§3.5): it is per point and does not delay the first change
+after a quiet spell.
+
 ## 4. The PKI directory
 
 ### 4.1 Layout

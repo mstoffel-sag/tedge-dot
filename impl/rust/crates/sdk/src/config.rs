@@ -46,6 +46,10 @@ pub struct ConnectorSection {
     pub(crate) configured_service_name: Option<String>,
     #[serde(default = "default_poll_interval")]
     pub poll_interval: String,
+    /// Default sampling interval of pushed points (contract §3.1); see
+    /// [`ConnectorConfig::sampling_interval`].
+    #[serde(default)]
+    pub sampling_interval: Option<String>,
     #[serde(default = "default_log_level")]
     pub log_level: String,
     /// Upper bound on a single protocol-module call (read batch, write, connect, subscribe).
@@ -108,6 +112,8 @@ pub struct DeviceConfig {
     #[serde(default)]
     pub poll_interval: Option<String>,
     #[serde(default)]
+    pub sampling_interval: Option<String>,
+    #[serde(default)]
     pub default_mode: Option<Mode>,
     /// Point libraries this device inherits its points from, in order (§3.4). Names are
     /// resolved against the library search path; entries containing `/` or ending in `.toml`
@@ -146,6 +152,7 @@ impl fmt::Debug for DeviceConfig {
             .field("protocol_address", &redacted(&self.protocol_address))
             .field("device_type", &self.device_type)
             .field("poll_interval", &self.poll_interval)
+            .field("sampling_interval", &self.sampling_interval)
             .field("default_mode", &self.default_mode)
             .field("points_from", &self.points_from)
             .field("points", &self.points)
@@ -190,6 +197,10 @@ pub struct PointConfig {
     pub word_order: Option<String>,
     #[serde(default)]
     pub poll_interval: Option<String>,
+    /// How often the source samples this point when it is delivered by push (§3.2); a polled
+    /// point ignores it. See [`ConnectorConfig::sampling_interval`].
+    #[serde(default)]
+    pub sampling_interval: Option<String>,
     /// Protocol-specific point address (opaque to the contract).
     pub address: serde_json::Value,
     #[serde(default)]
@@ -251,6 +262,36 @@ impl ConnectorConfig {
         crate::report::merge_into(&mut table, device.report.as_ref());
         crate::report::merge_into(&mut table, point.report.as_ref());
         table
+    }
+
+    /// A point's effective poll interval (§3.1): the point's, else its device's, else
+    /// `[connector]`'s, else 2 s.
+    pub fn poll_interval(&self, device: &DeviceConfig, point: &PointConfig) -> Duration {
+        point
+            .poll_interval
+            .as_deref()
+            .and_then(parse_duration)
+            .or_else(|| device.poll_interval.as_deref().and_then(parse_duration))
+            .or_else(|| parse_duration(&self.connector.poll_interval))
+            .unwrap_or(Duration::from_secs(2))
+    }
+
+    /// A pushed point's effective sampling interval (§3.1): the first `sampling_interval` of the
+    /// point, its device and `[connector]`, else its effective poll interval. An explicit
+    /// `sampling_interval` at any level wins over every `poll_interval`, so a connector-wide
+    /// setting is not silently cancelled by an older point-level `poll_interval`. Zero is kept:
+    /// it asks the source for its fastest rate. The C loader (impl/c/sdk/src/config.c
+    /// `resolve_sampling_intervals`) resolves the same value.
+    pub fn sampling_interval(&self, device: &DeviceConfig, point: &PointConfig) -> Duration {
+        [
+            point.sampling_interval.as_deref(),
+            device.sampling_interval.as_deref(),
+            self.connector.sampling_interval.as_deref(),
+        ]
+        .into_iter()
+        .flatten()
+        .find_map(parse_duration)
+        .unwrap_or_else(|| self.poll_interval(device, point))
     }
 }
 

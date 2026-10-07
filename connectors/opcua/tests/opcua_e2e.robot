@@ -53,6 +53,9 @@ ${STRUCT_PREFIX}            te/device/${STRUCT_DEVICE}/ot/${PROTOCOL}/sample
 # Longer than async-opcua's own session retries (1s, 2s and 4s apart), after which the client's
 # event loop ends.
 ${LONG_OUTAGE}              20s
+# A device that polls hourly but samples its pushed point every 200 ms (sampling_interval).
+${SAMPLING_DEVICE}          opc3
+${SAMPLING_SAMPLE_PREFIX}   te/device/${SAMPLING_DEVICE}/ot/${PROTOCOL}/sample
 
 
 *** Test Cases ***
@@ -153,6 +156,26 @@ Subscribed Node Pushes Value Changes
     ${second}=    Wait For Sample    ${SAMPLE_PREFIX}/ticks    timeout=${SAMPLE_TIMEOUT}
     ${v2}=    Get Json Field    ${second}    value
     Should Be True    ${v2} > ${v1}
+
+Sampling Interval Outpaces A Slow Poll Interval
+    [Documentation]    opc3 polls once an hour but sets `sampling_interval = "200ms"` (contract
+    ...                §3.1): its subscribed ticks point is sampled, and the device's subscription
+    ...                published, every 200 ms. The simulator increments Ticks every second, so
+    ...                each tick arrives within about a second. Were the poll interval still the
+    ...                sampling interval, the subscription would publish once an hour and nothing
+    ...                would arrive here. (python-asyncua reports value changes as they happen, so
+    ...                with this simulator it is the derived publishing interval that decides; it
+    ...                grants what is requested, uncapped.)
+    [Tags]    requires:subscribe
+    ${first}=    Wait For Sample    ${SAMPLING_SAMPLE_PREFIX}/ticks    timeout=${SAMPLE_TIMEOUT}
+    Sample Should Be Good    ${first}
+    ${previous}=    Get Json Field    ${first}    value
+    FOR    ${i}    IN RANGE    3
+        ${next}=    Wait For Sample    ${SAMPLING_SAMPLE_PREFIX}/ticks    timeout=3
+        ${value}=    Get Json Field    ${next}    value
+        Should Be True    ${value} > ${previous}    each tick arrives as its own sample: ${value} after ${previous}
+        ${previous}=    Set Variable    ${value}
+    END
 
 Subscribed Static Node Falls Silent After Its First Value
     [Documentation]    The decisive push test. temperature_pushed is subscribed to a node whose

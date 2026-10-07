@@ -51,7 +51,9 @@ use tracing::warn;
 
 const PROTOCOL: &str = "opcua";
 
-/// Sampling-interval fallback for monitored items when a point has no resolved poll interval.
+/// Sampling-interval fallback for a monitored item without one. Unreachable from the runtime,
+/// which always resolves a pushed point's sampling interval (`sampling_interval`, falling back
+/// to `poll_interval`); kept for modules driven directly, as by the CLI.
 const DEFAULT_SAMPLING_INTERVAL: Duration = Duration::from_millis(500);
 
 /// Largest integer representable exactly as an `f64` (JS `Number.MAX_SAFE_INTEGER`).
@@ -579,19 +581,16 @@ impl Connector for OpcuaConnector {
             }
         });
 
-        // One subscription per device, publishing at the fastest requested point rate.
-        let publishing_interval = items
-            .iter()
-            .map(|(_, _, interval)| *interval)
-            .min()
-            .unwrap_or(DEFAULT_SAMPLING_INTERVAL);
+        // One subscription per device, publishing at the fastest requested sampling rate.
+        let publishing_interval =
+            publishing_interval_for(items.iter().map(|(_, _, interval)| *interval));
         let subscription_id = session
             .create_subscription(publishing_interval, 60, 20, 0, 0, true, callback)
             .await
             .map_err(|s| ConnectorError::Transport(format!("create_subscription failed: {s}")))?;
 
-        // One monitored item per node and element, sampled at the fastest interval of its
-        // points.
+        // One monitored item per node and element, sampled at the fastest effective sampling
+        // interval of its points.
         let requests: Vec<MonitoredItemCreateRequest> = monitored
             .iter()
             .map(|(node_id, index, interval)| {
@@ -642,6 +641,31 @@ impl Connector for OpcuaConnector {
                 "monitored items rejected: {}",
                 failed.join(", ")
             )));
+        }
+        // The server may grant other rates than requested (a sampling interval below what it
+        // supports, zero included). Say so, so a "200ms" that behaves like "1s" is explained.
+        let granted = {
+            let state = session.subscription_state.lock();
+            state.get(subscription_id).map(|s| s.publishing_interval())
+        };
+        if let Some(revised) = granted.and_then(|g| revised(publishing_interval, g.as_secs_f64() * 1000.0)) {
+            tracing::info!(
+                device = %device, requested = ?publishing_interval, revised = ?revised,
+                "the server revised the subscription's publishing interval"
+            );
+        }
+        for ((node, index, interval), r) in monitored.iter().zip(&results) {
+            if let Some(revised) = revised(*interval, r.result.revised_sampling_interval) {
+                let ids: Vec<&str> = items
+                    .iter()
+                    .filter(|(_, m, _)| (&m.node_id, &m.index) == (node, index))
+                    .map(|(id, _, _)| id.as_str())
+                    .collect();
+                tracing::info!(
+                    device = %device, point = %ids.join(", "), requested = ?interval, revised = ?revised,
+                    "the server revised the point's sampling interval"
+                );
+            }
         }
 
         // Forward pushed samples into the runtime sink; exit cleanly when either side closes.
@@ -1322,6 +1346,22 @@ fn opcua_datetime_to_ts(dt: &opcua::types::DateTime) -> Option<OffsetDateTime> {
     OffsetDateTime::from_unix_timestamp_nanos(nanos).ok()
 }
 
+/// The publishing interval of a device's subscription: the fastest sampling interval of its
+/// subscribed points (zero included: the server then publishes at its fastest rate). The C
+/// module (impl/c/connectors/opcua/connector_opcua.c `publishing_interval_ms`) derives the same.
+fn publishing_interval_for(sampling: impl Iterator<Item = Duration>) -> Duration {
+    sampling.min().unwrap_or(DEFAULT_SAMPLING_INTERVAL)
+}
+
+/// The interval the server granted, when it is not the one requested. Both travel as whole
+/// milliseconds here (the client floors a revised publishing interval), so a difference under a
+/// millisecond is not a revision.
+fn revised(requested: Duration, revised_ms: f64) -> Option<Duration> {
+    let requested_ms = requested.as_secs_f64() * 1000.0;
+    (revised_ms.is_finite() && (revised_ms - requested_ms).abs() >= 1.0)
+        .then(|| Duration::from_secs_f64(revised_ms.max(0.0) / 1000.0))
+}
+
 /// Build a contract sample from an OPC-UA `DataValue`. Shared by the polling path
 /// (`read_points`) and the push path (`subscribe`) so both decode identically.
 fn build_sample(id: &str, model: &OpcuaPoint, dv: &DataValue, types: &resolve::SessionTypes) -> Sample {
@@ -1539,6 +1579,28 @@ fn addr_echo(model: &OpcuaPoint) -> serde_json::Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The subscription publishes at the fastest sampling interval of its points, zero included.
+    /// Mirrors `check_publishing_interval` in impl/c/tests/opcua_sampling.c.
+    #[test]
+    fn publishing_interval_is_the_fastest_sampling_interval() {
+        let ms = Duration::from_millis;
+        assert_eq!(publishing_interval_for([ms(1000), ms(250)].into_iter()), ms(250));
+        assert_eq!(publishing_interval_for([ms(2000), ms(5000)].into_iter()), ms(2000));
+        assert_eq!(publishing_interval_for([ms(1000), ms(0)].into_iter()), ms(0));
+        assert_eq!(publishing_interval_for(std::iter::empty()), DEFAULT_SAMPLING_INTERVAL);
+    }
+
+    /// Only a revision of a millisecond or more is one: both sides are whole milliseconds.
+    #[test]
+    fn revised_intervals() {
+        let ms = Duration::from_millis;
+        assert_eq!(revised(ms(50), 1000.0), Some(ms(1000)));
+        assert_eq!(revised(ms(0), 100.0), Some(ms(100)));
+        assert_eq!(revised(ms(200), 200.0), None);
+        assert_eq!(revised(ms(200), 200.4), None);
+        assert_eq!(revised(ms(200), f64::NAN), None);
+    }
 
     #[test]
     fn node_id_textual() {

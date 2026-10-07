@@ -1,13 +1,13 @@
 /* Config-loader semantics that the runtime depends on but no higher layer
  * pins down precisely.
  *
- * The liveness bounds (contract §8.1) and the sampling-interval hint both have
+ * The liveness bounds (contract §8.1) and the interval resolution both have
  * rules that are easy to get subtly wrong and expensive to notice: a
  * stall_timeout below the per-call bound restarts a healthy connector in a
- * loop, and confusing a point's OWN poll_interval with its resolved one turns
- * push delivery back into polling at the device's rate. Both mirror the Rust
+ * loop, and a sampling interval resolved differently from the Rust build makes
+ * the same config sample pushed points at another rate. Both mirror the Rust
  * implementation (impl/rust/src/main.rs `stall_timeout`, and
- * impl/rust/crates/sdk/src/runtime.rs `point_ref`/`setup_subscriptions`).
+ * impl/rust/crates/sdk/src/config.rs `poll_interval`/`sampling_interval`).
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -167,12 +167,10 @@ static void check_invalid_timeouts_fall_back(void) {
 }
 
 static void check_point_interval_resolution(void) {
-    /* point ?? device ?? connector, resolved once at load. This single value is
-     * BOTH the polling period and the subscription's sampling-interval hint, so
-     * it has to match what the Rust runtime resolves (runtime.rs, `point_ref`
-     * and `subscribe_device`): the same config must sample at the same rate in
-     * both builds, or one of them quietly coalesces away value changes the
-     * other reports. */
+    /* point ?? device ?? connector, resolved once at load: the polling period,
+     * and the sampling interval of a pushed point that has no sampling_interval
+     * anywhere (check_sampling_interval_resolution). It has to match what the
+     * Rust runtime resolves (config.rs `poll_interval`). */
     tdot_config_t *cfg = load("", "");
     if (!cfg)
         return;
@@ -1253,6 +1251,8 @@ static void check_unknown_keys(void) {
     } cases[] = {
         {"a device key", "", "polling_interval = \"10s\"\n", "", "",
          "unknown key 'polling_interval' in device 'plc-1' (did you mean 'poll_interval'?)"},
+        {"a misspelt sampling_interval", "", "sample_interval = \"1s\"\n", "", "",
+         "unknown key 'sample_interval' in device 'plc-1' (did you mean 'sampling_interval'?)"},
         {"a connector key", "log_levle = \"debug\"\n", "", "", "",
          "unknown key 'log_levle' in [connector] (did you mean 'log_level'?)"},
         {"a point key", "", "", "datatyp = \"uint16\"\n", "",
@@ -1443,6 +1443,7 @@ static const struct {
     {"poll_interval = \"abc\"", "poll_interval " DURATION_MSG " (got 'abc')"},
     {"poll_interval = \"1.5ms\"", "poll_interval " DURATION_MSG " (got '1.5ms')"},
     {"poll_interval = 5", "poll_interval " DURATION_MSG},
+    {"sampling_interval = \"fast\"", "sampling_interval " DURATION_MSG " (got 'fast')"},
     {"address = \"holding:1\"", "address must be a table"},
     {"access = \"bogus\"",
      "access must be one of \"read\", \"write\", \"read_write\" (got 'bogus')"},
@@ -1508,6 +1509,77 @@ static void check_invalid_point_field_values(void) {
     scratch_free(&s);
 }
 
+/* A pushed point's effective sampling interval: the first sampling_interval of
+ * point, device and connector, else its effective poll interval; zero kept.
+ * Mirrors library.rs::sampling_interval_resolution: the same files, the same
+ * values, so both builds request the same monitored-item sampling rates. */
+#define SAMPLING_POINT(id, extra)                                              \
+    "  [[device.point]]\n  id = \"" id "\"\n  datatype = \"uint16\"\n"          \
+    "  address = { address = 1 }\n  " extra "\n"
+
+static void check_sampling_interval_resolution(void) {
+    scratch_t s;
+    scratch_init(&s);
+    static const struct {
+        const char *id;
+        double poll_s, sampling_s;
+    } expected[] = {
+        {"a", 5.0, 5.0},   /* no sampling_interval anywhere: the poll interval */
+        {"b", 0.25, 0.25},
+        {"c", 3.0, 1.0},   /* the device's sampling_interval */
+        {"d", 3.0, 0.1},   /* the point's beats the device's */
+        {"e", 0.25, 1.0},  /* any sampling_interval beats every poll_interval */
+        {"f", 3.0, 0.0},   /* zero: the source's fastest rate */
+    };
+    write_file(&s, "etc/modbus.toml",
+               "[connector]\nprotocol = \"modbus\"\npoll_interval = \"3s\"\n\n"
+               "[[device]]\nname = \"d1\"\nprotocol_address = { unit_id = 1 }\n"
+               "poll_interval = \"5s\"\n" SAMPLING_POINT("a", "")
+               SAMPLING_POINT("b", "poll_interval = \"250ms\"") "\n"
+               "[[device]]\nname = \"d2\"\nprotocol_address = { unit_id = 2 }\n"
+               "sampling_interval = \"1s\"\n" SAMPLING_POINT("c", "")
+               SAMPLING_POINT("d", "sampling_interval = \"100ms\"")
+               SAMPLING_POINT("e", "poll_interval = \"250ms\"")
+               SAMPLING_POINT("f", "sampling_interval = \"0\""));
+    char err[256] = "";
+    tdot_config_t *cfg = tdot_config_load(scratch_path(&s, "etc/modbus.toml"), err, sizeof err);
+    CHECK(cfg != NULL, "sampling config did not load: %s", err);
+    if (cfg) {
+        size_t k = 0;
+        for (size_t i = 0; i < cfg->ndevices; i++) {
+            for (size_t j = 0; j < cfg->devices[i].npoints; j++, k++) {
+                const tdot_point_t *pt = &cfg->devices[i].points[j];
+                CHECK(k < sizeof expected / sizeof *expected && strcmp(pt->id, expected[k].id) == 0,
+                      "unexpected point %s", pt->id);
+                if (k >= sizeof expected / sizeof *expected)
+                    continue;
+                CHECK(pt->poll_interval_s == expected[k].poll_s &&
+                          pt->sampling_interval_s == expected[k].sampling_s,
+                      "point %s: poll %.3f sampling %.3f, expected %.3f / %.3f", pt->id,
+                      pt->poll_interval_s, pt->sampling_interval_s, expected[k].poll_s,
+                      expected[k].sampling_s);
+            }
+        }
+        CHECK(k == sizeof expected / sizeof *expected, "expected 6 points, got %zu", k);
+        tdot_config_free(cfg);
+    }
+
+    write_file(&s, "etc/modbus.toml",
+               "[connector]\nprotocol = \"modbus\"\nsampling_interval = \"750ms\"\n\n"
+               "[[device]]\nname = \"d1\"\nprotocol_address = { unit_id = 1 }\n"
+               "poll_interval = \"5s\"\n" SAMPLING_POINT("g", "poll_interval = \"250ms\""));
+    cfg = tdot_config_load(scratch_path(&s, "etc/modbus.toml"), err, sizeof err);
+    CHECK(cfg != NULL, "connector sampling config did not load: %s", err);
+    if (cfg) {
+        const tdot_point_t *pt = &cfg->devices[0].points[0];
+        CHECK(pt->poll_interval_s == 0.25 && pt->sampling_interval_s == 0.75,
+              "the connector's sampling_interval must win over the point's poll_interval: "
+              "poll %.3f sampling %.3f", pt->poll_interval_s, pt->sampling_interval_s);
+        tdot_config_free(cfg);
+    }
+    scratch_free(&s);
+}
+
 /* The device- and connector-level fields the two loaders interpret. Mirrors
  * library.rs::invalid_device_and_connector_field_values_are_refused. */
 static void check_invalid_device_field_values(void) {
@@ -1524,6 +1596,9 @@ static void check_invalid_device_field_values(void) {
         {"poll_interval = \"2 fortnights\"\n", "",
          "[connector] poll_interval " DURATION_MSG " (got '2 fortnights')"},
         {"poll_interval = 5\n", "", "[connector] poll_interval " DURATION_MSG},
+        {"", "sampling_interval = \"fast\"\n",
+         "device 'plc-1': sampling_interval " DURATION_MSG " (got 'fast')"},
+        {"sampling_interval = 5\n", "", "[connector] sampling_interval " DURATION_MSG},
     };
     for (size_t i = 0; i < sizeof cases / sizeof *cases; i++) {
         char body[1024];
@@ -2084,6 +2159,7 @@ int main(void) {
     check_invalid_timeouts_fall_back();
     check_point_interval_resolution();
     check_connector_interval_is_the_last_resort();
+    check_sampling_interval_resolution();
     check_subscribe_defaults_on();
     check_config_without_references_is_unchanged();
     check_named_library_is_inherited();

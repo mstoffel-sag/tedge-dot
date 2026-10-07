@@ -29,6 +29,10 @@
           "$ref": "#/$defs/duration",
           "default": "2s"
         },
+        "sampling_interval": {
+          "$ref": "#/$defs/duration",
+          "description": "How often the source samples a point delivered by push (§3.1), e.g. an OPC UA monitored item's sampling interval. Resolved point, then device, then connector; with none set, the point's effective poll_interval. An explicit sampling_interval at any level wins over every poll_interval. Polled points ignore it. \"0\" asks for the source's fastest rate."
+        },
         "operation_timeout": {
           "type": "string",
           "default": "30s",
@@ -192,6 +196,10 @@
         "poll_interval": {
           "$ref": "#/$defs/duration"
         },
+        "sampling_interval": {
+          "$ref": "#/$defs/duration",
+          "description": "How often the source samples a point delivered by push (§3.1), e.g. an OPC UA monitored item's sampling interval. Resolved point, then device, then connector; with none set, the point's effective poll_interval. An explicit sampling_interval at any level wins over every poll_interval. Polled points ignore it. \"0\" asks for the source's fastest rate."
+        },
         "default_mode": {
           "enum": [
             "raw",
@@ -322,6 +330,10 @@
         },
         "poll_interval": {
           "$ref": "#/$defs/duration"
+        },
+        "sampling_interval": {
+          "$ref": "#/$defs/duration",
+          "description": "How often the source samples a point delivered by push (§3.1), e.g. an OPC UA monitored item's sampling interval. Resolved point, then device, then connector; with none set, the point's effective poll_interval. An explicit sampling_interval at any level wins over every poll_interval. Polled points ignore it. \"0\" asks for the source's fastest rate."
         },
         "access": {
           "enum": [

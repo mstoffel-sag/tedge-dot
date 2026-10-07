@@ -1299,25 +1299,14 @@ fn build_schedule(
     config: &ConnectorConfig,
     subscribed: &HashSet<(usize, String)>,
 ) -> Vec<ScheduleEntry> {
-    let connector_default = parse_duration(&config.connector.poll_interval)
-        .unwrap_or_else(|| Duration::from_secs(2));
     let now = Instant::now();
     let mut schedule = Vec::new();
     for (device_index, device) in config.devices.iter().enumerate() {
-        let device_default = device
-            .poll_interval
-            .as_deref()
-            .and_then(parse_duration)
-            .unwrap_or(connector_default);
         for point in &device.points {
             if subscribed.contains(&(device_index, point.id.clone())) {
                 continue;
             }
-            let interval = point
-                .poll_interval
-                .as_deref()
-                .and_then(parse_duration)
-                .unwrap_or(device_default);
+            let interval = config.poll_interval(device, point);
             let mut point = point_ref(point, device.default_mode);
             point.interval = Some(interval);
             schedule.push(ScheduleEntry {
@@ -1479,19 +1468,13 @@ async fn subscribe_device(
 
 /// The points of `device` to ask `connector` to push: those not configured `subscribe = false`
 /// that the module delivers by push ([`Connector::pushes_point`]). Everything else stays on the
-/// polling schedule. Each carries its effective poll interval as the sampling hint.
+/// polling schedule. Each carries its effective sampling interval as the sampling hint
+/// ([`ConnectorConfig::sampling_interval`]).
 fn push_points(
     connector: &dyn Connector,
     config: &ConnectorConfig,
     device: &crate::config::DeviceConfig,
 ) -> Vec<PointRef> {
-    let connector_default = parse_duration(&config.connector.poll_interval)
-        .unwrap_or_else(|| Duration::from_secs(2));
-    let device_default = device
-        .poll_interval
-        .as_deref()
-        .and_then(parse_duration)
-        .unwrap_or(connector_default);
     // `subscribe = false` is honoured as written: it means "poll this instead". A module with
     // points it can only push must REJECT the combination in its own configuration validation
     // rather than have the runtime quietly override the operator (the SNMP connector does, for
@@ -1503,12 +1486,7 @@ fn push_points(
         .filter(|p| p.subscribe.unwrap_or(true))
         .map(|p| {
             let mut r = point_ref(p, device.default_mode);
-            r.interval = Some(
-                p.poll_interval
-                    .as_deref()
-                    .and_then(parse_duration)
-                    .unwrap_or(device_default),
-            );
+            r.interval = Some(config.sampling_interval(device, p));
             r
         })
         .filter(|r| connector.pushes_point(&device.name, r))
@@ -2846,10 +2824,14 @@ default_mode = "typed"
     fn set_config_patches_named_device() {
         let (_d, cfg) = apply(
             "set-config",
-            serde_json::json!({ "target": "device:plc-1", "config": { "poll_interval": "10s" } }),
+            serde_json::json!({
+                "target": "device:plc-1",
+                "config": { "poll_interval": "10s", "sampling_interval": "500ms" }
+            }),
         );
         let dev = cfg.devices.iter().find(|d| d.name == "plc-1").unwrap();
         assert_eq!(dev.poll_interval.as_deref(), Some("10s"));
+        assert_eq!(dev.sampling_interval.as_deref(), Some("500ms"));
         // existing points untouched
         assert_eq!(dev.points.len(), 1);
     }
@@ -2883,6 +2865,11 @@ default_mode = "typed"
         assert!(!needs_restart(&running, &edited("poll_interval = \"2s\"", "poll_interval = \"9s\"")));
         assert!(!needs_restart(&running, &edited("address = 7", "address = 8")));
         assert!(!needs_restart(&running, &edited("log_level = \"info\"", "log_level = \"debug\"")));
+        // A new sampling interval is applied in place: not a restart, but a change, so the
+        // devices reconnect and their subscriptions are re-created with it.
+        let sampling = edited("poll_interval = \"2s\"", "poll_interval = \"2s\"\nsampling_interval = \"200ms\"");
+        assert!(!needs_restart(&running, &sampling));
+        assert_ne!(running, sampling);
 
         let service = edited("protocol = \"modbus\"", "protocol = \"modbus\"\nservice_name = \"plant\"");
         assert!(needs_restart(&running, &service));
@@ -3175,6 +3162,31 @@ protocol_address = { host = "127.0.0.1" }
         let everything = push_points(&PushPrefix(None), &config, device);
         let ids: Vec<&str> = everything.iter().map(|p| p.id.as_str()).collect();
         assert_eq!(ids, ["trap_link", "uptime"], "default: every point not opted out");
+    }
+
+    /// A pushed point's hint is its effective sampling interval; `sampling_interval` never
+    /// touches the polling schedule, so an opted-out point is still polled at its poll interval.
+    #[test]
+    fn sampling_interval_is_the_hint_of_pushed_points_only() {
+        let text = MIXED
+            .replace("poll_interval = \"3s\"", "poll_interval = \"3s\"\nsampling_interval = \"200ms\"")
+            .replace("subscribe = false", "subscribe = false\n  poll_interval = \"10s\"");
+        let config: ConnectorConfig = toml::from_str(&text).unwrap();
+        let device = &config.devices[0];
+
+        let pushed = push_points(&PushPrefix(Some("trap")), &config, device);
+        assert_eq!(pushed[0].id, "trap_link");
+        assert_eq!(pushed[0].interval, Some(Duration::from_millis(200)));
+
+        let subscribed: HashSet<(usize, String)> =
+            pushed.iter().map(|p| (0usize, p.id.clone())).collect();
+        let schedule = build_schedule(&config, &subscribed);
+        let intervals: Vec<(&str, Duration)> =
+            schedule.iter().map(|e| (e.point.id.as_str(), e.interval)).collect();
+        assert_eq!(
+            intervals,
+            [("uptime", Duration::from_secs(3)), ("trap_opted_out", Duration::from_secs(10))]
+        );
     }
 
     /// A dead subscription must always lead to recovery. Only on a push-only device does the

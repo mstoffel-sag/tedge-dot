@@ -29,6 +29,17 @@ services:
       # Advertise the docker service hostname so the client's endpoint matches.
       OPCUA_ENDPOINT_HOST: simulator
 
+  # The same simulator again, for the sampling_interval device (opc3 in connector.toml) only.
+  # It is kept apart so the outage tests, which stop or freeze `simulator`, leave opc3 alone:
+  # with its 200 ms keep-alive window it would notice an outage first, and the C runtime's
+  # blocking teardown and reconnects of it would delay how soon the other devices are noticed.
+  sampling-simulator:
+    build:
+      context: ../..
+      dockerfile: connectors/opcua/sim/Dockerfile
+    environment:
+      OPCUA_ENDPOINT_HOST: sampling-simulator
+
   connector:
     # Stable image name so every (randomly named) project reuses the built image instead of
     # rebuilding it. IMPL/CONNECTOR_DOCKERFILE select the implementation under test:
@@ -46,6 +57,7 @@ services:
     depends_on:
       - broker
       - simulator
+      - sampling-simulator
 
   # thin-edge flows engine (user-defined mapper, no cloud) running this repo's flows against
   # the same broker, so the suite can drive the device-side command/parameter bridge end to end.

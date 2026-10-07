@@ -49,6 +49,14 @@ service_name  = "tedge-dot-opcua"
 poll_interval = "2s"
 log_level     = "info"
 
+# Subscribed nodes are sampled by the server, not polled: by default at their poll interval,
+# and the subscription publishes at the fastest of those, so a change can take up to about two
+# poll intervals to arrive. sampling_interval sets the server's sampling rate for subscribed
+# nodes only (here, on a device or on a point); polled nodes keep poll_interval. "0" asks the
+# server for its fastest rate, which can be much chattier. To limit how often a point is
+# published, use report.min_interval instead.
+# sampling_interval = "500ms"
+
 # Heartbeat (reporting policy, see doc/reducing-data-volume.md): publish every point at least
 # this often, even when its value has not changed, because Cumulocity marks a device unavailable
 # when it sends nothing within its required interval; 30m stays inside the usual 60m. A

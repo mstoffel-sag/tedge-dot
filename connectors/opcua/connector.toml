@@ -96,8 +96,8 @@ default_mode     = "typed"
   # A subscription reports value CHANGES, so this point publishes its initial value once and
   # then goes quiet. Polling would republish it every poll_interval whether or not anything
   # changed. That silence is the one thing polling cannot imitate -- and it is the only usable
-  # discriminator, because a RATE check cannot tell the two apart: the runtime hands the
-  # connector each point's resolved poll interval as the monitored item's sampling interval, so
+  # discriminator, because a RATE check cannot tell the two apart: with no sampling_interval set
+  # (as on this device), the monitored item is sampled at the point's resolved poll interval, so
   # push and polling deliver at the same rate by design. See
   # "Subscribed Static Node Falls Silent After Its First Value" in tests/opcua_e2e.robot.
   [[device.point]]
@@ -163,3 +163,20 @@ default_mode     = "typed"
   datatype = "uint32"
   address  = { node_id = "ns=2;s=Ticks" }
 
+# A pushed point sampled much faster than the device polls (contract §3.1 `sampling_interval`).
+# With only poll_interval the monitored item would be sampled -- and the subscription published --
+# once an hour, so Ticks (+1 every second) would arrive at most hourly; sampling_interval makes
+# the server sample and publish every 200 ms, so every tick arrives. See "Sampling Interval
+# Outpaces A Slow Poll Interval" in tests/opcua_e2e.robot. It has its own simulator
+# (sampling-simulator in docker-compose.yaml), out of the way of the outage tests.
+[[device]]
+name              = "opc3"
+protocol_address  = { endpoint = "opc.tcp://sampling-simulator:4840/", security_policy = "None", security_mode = "none" }
+default_mode      = "typed"
+poll_interval     = "1h"
+sampling_interval = "200ms"
+
+  [[device.point]]
+  id       = "ticks"
+  datatype = "uint32"
+  address  = { node_id = "ns=2;s=Ticks" }

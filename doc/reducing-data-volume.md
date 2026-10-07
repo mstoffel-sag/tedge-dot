@@ -96,6 +96,15 @@ interval ends, the held reading is published with its original timestamp, provid
 differs from the last published value. The last change of a burst is therefore not lost, even
 for a pushed point (an OPC UA subscription, an SNMP trap) that receives nothing afterwards.
 
+### How often a pushed point is sampled
+
+The report policy only filters the readings that arrive. For a pushed point, how often a reading
+can arrive is up to the source: an OPC UA server samples a subscribed node at the point's
+`sampling_interval` (falling back to its `poll_interval`) and sends changes at most that often.
+Set `sampling_interval` to get changes faster, and `report` to publish fewer of them. See
+[contract §3.1](contract/ot-connector-contract.md#31-common-protocol-neutral-point-fields) and the
+[OPC UA spec §3.8](connectors/opcua-connector-spec.md#38-subscription-timing-sampling_interval).
+
 ### Heartbeat, and Cumulocity availability
 
 Cumulocity marks a device **unavailable** when it has sent nothing within its required

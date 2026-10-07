@@ -23,6 +23,7 @@
 #include "tedge_dot/connector.h"
 #include "tedge_dot/decode.h"
 #include "ua_pki.h"
+#include "ua_sampling.h"
 
 /* Per-point parsed address (pt->proto, flat). */
 typedef struct {
@@ -1616,14 +1617,38 @@ static int write_point(tdot_connector_t *self, tdot_device_t *dev,
  * one. Nothing here touches MQTT.
  */
 
-/* A point's RESOLVED poll interval (point ?? device ?? connector) is its
- * monitored-item sampling interval, which is what the Rust runtime hands its
- * module in PointRef::interval -- always Some, never the module's own default.
- * Both implementations must derive it identically: the same config otherwise
+/* A point's EFFECTIVE sampling interval (sampling_interval of point ?? device
+ * ?? connector, else its resolved poll interval; config.c
+ * resolve_sampling_intervals) is its monitored-item sampling interval, which is
+ * what the Rust runtime hands its module in PointRef::interval. Both
+ * implementations must derive it identically: the same config otherwise
  * monitors at different rates in the two builds, and a subscription sampling
  * more slowly silently coalesces away value changes the other one reports. */
-static double sampling_interval_ms(const tdot_point_t *pt) {
-    return pt->poll_interval_s * 1000.0;
+double tdot_ua_sampling_interval_ms(const tdot_point_t *pt) {
+    return pt->sampling_interval_s * 1000.0;
+}
+
+/* Points that opted out (subscribe = false) and write-only points stay on the
+ * polling schedule; the rest set the pace. A `have` flag, not a zero
+ * sentinel: zero is a valid interval and must stay the fastest. */
+double tdot_ua_publishing_interval_ms(const tdot_device_t *dev, size_t *wanted) {
+    *wanted = 0;
+    double fastest = 0;
+    for (size_t j = 0; j < dev->npoints; j++) {
+        const tdot_point_t *pt = &dev->points[j];
+        if (!pt->subscribe || !(pt->access & TDOT_ACCESS_READ))
+            continue;
+        double ms = tdot_ua_sampling_interval_ms(pt);
+        if (*wanted == 0 || ms < fastest)
+            fastest = ms;
+        (*wanted)++;
+    }
+    return fastest;
+}
+
+bool tdot_ua_revised(double requested_ms, double revised_ms) {
+    double delta = revised_ms - requested_ms;
+    return revised_ms == revised_ms /* not NaN */ && (delta >= 1.0 || delta <= -1.0);
 }
 
 static void on_data_change(UA_Client *client, UA_UInt32 sub_id,
@@ -1716,24 +1741,13 @@ static int subscribe_device(tdot_connector_t *self, tdot_device_t *dev,
     ua->head = ua->tail = 0;
     ua->dropped = 0;
 
-    /* Points that opted out (subscribe = false) and write-only points stay on
-     * the polling schedule. */
     size_t wanted = 0;
-    double fastest = 0;
-    for (size_t j = 0; j < dev->npoints; j++) {
-        tdot_point_t *pt = &dev->points[j];
-        if (!pt->subscribe || !(pt->access & TDOT_ACCESS_READ))
-            continue;
-        wanted++;
-        double ms = sampling_interval_ms(pt);
-        if (fastest == 0 || ms < fastest)
-            fastest = ms;
-    }
+    double fastest = tdot_ua_publishing_interval_ms(dev, &wanted);
     if (wanted == 0)
         return 0; /* nothing to push: armed, with no points */
 
-    /* One subscription per device, publishing at the fastest requested point
-     * rate -- the same parameters the Rust module uses. */
+    /* One subscription per device, publishing at the fastest requested
+     * sampling rate -- the same parameters the Rust module uses. */
     UA_CreateSubscriptionRequest req = UA_CreateSubscriptionRequest_default();
     req.requestedPublishingInterval = fastest;
     req.requestedLifetimeCount = 60;
@@ -1751,6 +1765,13 @@ static int subscribe_device(tdot_connector_t *self, tdot_device_t *dev,
     }
     ua->sub_id = resp.subscriptionId;
     ua->subscribed = true;
+    /* The server may grant other rates than requested: say so, so a "200ms"
+     * that behaves like "1s" is explained. */
+    if (tdot_ua_revised(fastest, resp.revisedPublishingInterval))
+        fprintf(stderr,
+                "info  device %s: the server revised the subscription's publishing "
+                "interval: requested %.0fms, revised %.0fms\n",
+                dev->name, fastest, resp.revisedPublishingInterval);
     /* The response header can carry a heap-allocated diagnostics/string table;
      * a flapping link re-subscribes often enough for that to add up. */
     UA_CreateSubscriptionResponse_clear(&resp);
@@ -1770,7 +1791,7 @@ static int subscribe_device(tdot_connector_t *self, tdot_device_t *dev,
 
         UA_MonitoredItemCreateRequest mreq =
             UA_MonitoredItemCreateRequest_default(node);
-        mreq.requestedParameters.samplingInterval = sampling_interval_ms(pt);
+        mreq.requestedParameters.samplingInterval = tdot_ua_sampling_interval_ms(pt);
         mreq.requestedParameters.queueSize = 1;
         mreq.requestedParameters.discardOldest = true;
         UA_MonitoredItemCreateResult mres =
@@ -1784,6 +1805,13 @@ static int subscribe_device(tdot_connector_t *self, tdot_device_t *dev,
              * stays polled. */
             pt->subscribed = true;
             armed++;
+            if (tdot_ua_revised(mreq.requestedParameters.samplingInterval,
+                                mres.revisedSamplingInterval))
+                fprintf(stderr,
+                        "info  device %s: point %s: the server revised the point's "
+                        "sampling interval: requested %.0fms, revised %.0fms\n",
+                        dev->name, pt->id, mreq.requestedParameters.samplingInterval,
+                        mres.revisedSamplingInterval);
         }
         UA_MonitoredItemCreateResult_clear(&mres); /* filterResult may be heap */
     }
