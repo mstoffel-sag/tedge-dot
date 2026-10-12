@@ -12,6 +12,7 @@
 //! address slots with a very different protocol.
 
 mod config;
+mod namespaces;
 pub mod pki;
 pub mod pki_cli;
 mod privilege;
@@ -59,10 +60,21 @@ const DEFAULT_SAMPLING_INTERVAL: Duration = Duration::from_millis(500);
 /// Largest integer representable exactly as an `f64` (JS `Number.MAX_SAFE_INTEGER`).
 const MAX_SAFE_INT: i64 = 9_007_199_254_740_991;
 
+/// How often the untranslated points of a push subscription are tried again (openspec
+/// `opcua-namespace-table`, design D5). A polled point is tried again at its next poll.
+const RETRY_INTERVAL: Duration = Duration::from_secs(30);
+
 /// A fully-resolved OPC-UA point (node id + decode parameters), built in `configure`.
 #[derive(Clone)]
 struct OpcuaPoint {
+    /// The node id to read. For a point with a namespace `table` this is the configured id until
+    /// [`effective`] substitutes the session's translation.
     node_id: NodeId,
+    /// The node id as configured, echoed in the sample's `addr`.
+    addr_node: String,
+    /// The namespace table the configured id was written against; `None` for a point without
+    /// one and for a namespace-0 id, which are read as configured.
+    table: Option<namespaces::Table>,
     /// `address.field`: the path into a structured value (openspec `opcua-custom-datatypes`).
     field: Option<Vec<structure::Segment>>,
     /// `address.index`: one element of an array value.
@@ -94,6 +106,8 @@ struct SessionHandle {
     event_loop: AbortOnDrop,
     /// What this session resolved for structured values; replaced at every connect.
     types: Arc<resolve::SessionTypes>,
+    /// The node ids this session translated through namespace tables (design D3).
+    translation: Arc<Mutex<namespaces::Translation>>,
 }
 
 /// A spawned task aborted when its handle is dropped. The runtime cancels a module call that
@@ -142,6 +156,23 @@ fn lock_health(health: &Mutex<SessionHealth>) -> MutexGuard<'_, SessionHealth> {
 struct SubscriptionHandle {
     items: usize,
     forwarder: tokio::task::JoinHandle<()>,
+    /// Tries the subscribed points whose namespace was not translated again, and adds their
+    /// monitored items once it is (design D5).
+    _retry: Option<AbortOnDrop>,
+}
+
+/// The points behind each monitored item (node and array element): several points may share one.
+type ByNode = HashMap<(NodeId, Option<u32>), Vec<(String, OpcuaPoint)>>;
+
+/// What a subscription's data-change callback matches notifications against. Shared with the
+/// retry task, which adds the points it translates later.
+struct PushState {
+    by_node: ByNode,
+    types: Arc<resolve::SessionTypes>,
+}
+
+fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 /// The OPC-UA connector. One instance manages all configured OPC-UA servers.
@@ -176,7 +207,18 @@ impl OpcuaConnector {
         let (result, info) = attempt.connect().await;
         match result {
             Ok(mut handle) => {
-                handle.types = Arc::new(self.resolve_types(name, &handle.session).await);
+                let namespaces = self.translate(name, &handle, false).await;
+                handle.types = Arc::new(
+                    resolve_types(
+                        name,
+                        &self.devices[name].points,
+                        &handle.session,
+                        &handle.translation,
+                        namespaces,
+                        self.conn.request_timeout_s,
+                    )
+                    .await,
+                );
                 self.sessions.insert(name.to_string(), handle);
                 LinkReport {
                     device: name.to_string(),
@@ -194,41 +236,14 @@ impl OpcuaConnector {
         }
     }
 
-    /// Resolve, for a new session, what the device's structure and raw points need: the
-    /// namespace array and the data type definitions (design D3, D6). Bounded, so a server that
-    /// stops answering cannot stall the connect; its field points then report why.
-    async fn resolve_types(&self, name: &str, session: &Session) -> resolve::SessionTypes {
-        let wanted: Vec<resolve::Wanted> = self.devices[name]
-            .points
-            .iter()
-            .filter(|(_, p)| p.field.is_some() || p.mode == Mode::Raw)
-            .map(|(id, p)| resolve::Wanted {
-                point: id.clone(),
-                node: p.node_id.clone(),
-                field: p.field.clone(),
-                index: p.index,
-                datatype: p.datatype,
-            })
-            .collect();
-        let timeout = Duration::from_secs(self.conn.request_timeout_s.max(1) * 4);
-        match tokio::time::timeout(timeout, resolve::resolve(session, &wanted)).await {
-            Ok(types) => {
-                for (point, plan) in &types.plans {
-                    if let Err(e) = plan {
-                        warn!("device '{name}' point '{point}': {e}");
-                    }
-                }
-                types
-            }
-            Err(_) => {
-                let reason = format!("{}: timed out after {}s", resolve::UNAVAILABLE, timeout.as_secs());
-                warn!("device '{name}': {reason}");
-                resolve::SessionTypes {
-                    plans: wanted.iter().map(|w| (w.point.clone(), Err(reason.clone()))).collect(),
-                    ..Default::default()
-                }
-            }
-        }
+    /// Translate the device's points that have a namespace table, for `handle`'s session: all of
+    /// them, or with `retry` only those not translated yet (design D3, D5). Logs each namespace
+    /// the server lists at another index than the table, once per session. Returns the server's
+    /// namespace array when it was read.
+    async fn translate(&self, name: &str, handle: &SessionHandle, retry: bool) -> Option<Vec<String>> {
+        let dev = &self.devices[name];
+        let timeout = Duration::from_secs(self.conn.request_timeout_s.max(1));
+        translate(name, &dev.points, &handle.session, &handle.translation, retry, timeout).await
     }
 
     /// Warn (at most daily) while the application certificate is close to or past its expiry.
@@ -254,6 +269,243 @@ impl OpcuaConnector {
             ),
         }
         self.expiry_warned = Some(Instant::now());
+    }
+}
+
+/// The subscribed points of one device whose namespace was not translated when the subscription
+/// was created (design D5). Every [`RETRY_INTERVAL`] they are translated again; those that now
+/// have a node get their monitored items in the existing subscription, the others report why.
+struct Retry {
+    device: String,
+    points: HashMap<String, OpcuaPoint>,
+    session: Arc<Session>,
+    translation: Arc<Mutex<namespaces::Translation>>,
+    state: Arc<Mutex<PushState>>,
+    subscription_id: u32,
+    pending: Vec<(String, OpcuaPoint, Duration)>,
+    tx: tokio::sync::mpsc::UnboundedSender<Sample>,
+    request_timeout_s: u64,
+}
+
+impl Retry {
+    async fn run(mut self) {
+        while !self.pending.is_empty() {
+            tokio::time::sleep(RETRY_INTERVAL).await;
+            let timeout = Duration::from_secs(self.request_timeout_s.max(1));
+            let namespaces =
+                translate(&self.device, &self.points, &self.session, &self.translation, true, timeout).await;
+            let mut ready = Vec::new();
+            let mut waiting = Vec::new();
+            {
+                let translation = lock(&self.translation);
+                for (id, model, interval) in self.pending.drain(..) {
+                    match effective(&id, &model, &translation) {
+                        Ok(translated) => ready.push((id, model, translated, interval)),
+                        Err(reason) => waiting.push((id, model, interval, reason)),
+                    }
+                }
+            }
+            if !ready.is_empty() {
+                waiting.extend(self.subscribe(ready, namespaces).await);
+            }
+            for (id, model, _, reason) in &waiting {
+                let mut sample = bad_sample(id, Some(model), reason);
+                sample.device = self.device.clone();
+                if self.tx.send(sample).is_err() {
+                    return; // the subscription is gone
+                }
+            }
+            self.pending = waiting.into_iter().map(|(id, model, interval, _)| (id, model, interval)).collect();
+        }
+    }
+
+    /// Add monitored items for points that now have a node. Returns those that still could not
+    /// be subscribed, with the reason.
+    async fn subscribe(
+        &mut self,
+        ready: Vec<(String, OpcuaPoint, OpcuaPoint, Duration)>,
+        namespaces: Option<Vec<String>>,
+    ) -> Vec<(String, OpcuaPoint, Duration, String)> {
+        if ready.iter().any(|(_, _, m, _)| m.field.is_some() || m.mode == Mode::Raw) {
+            let types = resolve_types(
+                &self.device,
+                &self.points,
+                &self.session,
+                &self.translation,
+                namespaces,
+                self.request_timeout_s,
+            )
+            .await;
+            lock(&self.state).types = Arc::new(types);
+        }
+        // A node already monitored for another point is shared, as at subscribe (design D5 of
+        // `opcua-custom-datatypes`); only new nodes get an item.
+        let monitored = {
+            let state = lock(&self.state);
+            group_monitored(
+                ready
+                    .iter()
+                    .filter(|(_, _, m, _)| !state.by_node.contains_key(&(m.node_id.clone(), m.index)))
+                    .map(|(_, _, m, interval)| (m.node_id.clone(), m.index, *interval, m.queue_size)),
+            )
+        };
+        let requests: Vec<MonitoredItemCreateRequest> = monitored.iter().map(monitored_item).collect();
+        let session = self.session.clone();
+        let subscription_id = self.subscription_id;
+        let rejected: HashMap<(NodeId, Option<u32>), String> =
+            match create_in_batches(requests, MONITORED_ITEMS_PER_REQUEST, |batch| {
+                session.create_monitored_items(subscription_id, TimestampsToReturn::Both, batch)
+            })
+            .await
+            {
+                Ok(results) => monitored
+                    .iter()
+                    .zip(&results)
+                    .filter(|(_, r)| !r.result.status_code.is_good())
+                    .map(|(item, r)| {
+                        ((item.node_id.clone(), item.index), format!("monitored item rejected: {}", r.result.status_code))
+                    })
+                    .collect(),
+                Err(status) => monitored
+                    .iter()
+                    .map(|item| ((item.node_id.clone(), item.index), format!("create_monitored_items failed: {status}")))
+                    .collect(),
+            };
+        let mut waiting = Vec::new();
+        let mut added = Vec::new();
+        let mut state = lock(&self.state);
+        for (id, model, translated, interval) in ready {
+            let key = (translated.node_id.clone(), translated.index);
+            match rejected.get(&key) {
+                Some(reason) => waiting.push((id, model, interval, reason.clone())),
+                None => {
+                    added.push(id.clone());
+                    state.by_node.entry(key).or_default().push((id, translated));
+                }
+            }
+        }
+        if !added.is_empty() {
+            tracing::info!(device = %self.device, points = %added.join(", "), "subscribed after translating their namespace");
+        }
+        waiting
+    }
+}
+
+/// The create request of one monitored item, as `subscribe` and its retry task make them.
+fn monitored_item(item: &MonitoredItem) -> MonitoredItemCreateRequest {
+    let mut watch: ReadValueId = item.node_id.clone().into();
+    watch.index_range = index_range(item.index);
+    MonitoredItemCreateRequest::new(
+        watch,
+        MonitoringMode::Reporting,
+        MonitoringParameters {
+            sampling_interval: item.interval.as_millis() as f64,
+            queue_size: item.queue_size,
+            discard_oldest: true,
+            ..Default::default()
+        },
+    )
+}
+
+/// See [`OpcuaConnector::translate`]; free so the retry task of a subscription can call it.
+async fn translate(
+    name: &str,
+    points: &HashMap<String, OpcuaPoint>,
+    session: &Session,
+    translation: &Mutex<namespaces::Translation>,
+    retry: bool,
+    timeout: Duration,
+) -> Option<Vec<String>> {
+    let mapped: Vec<namespaces::Mapped> = {
+        let translation = lock(translation);
+        points
+            .iter()
+            .filter(|(id, _)| !retry || matches!(translation.nodes.get(id.as_str()), Some(Err(_))))
+            .filter_map(|(id, p)| {
+                p.table.as_ref().map(|table| namespaces::Mapped { point: id, node: &p.node_id, table })
+            })
+            .collect()
+    };
+    if mapped.is_empty() {
+        return None;
+    }
+    let server = namespaces::read_array(session, timeout).await;
+    let mut translation = lock(translation);
+    for moved in translation.apply(&mapped, &server) {
+        tracing::info!("{name}: namespace {} local {} -> server {}", moved.uri, moved.local, moved.server);
+    }
+    if !retry {
+        for p in &mapped {
+            if let Some(Err(e)) = translation.nodes.get(p.point) {
+                warn!("device '{name}' point '{}': {e}", p.point);
+            }
+        }
+    }
+    server.ok()
+}
+
+/// The point as this session reads it: a point with a namespace table gets the node id the
+/// server uses for it now, or the reason it has none (design D3, D4).
+fn effective(id: &str, model: &OpcuaPoint, translation: &namespaces::Translation) -> Result<OpcuaPoint, String> {
+    if model.table.is_none() {
+        return Ok(model.clone());
+    }
+    match translation.nodes.get(id) {
+        Some(Ok(node)) => {
+            let mut model = model.clone();
+            model.node_id = node.clone();
+            Ok(model)
+        }
+        Some(Err(e)) => Err(e.clone()),
+        None => Err("namespace not translated".into()),
+    }
+}
+
+/// Resolve, for a new session, what the device's structure and raw points need: the
+/// namespace array and the data type definitions (openspec `opcua-custom-datatypes`, design D3,
+/// D6). Points whose namespace is not translated are left out. Bounded, so a server that stops
+/// answering cannot stall the connect; its field points then report why.
+async fn resolve_types(
+    name: &str,
+    points: &HashMap<String, OpcuaPoint>,
+    session: &Session,
+    translation: &Mutex<namespaces::Translation>,
+    namespaces: Option<Vec<String>>,
+    request_timeout_s: u64,
+) -> resolve::SessionTypes {
+    let wanted: Vec<resolve::Wanted> = {
+        let translation = lock(translation);
+        points
+        .iter()
+        .filter(|(_, p)| p.field.is_some() || p.mode == Mode::Raw)
+        .filter_map(|(id, p)| effective(id, p, &translation).ok().map(|p| (id, p)))
+        .map(|(id, p)| resolve::Wanted {
+            point: id.clone(),
+            node: p.node_id,
+            field: p.field,
+            index: p.index,
+            datatype: p.datatype,
+        })
+        .collect()
+    };
+    let timeout = Duration::from_secs(request_timeout_s.max(1) * 4);
+    match tokio::time::timeout(timeout, resolve::resolve(session, &wanted, namespaces)).await {
+        Ok(types) => {
+            for (point, plan) in &types.plans {
+                if let Err(e) = plan {
+                    warn!("device '{name}' point '{point}': {e}");
+                }
+            }
+            types
+        }
+        Err(_) => {
+            let reason = format!("{}: timed out after {}s", resolve::UNAVAILABLE, timeout.as_secs());
+            warn!("device '{name}': {reason}");
+            resolve::SessionTypes {
+                plans: wanted.iter().map(|w| (w.point.clone(), Err(reason.clone()))).collect(),
+                ..Default::default()
+            }
+        }
     }
 }
 
@@ -304,6 +556,12 @@ impl Connector for OpcuaConnector {
             })?;
             let security = config::device_security(&self.conn, &endpoint, base_dir)
                 .map_err(|e| ConfigError::Invalid(format!("device '{}': {e}", d.name)))?;
+            let device_table = endpoint
+                .namespaces
+                .as_ref()
+                .map(namespaces::parse_table)
+                .transpose()
+                .map_err(|e| ConfigError::Invalid(format!("device '{}' protocol_address: {e}", d.name)))?;
             let user_x509 = match &security.identity {
                 Identity::X509 { certificate, private_key } => Some(
                     load_user_certificate(certificate, private_key)
@@ -325,6 +583,22 @@ impl Connector for OpcuaConnector {
                     .or(device_queue_size)
                     .or(conn_queue_size)
                     .unwrap_or(config::DEFAULT_QUEUE_SIZE);
+                // A library's table describes the library's addresses; the device's describes
+                // the rest (spec "Table applies to a point").
+                let table = match p.library.as_ref().and_then(|l| l.get("namespaces")) {
+                    Some(value) => Some(namespaces::parse_table(value).map_err(|e| {
+                        ConfigError::Invalid(format!("point '{}': [library] {e}", p.id))
+                    })?),
+                    None => device_table.clone(),
+                };
+                let table = match table {
+                    Some(table) if node_id.namespace != 0 => {
+                        namespaces::check_index(&node_id, &table)
+                            .map_err(|e| ConfigError::Invalid(format!("point '{}': {e}", p.id)))?;
+                        Some(table)
+                    }
+                    _ => None,
+                };
                 let mode = p.resolved_mode(d.default_mode);
                 if mode == Mode::Typed && p.datatype.is_none() {
                     return Err(ConfigError::Invalid(format!(
@@ -354,7 +628,9 @@ impl Connector for OpcuaConnector {
                 points.insert(
                     p.id.clone(),
                     OpcuaPoint {
+                        addr_node: node_id.to_string(),
                         node_id,
+                        table,
                         field,
                         index: addr.index,
                         queue_size,
@@ -443,8 +719,45 @@ impl Connector for OpcuaConnector {
             None => points.iter().map(|p| (p.id.clone(), None)).collect(),
         };
 
-        let (session, types) = match self.sessions.get(device) {
-            Some(h) => (h.session.clone(), h.types.clone()),
+        // Points whose namespace this session has not translated yet are tried again first, so a
+        // namespace the server added since is picked up at the next poll (design D5).
+        if let Some(handle) = self.sessions.get(device) {
+            let failing = lock(&handle.translation)
+                .has_failures(models.iter().map(|(id, _)| id.as_str()));
+            if failing {
+                let namespaces = self.translate(device, handle, true).await;
+                // Structure and raw points need their types resolved once they have a node.
+                let typed = {
+                    let translation = lock(&handle.translation);
+                    self.devices[device].points.iter().any(|(id, p)| {
+                        match (p.table.is_some(), translation.nodes.get(id)) {
+                            (true, Some(Ok(_))) if p.field.is_some() => !handle.types.plans.contains_key(id),
+                            (true, Some(Ok(node))) if p.mode == Mode::Raw => {
+                                !handle.types.data_types.contains_key(node)
+                            }
+                            _ => false,
+                        }
+                    })
+                };
+                if let (Some(namespaces), true) = (namespaces, typed) {
+                    let types = resolve_types(
+                        device,
+                        &self.devices[device].points,
+                        &handle.session,
+                        &handle.translation,
+                        Some(namespaces),
+                        self.conn.request_timeout_s,
+                    )
+                    .await;
+                    if let Some(handle) = self.sessions.get_mut(device) {
+                        handle.types = Arc::new(types);
+                    }
+                }
+            }
+        }
+
+        let (session, types, translation) = match self.sessions.get(device) {
+            Some(h) => (h.session.clone(), h.types.clone(), h.translation.clone()),
             None => {
                 return Ok(models
                     .into_iter()
@@ -461,9 +774,24 @@ impl Connector for OpcuaConnector {
         let mut reads: Vec<ReadValueId> = Vec::new();
         let mut slots: HashMap<(NodeId, Option<u32>), usize> = HashMap::new();
         let mut out: Vec<Sample> = Vec::new();
+        // Each known point as this session reads it, or with the reason it cannot be read.
+        let models: Vec<(String, Option<(OpcuaPoint, Option<String>)>)> = {
+            let translation = lock(&translation);
+            models
+                .into_iter()
+                .map(|(id, model)| {
+                    let model = model.map(|m| match effective(&id, &m, &translation) {
+                        Ok(translated) => (translated, None),
+                        Err(reason) => (m, Some(reason)),
+                    });
+                    (id, model)
+                })
+                .collect()
+        };
         for (id, model) in models {
             match model {
-                Some(m) => {
+                Some((m, Some(reason))) => out.push(bad_sample(&id, Some(&m), &reason)),
+                Some((m, None)) => {
                     let slot = *slots.entry((m.node_id.clone(), m.index)).or_insert_with(|| {
                         reads.push(ReadValueId {
                             node_id: m.node_id.clone(),
@@ -555,11 +883,33 @@ impl Connector for OpcuaConnector {
             .sessions
             .get(device)
             .ok_or_else(|| ConnectorError::NotConnected(device.clone()))?;
-        let (session, types) = (handle.session.clone(), handle.types.clone());
+        let (session, types, translation) =
+            (handle.session.clone(), handle.types.clone(), handle.translation.clone());
+        let points = self.devices[device].points.clone();
+        // One subscription per device, publishing at the fastest requested sampling rate.
+        let publishing_interval =
+            publishing_interval_for(items.iter().map(|(_, _, interval)| *interval));
+
+        // A point whose namespace this session has not translated gets no monitored item yet: it
+        // reports why and is tried again by the retry task below (design D4, D5).
+        let mut pending: Vec<(String, OpcuaPoint, Duration, String)> = Vec::new();
+        let items: Vec<(String, OpcuaPoint, Duration)> = {
+            let translation = lock(&translation);
+            items
+                .into_iter()
+                .filter_map(|(id, model, interval)| match effective(&id, &model, &translation) {
+                    Ok(model) => Some((id, model, interval)),
+                    Err(reason) => {
+                        pending.push((id, model, interval, reason));
+                        None
+                    }
+                })
+                .collect()
+        };
 
         // Notifications are matched back to points by node id and element: several points may
         // share one monitored item (design D5).
-        let mut by_node: HashMap<(NodeId, Option<u32>), Vec<(String, OpcuaPoint)>> = HashMap::new();
+        let mut by_node: ByNode = HashMap::new();
         let monitored = group_monitored(
             items.iter().map(|(_, model, interval)| (model.node_id.clone(), model.index, *interval, model.queue_size)),
         );
@@ -575,7 +925,10 @@ impl Connector for OpcuaConnector {
         // The data-change callback is synchronous, so it forwards through an unbounded channel
         // to a spawned task that awaits the runtime's (bounded) sink.
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Sample>();
+        let retry_tx = tx.clone();
         let device_name = device.clone();
+        let state = Arc::new(Mutex::new(PushState { by_node, types }));
+        let callback_state = state.clone();
         let callback = DataChangeCallback::new(move |dv, item| {
             let watched = item.item_to_monitor();
             let node_id = &watched.node_id;
@@ -584,9 +937,10 @@ impl Connector for OpcuaConnector {
                 NumericRange::Index(i) => Some(i),
                 _ => None,
             };
-            if let Some(models) = by_node.get(&(node_id.clone(), index)) {
+            let state = lock(&callback_state);
+            if let Some(models) = state.by_node.get(&(node_id.clone(), index)) {
                 for (id, model) in models {
-                    let mut sample = build_sample(id, model, &dv, &types);
+                    let mut sample = build_sample(id, model, &dv, &state.types);
                     sample.device = device_name.clone();
                     // Ignore send errors: the forwarder has already shut down.
                     let _ = tx.send(sample);
@@ -596,9 +950,6 @@ impl Connector for OpcuaConnector {
             }
         });
 
-        // One subscription per device, publishing at the fastest requested sampling rate.
-        let publishing_interval =
-            publishing_interval_for(items.iter().map(|(_, _, interval)| *interval));
         let subscription_id = session
             .create_subscription(publishing_interval, 60, 20, 0, 0, true, callback)
             .await
@@ -608,21 +959,10 @@ impl Connector for OpcuaConnector {
         // interval of its points, queueing as many values as the largest queue size among them.
         let requests: Vec<MonitoredItemCreateRequest> = monitored
             .iter()
-            .map(|item| {
-                let mut watch: ReadValueId = item.node_id.clone().into();
-                watch.index_range = index_range(item.index);
-                MonitoredItemCreateRequest::new(
-                    watch,
-                    MonitoringMode::Reporting,
-                    MonitoringParameters {
-                        sampling_interval: item.interval.as_millis() as f64,
-                        queue_size: item.queue_size,
-                        discard_oldest: true,
-                        ..Default::default()
-                    },
-                )
-            })
+            .map(monitored_item)
             .collect();
+        // Every point may be waiting for its namespace: the subscription is still created (with
+        // no items), for the retry task to add theirs to.
         let results = match create_in_batches(requests, MONITORED_ITEMS_PER_REQUEST, |batch| {
             session.create_monitored_items(subscription_id, TimestampsToReturn::Both, batch)
         })
@@ -680,6 +1020,28 @@ impl Connector for OpcuaConnector {
             }
         }
 
+        let retry = if pending.is_empty() {
+            None
+        } else {
+            for (id, model, _, reason) in &pending {
+                let mut sample = bad_sample(id, Some(model), reason);
+                sample.device = device.clone();
+                let _ = retry_tx.send(sample);
+            }
+            let retry = Retry {
+                device: device.clone(),
+                points,
+                session: session.clone(),
+                translation,
+                state,
+                subscription_id,
+                pending: pending.into_iter().map(|(id, model, interval, _)| (id, model, interval)).collect(),
+                tx: retry_tx,
+                request_timeout_s: self.conn.request_timeout_s,
+            };
+            Some(AbortOnDrop(tokio::spawn(retry.run())))
+        };
+
         // Forward pushed samples into the runtime sink; exit cleanly when either side closes.
         let forwarder = tokio::spawn(async move {
             while let Some(sample) = rx.recv().await {
@@ -699,6 +1061,7 @@ impl Connector for OpcuaConnector {
                 // Monitored items, not points: points on one node and element share an item.
                 items: monitored.len(),
                 forwarder,
+                _retry: retry,
             },
         );
         if let Some(old) = replaced {
@@ -815,12 +1178,13 @@ impl Connector for OpcuaConnector {
         let variant = build_variant(datatype, value)
             .map_err(ConnectorError::Decode)?;
 
-        let session = self
+        let handle = self
             .sessions
             .get(device)
-            .ok_or_else(|| ConnectorError::NotConnected(device.clone()))?
-            .session
-            .clone();
+            .ok_or_else(|| ConnectorError::NotConnected(device.clone()))?;
+        let model = effective(&request.point, &model, &lock(&handle.translation))
+            .map_err(ConnectorError::Other)?;
+        let session = handle.session.clone();
 
         let write = WriteValue {
             node_id: model.node_id.clone(),
@@ -1055,6 +1419,7 @@ impl Attempt<'_> {
                     health,
                     event_loop: handle,
                     types: Arc::default(),
+                    translation: Arc::default(),
                 })
             }
             Ok(false) => {
@@ -1637,7 +2002,7 @@ fn bad_sample(id: &str, model: Option<&OpcuaPoint>, error: &str) -> Sample {
 
 /// Echo the node id (textual form) for the sample `addr` field.
 fn addr_echo(model: &OpcuaPoint) -> serde_json::Value {
-    let mut addr = serde_json::json!({ "node_id": model.node_id.to_string() });
+    let mut addr = serde_json::json!({ "node_id": model.addr_node });
     if let Some(field) = &model.field {
         let path: Vec<String> = field
             .iter()

@@ -7,15 +7,13 @@
 #     into the volume ref-strict mounts at /app/certs. That server copies certs/trusted/* into
 #     its trust list AT STARTUP and does not auto-accept anything, so our certificate has to
 #     exist before it is (re)started -- the suite restarts it to make the trust take effect.
-#  2. Use the configuration ns-resolver rendered, which carries the server's real namespace
-#     index.
+#  2. Run the stack's configuration, whose namespace tables let every server number its
+#     namespaces as it likes.
 #
 # The PKI directory is the packaged default, /var/lib/tedge-dot/opcua/pki.
 set -e
-config=/rendered/connector.toml
+config=/opt/interop/connector.toml
 
-echo "waiting for the rendered configuration ..."
-until [ -f "$config" ]; do sleep 1; done
 echo "waiting for broker:1883 ..."
 until nc -z broker 1883; do sleep 1; done
 

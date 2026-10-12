@@ -25,6 +25,19 @@ ns=2;s=Bulk0 .. Bulk<n-1> (value = i), for a device with thousands of subscribed
 ns=2;s=Burst, a UInt32 written five times in a row every second (10n .. 10n + 4): faster than
 any publishing interval, so the monitored item's queue size decides how many arrive.
 
+NAMESPACE ORDER (openspec change opcua-namespace-table, docker-compose.namespaces.yaml): the
+simulator's namespace index is normally 2. Two switches change it, for the namespace-table e2e
+suite:
+
+    OPCUA_SIM_EXTRA_NAMESPACES  comma-separated URIs registered BEFORE urn:tedge:opcua-sim, so
+                                its nodes move to a higher index (one per URI)
+    OPCUA_SIM_CONTROL_DIR       a directory watched by the running simulator:
+                                  shift      present at start: register urn:tedge:opcua-sim:shift
+                                             first (the nodes move from ns=2 to ns=3) -- create
+                                             it, then restart the container
+                                  add-late   once present: register urn:tedge:opcua-sim:late
+                                             while running, with ns=<new>;s=Late (Double 7.5)
+
 SECURED MODE (connectors/opcua/docker-compose.secure.yaml): with OPCUA_SECURE_SERVERS set,
 the container instead serves one server per PKI scenario, each on its own port, all with the
 address space above:
@@ -54,6 +67,10 @@ from asyncua.server.user_managers import UserManager
 from asyncua.crypto.permission_rules import User, UserRole
 
 ENDPOINT_HOST = os.environ.get("OPCUA_ENDPOINT_HOST", "0.0.0.0")
+CONTROL_DIR = os.environ.get("OPCUA_SIM_CONTROL_DIR", "")
+SHIFT_URI = "urn:tedge:opcua-sim:shift"
+LATE_URI = "urn:tedge:opcua-sim:late"
+LATE = 7.5
 DYNAMIC = os.environ.get("OPCUA_SIM_DYNAMIC", "").strip().lower() in ("1", "true", "yes", "on")
 BULK = int(os.environ.get("OPCUA_SIM_BULK", "0") or 0)
 NS_URI = "urn:tedge:opcua-sim"
@@ -107,6 +124,11 @@ async def build_server(port, policies, user_manager=None, cert=None, key=None):
             [ua.AnonymousIdentityToken, ua.UserNameIdentityToken, ua.X509IdentityToken]
         )
 
+    extra = [u.strip() for u in os.environ.get("OPCUA_SIM_EXTRA_NAMESPACES", "").split(",") if u.strip()]
+    if CONTROL_DIR and os.path.exists(os.path.join(CONTROL_DIR, "shift")):
+        extra.append(SHIFT_URI)
+    for uri in extra:
+        await server.register_namespace(uri)
     idx = await server.register_namespace(NS_URI)
     plc = await server.nodes.objects.add_object(
         ua.NodeId("Plc", idx), ua.QualifiedName("Plc", idx)
@@ -269,11 +291,22 @@ async def main():
             f"(namespace idx={nodes['idx']}, dynamic={DYNAMIC})",
             flush=True,
         )
+    late_added = False
     try:
         n = 0
         while True:
             await asyncio.sleep(1)
             n += 1
+            if CONTROL_DIR and not late_added and os.path.exists(os.path.join(CONTROL_DIR, "add-late")):
+                # A namespace that appears while clients are connected: OPC UA allows a server
+                # to add entries to its NamespaceArray during a session (10000-5 6.3.1).
+                server, _nodes = servers[0]
+                late = await server.register_namespace(LATE_URI)
+                await server.nodes.objects.add_variable(
+                    ua.NodeId("Late", late), ua.QualifiedName("Late", late), LATE
+                )
+                late_added = True
+                print(f"registered {LATE_URI} at runtime (namespace idx={late})", flush=True)
             for _server, nodes in servers:
                 await nodes["ticks"].write_value(ua.Variant(n, ua.VariantType.UInt32))
                 # Structured values that change, for the push tests of the `opc3` device.

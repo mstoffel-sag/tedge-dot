@@ -53,7 +53,9 @@ pub struct Wanted {
     pub datatype: Option<DataType>,
 }
 
-pub async fn resolve(session: &Session, wanted: &[Wanted]) -> SessionTypes {
+/// `namespaces` is the server's namespace array when the session has read it already (to
+/// translate namespace tables); it is read here otherwise.
+pub async fn resolve(session: &Session, wanted: &[Wanted], namespaces: Option<Vec<String>>) -> SessionTypes {
     let mut r = Resolver {
         session,
         out: SessionTypes::default(),
@@ -61,7 +63,10 @@ pub async fn resolve(session: &Session, wanted: &[Wanted]) -> SessionTypes {
         failed: HashMap::new(),
         loading: HashSet::new(),
     };
-    r.out.namespaces = r.namespaces().await;
+    r.out.namespaces = match namespaces {
+        Some(namespaces) => namespaces,
+        None => r.namespaces().await,
+    };
     if wanted.is_empty() {
         return r.out;
     }

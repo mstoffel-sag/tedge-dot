@@ -98,11 +98,8 @@ services:
       OPCUA_SERVER_NAME: ref-strict
       OPCUA_PORT: "4840"
       OPCUA_RESOURCE_PATH: /UA/TestServer
-      # As for ref-token, `None` exists so ns-resolver can read the namespace array. It does
-      # not soften what this server tests: the `strict` device asks for
-      # Basic256Sha256/sign_and_encrypt, and OPCUA_AUTO_ACCEPT_CERTS stays false.
-      OPCUA_SECURITY_POLICIES: "None,Basic256Sha256"
-      OPCUA_SECURITY_MODES: "None,SignAndEncrypt"
+      OPCUA_SECURITY_POLICIES: "Basic256Sha256"
+      OPCUA_SECURITY_MODES: "SignAndEncrypt"
       OPCUA_ALLOW_ANONYMOUS: "true"
       OPCUA_AUTO_ACCEPT_CERTS: "false"
       OPCUA_ENABLE_HTTPS: "true"
@@ -135,12 +132,8 @@ services:
       OPCUA_SERVER_NAME: ref-token
       OPCUA_PORT: "4840"
       OPCUA_RESOURCE_PATH: /UA/TestServer
-      # `None` is here for ns-resolver, which reads the namespace array over an unsecured
-      # session; without it the server answers BadSecurityPolicyRejected and nothing can be
-      # resolved. The `token` device still asks for Basic256Sha256/sign_and_encrypt, so what
-      # this server exists to exercise is unchanged.
-      OPCUA_SECURITY_POLICIES: "None,Basic256Sha256"
-      OPCUA_SECURITY_MODES: "None,SignAndEncrypt"
+      OPCUA_SECURITY_POLICIES: "Basic256Sha256"
+      OPCUA_SECURITY_MODES: "SignAndEncrypt"
       OPCUA_ALLOW_ANONYMOUS: "true"
       OPCUA_AUTO_ACCEPT_CERTS: "true"
       OPCUA_SECURITY_TOKEN_LIFETIME: "30000"
@@ -169,35 +162,6 @@ services:
       OPCUA_AUTO_ACCEPT_CERTS: "true"
     healthcheck: *refserver-health
 
-  # Resolves each server's namespace index and renders connector.toml from its template. The
-  # indices are documented as typical, not guaranteed, and the connector can only address a
-  # node by index -- so they are looked up, never assumed, andeach server is asked for its own.
-  # Runs to completion before the connector starts.
-  ns-resolver:
-    build:
-      context: ../../..
-      dockerfile: connectors/opcua/sim/Dockerfile
-    entrypoint: ["python", "/opt/interop/resolve-ns.py"]
-    command:
-      - /opt/interop/connector.toml.in
-      - /rendered/connector.toml
-      - "@NS_REF_ALL@=opc.tcp://ref-all:4840/UA/TestServer"
-      - "@NS_REF_DISCOVERY@=opc.tcp://ref-discovery:4840"
-      - "@NS_REF_TOKEN@=opc.tcp://ref-token:4840/UA/TestServer"
-      - "@NS_REF_STRICT@=opc.tcp://ref-strict:4840/UA/TestServer"
-    volumes:
-      - ./:/opt/interop:ro
-      - rendered:/rendered
-    depends_on:
-      ref-all:
-        condition: service_healthy
-      ref-discovery:
-        condition: service_healthy
-      ref-token:
-        condition: service_healthy
-      ref-strict:
-        condition: service_healthy
-
   connector:
     image: tedge-dot-${IMPL:-rust}-opcua-connector
     build:
@@ -208,15 +172,14 @@ services:
     entrypoint: ["/opt/interop/entrypoint.sh"]
     volumes:
       - ./:/opt/interop:ro
-      - rendered:/rendered
       - refserver-trust:/refserver-trust
     labels:
       device-test-core.role: main
     depends_on:
       broker:
         condition: service_started
-      ns-resolver:
-        condition: service_completed_successfully
+      ref-all:
+        condition: service_healthy
       ref-strict:
         condition: service_healthy
       ref-ecc:
@@ -227,7 +190,6 @@ services:
         condition: service_healthy
 
 volumes:
-  rendered:
   refserver-trust:
   certs-ref-all:
   certs-ref-token:

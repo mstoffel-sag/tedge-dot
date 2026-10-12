@@ -34,6 +34,12 @@
         "version": {
           "type": "string",
           "description": "Informational: the version of the device type or of the list itself. Not interpreted; a library is identified by its file name."
+        },
+        "namespaces": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string" },
+          "description": "Protocol-specific (OPC UA, its connector spec \u00a73.9): the server's NamespaceArray when the library's node ids were written, in index order; entry 0 is http://opcfoundation.org/UA/. The loader does not interpret it: each point keeps the [library] table its address came from (\u00a73.4, Library address settings)."
         }
       }
     },

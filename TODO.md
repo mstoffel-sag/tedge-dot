@@ -31,18 +31,12 @@
       polling — same samples, worse latency, so it is not tagged), and the 255/256-byte cap on
       string/raw values (`tdot_value_t.str`, `TDOT_RAW_MAX`).
 
-* [ ] **Address an OPC UA node by namespace URI, not only by index.** `device.point.address`
-      takes `node_id = "ns=2;s=..."` or `namespace` + `identifier`
-      (`impl/rust/crates/connector-opcua/src/config.rs`); there is no `nsu=` / `namespace_uri`
-      form. A server's namespace array is ordered by the server, not by the specification, so a
-      firmware update that registers one more namespace silently shifts every index and breaks a
-      working configuration — the points resolve to nothing, or worse, to different nodes. The
-      UA-.NETStandard reference server documents its own indices as "typical, not guaranteed",
-      which is why the interop suite resolves the index at startup
-      (`connectors/opcua/interop/resolve-ns.py`) instead of hardcoding it: that proves the
-      connector works, but not that an operator could cope. Additive change: accept
-      `namespace_uri` alongside `namespace`, resolve it from `Server.NamespaceArray` once per
-      session, and re-resolve on reconnect.
+* [x] **OPC UA node ids that survive a namespace renumbering.** Solved with namespace tables
+      instead of a `nsu=` / `namespace_uri` address form (openspec change
+      `opcua-namespace-table`): a device's `protocol_address.namespaces` or a library's
+      `[library] namespaces` records the NamespaceArray the numeric ids were written against, and
+      each session translates through it. The interop suite now uses one instead of resolving the
+      index at startup (`resolve-ns.py` is gone).
 
 * [ ] **OPC UA structured values follow-ups** (openspec change `opcua-custom-datatypes`, Rust
       only; thin-edge/tedge-dot#57):

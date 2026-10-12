@@ -175,6 +175,12 @@ a time series: echoing a description on every read of every point would put the 
 the wire at the poll interval, forever, for information that changes when someone edits the
 config. One retained message per connector says it once.
 
+A protocol's addresses can also depend on the server they were written against. OPC UA node ids
+name their namespace by index, and two instances of one device type may number their namespaces
+differently. Such a library carries what it was written against, OPC UA's `[library] namespaces`
+(RFC 0006). Each point keeps the `[library]` table its address came from, so the setting
+applies exactly to the library's addresses.
+
 ### 5. Errors are loud, and a command may only name a library
 
 An unresolvable reference fails the load, naming the reference and every path it looked in. A

@@ -86,6 +86,7 @@ A value of the wrong type is a configuration error naming `[connection]` and the
 | `user_certificate`, `user_private_key` | together | X.509 user identity (certificate DER or PEM, key PEM). The key must match the certificate and must not be readable by group or others. |
 | `trust_any_server_certificate`, `allow_deprecated_security`, `allow_plaintext_password` | no | Per-device overrides of the `[connection]` switches. |
 | `queue_size` | no | The device's monitored-item queue size (§3.8); overrides `[connection]`. |
+| `namespaces` | no | The namespace table the device's own node ids were written against (§3.9). |
 
 Exactly one identity: anonymous (no identity key), username, or X.509. Mixing them, a password
 without `user`, both `password` and `password_file`, or only one of the two certificate keys is
@@ -114,6 +115,8 @@ security_mode 'none' cannot be used with security_policy 'Basic256Sha256' …`.
 ### 3.4 `point.address`
 
 `{ node_id = "ns=2;s=Temperature" }` or `{ namespace = 2, identifier = "Temperature" | 1001 }`.
+The namespace index is the server's, unless the point has a namespace table (§3.9): then it is
+the table's, and translated to the server's on every connect.
 
 Two optional keys select one value out of a structured or array value (§3.7):
 
@@ -301,6 +304,80 @@ allows about `publishing interval × 20 + publishing interval` without a publish
 reason the publishing interval is not used as a rate limit. To limit how often a point is
 published, use `report.min_interval` (§3.5): it is per point and does not delay the first change
 after a quiet spell.
+
+### 3.9 Namespace tables (`namespaces`)
+
+A node id names its namespace by **index**: the `3` in `ns=3;i=1234` is a position in the
+server's `NamespaceArray` (`i=2255`). OPC UA fixes only index 0 (`http://opcfoundation.org/UA/`).
+A server may number the others differently after a firmware or project update, and two
+instances of one device type may number them differently from the start (OPC 10000-5 §6.3.1).
+An id then names another node, or none — and a point that reads another node publishes plausible
+but wrong values.
+
+A **namespace table** records the `NamespaceArray` the ids were written against, as a full copy
+in index order (what UaExpert's namespace view shows):
+
+```toml
+[[device]]
+name             = "plc-7"
+protocol_address = { endpoint = "opc.tcp://plc:4840/", namespaces = [
+  "http://opcfoundation.org/UA/", "urn:plc:server", "urn:acme:plc" ] }
+
+  [[device.point]]
+  id       = "boiler_temp"
+  datatype = "float64"
+  address  = { node_id = "ns=2;i=1234" }   # urn:acme:plc, wherever this server lists it
+```
+
+| Where | Applies to |
+| --- | --- |
+| `protocol_address.namespaces` | The device's own points: inline points, and library points whose address the device overrides. |
+| `[library] namespaces` | The points of that library ([contract §3.4](../contract/ot-connector-contract.md)); a library without one uses the device's. |
+
+Rules:
+
+- Entry 0 must be `http://opcfoundation.org/UA/`, and a point's namespace index must be listed:
+  `point '<id>': namespace index 5 is not in the namespace table (3 entries)`. Both are
+  configuration errors.
+- `ns=0` (and an id without `ns=`) is never translated.
+- **Without a table nothing changes**: the index is the server's, and no namespace is read.
+
+**Translation.** After every session activation (first connect and every reconnect), before the
+device's first read, write or monitored item, the connector reads `NamespaceArray` once and
+translates each point that has a table: index → URI in the table → the index of that URI on the
+server (exact, case-sensitive; the first occurrence). The point is then read, written and
+subscribed there; the identifier is used unchanged. Points that translate to the same node share
+one monitored item. Each namespace the server lists at another index than the table is logged
+once per session at `info`, in both builds:
+
+```
+plc-7: namespace urn:acme:plc local 2 -> server 3
+```
+
+Samples, status and `describe` keep the address as configured (`addr.node_id` is `ns=2;i=1234`
+before and after a renumbering).
+
+**Why once per session.** A server "shall not modify or delete entries of the namespace table
+while any client has an open session"; it may only add entries (OPC 10000-5 §6.3.1). OPC UA
+defines no event for a changed `NamespaceArray` (the optional `UrisVersion` property is only
+increased), and it asks clients to check cached indexes "when starting a session". A translation
+therefore stays valid for its session, and a renumbering is picked up on reconnect.
+
+**Failures are per point.**
+
+| Case | Sample error |
+| --- | --- |
+| The table's URI is not in the server's array | `namespace not found: <uri>` |
+| `NamespaceArray` cannot be read | `namespace array unavailable: <status>` (every point with a table) |
+| The translated node does not exist | as for any missing node (`BadNodeIdUnknown`) |
+
+Such a point publishes bad samples, refuses writes and gets no monitored item. Connecting and
+subscribing still succeed; for the link status a polled point counts like any other bad point,
+and a subscribed one's bad samples do not count, as for every pushed sample. An untranslated
+point is tried again: a polled one before its next poll, a subscribed one every 30 s, when it
+then gets its monitored item. That also picks up a namespace the server adds while connected
+(the C build renews its session for it: open62541 maps namespace indexes with a table it builds
+per session). Points translated in a session are not translated again until the next one.
 
 ## 4. The PKI directory
 
@@ -521,6 +598,7 @@ Debian purge deletes the directory.
 | Secured sessions (in-process server) | `connector-opcua/tests/security.rs` |
 | Conformance over secured channels | `connectors/opcua/conformance-secure.toml`, `conformance-secure-c.toml` |
 | End to end | `connectors/opcua/tests/opcua_security_e2e.robot` (`docker-compose.secure.yaml`) |
+| Namespace tables (§3.9) | `connector-opcua/src/namespaces.rs`, `connector-opcua/tests/namespaces.rs`, `impl/c/tests/opcua_namespaces.c`; end to end `connectors/opcua/tests/opcua_namespace_e2e.robot` (`docker-compose.namespaces.yaml`) |
 | Interop, third-party server | `connectors/opcua/interop/tests/opcua_interop.robot` (`just test-interop opcua`, and `-c`) |
 | `tedge-dot pki` | `impl/rust/tests/pki_cli.rs`, `impl/c/tests/opcua_pki_cli.sh`, parity `impl/c/ci/pki-parity.sh` |
 | Fuzzing | `connector-opcua/fuzz` (`pki_files`) |

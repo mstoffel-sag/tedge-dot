@@ -120,6 +120,7 @@ Read them roughly in this order:
 | 16a | [reducing-data-volume.md](reducing-data-volume.md) | User guide to the reporting policy (`report`): publish on change, deadband, rate limit, heartbeat for Cumulocity availability, debounce, per-connector notes, and moving from the `ot-measurement` settings. |
 | 16b | [mapping-values.md](mapping-values.md) | User guide to value mapping (`map`): state codes to labels with ranges and a catch-all, numeric text to measurements, enumerated device parameters written as labels, and how it interacts with `transform`, `report` and the flows. |
 | 17 | [rfc/0005-device-types-and-parameter-sets.md](rfc/0005-device-types-and-parameter-sets.md) | *Device types*: naming what a device **is** (on the device, or once in its point library) and deriving parameter set names from it, so two device types on one protocol stop colliding on a tenant-wide Cumulocity identifier; the `group`/`set` split, why the type travels in samples and link status, and the entity type that follows. |
+| 18 | [rfc/0006-opcua-namespace-table.md](rfc/0006-opcua-namespace-table.md) | *OPC UA namespace tables*: numeric node ids plus the namespace array they were written against, translated to the server's indexes on every connect, so ids survive a renumbering and one library fits every instance; what OPC UA guarantees about the namespace array, and why not URI addressing. |
 
 ---
 

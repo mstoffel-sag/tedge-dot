@@ -365,6 +365,11 @@ if(TDOT_OPCUA)
   target_link_libraries(tedge-dot-opcua-ring PRIVATE tedge_dot_sdk)
   add_test(NAME opcua-ring COMMAND tedge-dot-opcua-ring)
 
+  # Namespace tables (openspec opcua-namespace-table): the configuration errors.
+  add_executable(tedge-dot-opcua-namespaces tests/opcua_namespaces.c)
+  target_link_libraries(tedge-dot-opcua-namespaces PRIVATE tedge_dot_sdk)
+  add_test(NAME opcua-namespaces COMMAND tedge-dot-opcua-namespaces)
+
   add_executable(tedge-dot-opcua-pki tests/opcua_pki.c)
   target_include_directories(tedge-dot-opcua-pki PRIVATE connectors/opcua)
   target_link_libraries(tedge-dot-opcua-pki PRIVATE tedge_dot_sdk)

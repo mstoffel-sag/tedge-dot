@@ -83,7 +83,9 @@ if [ ${#configs[@]} -eq 0 ]; then
              # Two device types folding to one qualifier: exercises the collision warning.
              "$repo"/impl/c/ci/fixtures/folded-types-modbus.toml
              # Literal parameters (meta.parameter.fragment): primitive definitions.
-             "$repo"/impl/c/ci/fixtures/literal-modbus.toml)
+             "$repo"/impl/c/ci/fixtures/literal-modbus.toml
+             # OPC UA namespace tables, inline and as a sub-table.
+             "$repo"/impl/c/ci/fixtures/namespaces-opcua.toml)
 fi
 
 # stdout is the JSON and stderr carries diagnostics (a config with no device `type` is

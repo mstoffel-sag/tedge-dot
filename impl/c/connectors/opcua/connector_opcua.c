@@ -32,6 +32,22 @@ typedef struct {
     /* The effective monitored-item queue size: the point's, the device's,
      * [connection]'s, then UA_QUEUE_SIZE_DEFAULT. */
     UA_UInt32 queue_size;
+    /* The namespace table the id was written against (openspec change
+     * opcua-namespace-table): the [library] table's `namespaces` for an
+     * address a library supplied, else the device's protocol_address one.
+     * Borrowed from the config. NULL for a point read as configured: no table,
+     * or a namespace-0 id. */
+    toml_array_t *table;
+    int ns; /* the configured namespace index */
+    /* This session's translation (design D3): `resolved` is the node id to
+     * use when `translated`, else `reason` says why there is none. Cleared on
+     * disconnect. */
+    bool translated;
+    char resolved[160];
+    char reason[300];
+    /* A subscribed point waiting for its namespace: no monitored item yet,
+     * reported through the push queue and retried (design D5). */
+    bool pending;
 } ua_point_t;
 
 /* A monitored item's queue size when no level sets one (spec §3.8). */
@@ -41,6 +57,12 @@ typedef struct {
  * Rust module sends too (async-opcua refuses replies of more than 1000, and
  * servers often cap MaxMonitoredItemsPerCall at 1000). */
 #define UA_ITEMS_PER_REQUEST 500
+
+/* The URI of namespace 0, which is never translated. */
+#define UA_NS0_URI "http://opcfoundation.org/UA/"
+/* How often untranslated subscribed points are tried again (seconds). A
+ * polled point is tried again at its next poll. Mirrors RETRY_INTERVAL. */
+#define UA_RETRY_INTERVAL_S 30.0
 
 /* Samples that arrived by subscription since the last drain.
  *
@@ -130,6 +152,19 @@ typedef struct {
      * `connected` link. */
     bool sub_lost;
     ua_ring_t queue; /* pushed values not yet handed to the runtime */
+
+    /* Namespace tables (openspec change opcua-namespace-table). */
+    double last_retry; /* monotonic s of the last retry for polled points */
+    double retry_at;   /* monotonic s of the next retry for pending points */
+    char **logged;     /* URIs logged as moved in this session */
+    size_t nlogged;
+    /* The server lists a namespace this session's client cannot address yet:
+     * open62541 maps namespace indexes between client and server with a table
+     * it builds only when a session is created, so a namespace the server adds
+     * later needs a new session. Set by translate_device(); read_point() and
+     * drain_subscriptions() then report the link down, so the runtime
+     * reconnects. */
+    bool renew_session;
 } ua_device_t;
 
 typedef struct {
@@ -593,6 +628,190 @@ static void warn_expiry(ua_state_t *st) {
     st->expiry_warned = now;
 }
 
+/* ---- namespace tables (openspec change opcua-namespace-table) ----------
+ * A configured id like ns=3;i=1234 names its namespace by position in the
+ * server's NamespaceArray, which a server may number differently after a
+ * restart (OPC 10000-5 §6.3.1). A table records the array the ids were written
+ * against; each session translates index -> URI -> the server's index now.
+ * Mirrors impl/rust/crates/connector-opcua/src/namespaces.rs. */
+
+static double mono_s(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (double)ts.tv_sec + (double)ts.tv_nsec / 1e9;
+}
+
+/* Validate the `namespaces` key of `holder` (absent: *out = NULL). The
+ * messages are the Rust module's (namespaces::parse_table). */
+static int parse_table(toml_table_t *holder, toml_array_t **out, char *why,
+                       size_t whylen) {
+    *out = NULL;
+    if (!holder || (!toml_raw_in(holder, "namespaces") &&
+                    !toml_array_in(holder, "namespaces") &&
+                    !toml_table_in(holder, "namespaces")))
+        return 0;
+    toml_array_t *arr = toml_array_in(holder, "namespaces");
+    int n = arr ? toml_array_nelem(arr) : 0;
+    for (int i = 0; arr && i < n; i++) {
+        toml_datum_t d = toml_string_at(arr, i);
+        if (!d.ok) {
+            arr = NULL;
+            break;
+        }
+        free(d.u.s);
+    }
+    if (!arr) {
+        snprintf(why, whylen, "namespaces must be an array of namespace URI strings");
+        return -1;
+    }
+    if (n == 0) {
+        snprintf(why, whylen, "namespaces entry 0 must be '" UA_NS0_URI "', found none");
+        return -1;
+    }
+    toml_datum_t first = toml_string_at(arr, 0);
+    int bad = strcmp(first.u.s, UA_NS0_URI) != 0;
+    if (bad)
+        snprintf(why, whylen, "namespaces entry 0 must be '" UA_NS0_URI "', found '%s'",
+                 first.u.s);
+    free(first.u.s);
+    if (bad)
+        return -1;
+    *out = arr;
+    return 0;
+}
+
+/* The node id this session reads for a point, or NULL with *reason. */
+static char *point_node(ua_point_t *up, const char **reason) {
+    if (!up->table)
+        return up->node_id;
+    if (up->translated)
+        return up->resolved;
+    *reason = up->reason[0] ? up->reason : "namespace not translated";
+    return NULL;
+}
+
+/* Forget the session's translations (on disconnect). */
+static void reset_translation(tdot_device_t *dev, ua_device_t *ua) {
+    for (size_t j = 0; j < dev->npoints; j++) {
+        ua_point_t *up = dev->points[j].proto;
+        if (!up)
+            continue;
+        up->translated = false;
+        up->resolved[0] = up->reason[0] = '\0';
+        up->pending = false;
+    }
+    for (size_t i = 0; i < ua->nlogged; i++)
+        free(ua->logged[i]);
+    free(ua->logged);
+    ua->logged = NULL;
+    ua->nlogged = 0;
+    ua->last_retry = ua->retry_at = 0;
+    ua->renew_session = false;
+}
+
+/* Log a namespace the server lists at another index, once per session. */
+static void log_moved(const tdot_device_t *dev, ua_device_t *ua, const char *uri,
+                      int local, size_t server) {
+    for (size_t i = 0; i < ua->nlogged; i++)
+        if (!strcmp(ua->logged[i], uri))
+            return;
+    char **grown = realloc(ua->logged, (ua->nlogged + 1) * sizeof *grown);
+    if (!grown)
+        return;
+    ua->logged = grown;
+    ua->logged[ua->nlogged++] = strdup(uri);
+    fprintf(stderr, "info  %s: namespace %s local %d -> server %zu\n", dev->name, uri,
+            local, server);
+}
+
+/* Translate the device's points that have a table: all of them, or with
+ * `retry` only those not translated yet (design D3, D5). */
+static void translate_device(tdot_device_t *dev, bool retry) {
+    ua_device_t *ua = dev->proto;
+    bool any = false;
+    for (size_t j = 0; j < dev->npoints && !any; j++) {
+        const ua_point_t *up = dev->points[j].proto;
+        any = up && up->table && (!retry || !up->translated);
+    }
+    if (!any || !ua->client)
+        return;
+
+    UA_Variant array;
+    UA_Variant_init(&array);
+    UA_StatusCode rc = UA_Client_readValueAttribute(
+        ua->client, UA_NODEID_NUMERIC(0, UA_NS0ID_SERVER_NAMESPACEARRAY), &array);
+    char unavailable[200] = "";
+    if (rc != UA_STATUSCODE_GOOD)
+        snprintf(unavailable, sizeof unavailable, "namespace array unavailable: %s",
+                 UA_StatusCode_name(rc));
+    else if (UA_Variant_isScalar(&array) || array.type != &UA_TYPES[UA_TYPES_STRING])
+        snprintf(unavailable, sizeof unavailable,
+                 "namespace array unavailable: not an array of strings");
+    const UA_String *uris = unavailable[0] ? NULL : array.data;
+    size_t nuris = unavailable[0] ? 0 : array.arrayLength;
+
+    for (size_t j = 0; j < dev->npoints; j++) {
+        tdot_point_t *pt = &dev->points[j];
+        ua_point_t *up = pt->proto;
+        if (!up || !up->table || (retry && up->translated))
+            continue;
+        up->translated = false;
+        if (unavailable[0]) {
+            snprintf(up->reason, sizeof up->reason, "%s", unavailable);
+        } else {
+            /* configure checked that the table lists the index */
+            toml_datum_t uri = toml_string_at(up->table, up->ns);
+            size_t found = nuris;
+            for (size_t k = 0; uri.ok && k < nuris && found == nuris; k++)
+                if (uris[k].length == strlen(uri.u.s) &&
+                    !memcmp(uris[k].data, uri.u.s, uris[k].length))
+                    found = k;
+            /* The index to put in the node id is the CLIENT's for the URI:
+             * open62541 rewrites every encoded node id from its own index to
+             * the server's (client.h, "Namespace Mapping"). For namespaces the
+             * server listed when the session was created the two agree. */
+            UA_UInt16 local = 0;
+            UA_NodeId node;
+            if (!uri.ok) {
+                snprintf(up->reason, sizeof up->reason, "namespace not translated");
+            } else if (found == nuris) {
+                snprintf(up->reason, sizeof up->reason, "namespace not found: %s", uri.u.s);
+            } else if (UA_Client_getNamespaceIndex(ua->client, UA_STRING(uri.u.s), &local) !=
+                       UA_STATUSCODE_GOOD) {
+                snprintf(up->reason, sizeof up->reason,
+                         "namespace %s was added after connecting; renewing the session",
+                         uri.u.s);
+                if (!ua->renew_session)
+                    fprintf(stderr,
+                            "info  device %s: the server added namespace %s; renewing the "
+                            "session to address it\n",
+                            dev->name, uri.u.s);
+                ua->renew_session = true;
+            } else if (UA_NodeId_parse(&node, UA_STRING(up->node_id)) == UA_STATUSCODE_GOOD) {
+                node.namespaceIndex = local;
+                UA_String text = UA_STRING_NULL;
+                UA_NodeId_print(&node, &text);
+                snprintf(up->resolved, sizeof up->resolved, "%.*s", (int)text.length,
+                         (const char *)text.data);
+                UA_String_clear(&text);
+                UA_NodeId_clear(&node);
+                up->translated = true;
+                up->reason[0] = '\0';
+                if ((int)found != up->ns)
+                    log_moved(dev, ua, uri.u.s, up->ns, found);
+            } else {
+                snprintf(up->reason, sizeof up->reason, "invalid node id: %s", up->node_id);
+            }
+            if (uri.ok)
+                free(uri.u.s);
+        }
+        if (!retry && !up->translated)
+            fprintf(stderr, "warn  device '%s' point '%s': %s\n", dev->name, pt->id,
+                    up->reason);
+    }
+    UA_Variant_clear(&array);
+}
+
 static int configure(tdot_connector_t *self, tdot_config_t *cfg, char *err,
                      size_t errlen) {
     ua_state_t *st = self->state;
@@ -688,6 +907,12 @@ static int configure(tdot_connector_t *self, tdot_config_t *cfg, char *err,
 
         if (configure_security(st, &def, dev, ua, base, err, errlen) != 0)
             return -1;
+        char why[400];
+        toml_array_t *device_table = NULL;
+        if (parse_table(dev->protocol_address, &device_table, why, sizeof why) != 0) {
+            snprintf(err, errlen, "device '%s' protocol_address: %s", dev->name, why);
+            return -1;
+        }
         if (ua->policy != &POLICIES[0])
             any_secure = true;
 
@@ -732,6 +957,33 @@ static int configure(tdot_connector_t *self, tdot_config_t *cfg, char *err,
                 up->queue_size = device_queue_size  ? device_queue_size
                                  : st->queue_size   ? st->queue_size
                                                     : UA_QUEUE_SIZE_DEFAULT;
+            /* A library's table describes the library's addresses; the
+             * device's describes the rest. */
+            toml_array_t *table = device_table;
+            if (pt->library && (toml_raw_in(pt->library, "namespaces") ||
+                                toml_array_in(pt->library, "namespaces") ||
+                                toml_table_in(pt->library, "namespaces"))) {
+                if (parse_table(pt->library, &table, why, sizeof why) != 0) {
+                    snprintf(err, errlen, "point '%s': [library] %s", pt->id, why);
+                    return -1;
+                }
+            }
+            UA_NodeId parsed;
+            if (table && UA_NodeId_parse(&parsed, UA_STRING(up->node_id)) == UA_STATUSCODE_GOOD) {
+                up->ns = parsed.namespaceIndex;
+                UA_NodeId_clear(&parsed);
+                if (up->ns != 0) {
+                    int entries = toml_array_nelem(table);
+                    if (up->ns >= entries) {
+                        snprintf(err, errlen,
+                                 "point '%s': namespace index %d is not in the namespace "
+                                 "table (%d entries)",
+                                 pt->id, up->ns, entries);
+                        return -1;
+                    }
+                    up->table = table;
+                }
+            }
 
             cJSON *addr = cJSON_CreateObject();
             cJSON_AddStringToObject(addr, "node_id", up->node_id);
@@ -796,6 +1048,7 @@ static void disconnect_device(tdot_connector_t *self, tdot_device_t *dev) {
         ua->subscribed = false;
         ua->sub_lost = false;
         ua_ring_free(&ua->queue);
+        reset_translation(dev, ua);
     }
 }
 
@@ -1319,6 +1572,7 @@ static int connect_device(tdot_connector_t *self, tdot_device_t *dev,
      * connector.operation_timeout (see configure()). open62541 reads
      * config.timeout per request, so changing it now applies to all of them. */
     cc->timeout = (UA_UInt32)st->request_timeout_s * 1000;
+    translate_device(dev, false);
     return 0;
 }
 
@@ -1508,8 +1762,23 @@ static int read_point(tdot_connector_t *self, tdot_device_t *dev,
         return -1;
     }
 
+    /* A point whose namespace this session has not translated is tried again
+     * first -- once per tick for the device -- so a namespace the server
+     * added since is picked up at the next poll (design D5). */
+    const char *reason = NULL;
+    char *node_text = point_node(up, &reason);
+    if (!node_text && mono_s() - ua->last_retry >= 0.5) {
+        ua->last_retry = mono_s();
+        translate_device(dev, true);
+        node_text = point_node(up, &reason);
+    }
+    if (!node_text) {
+        tdot_sample_bad(out, "%s", reason);
+        return ua->renew_session ? -1 : 0;
+    }
+
     UA_NodeId node;
-    if (UA_NodeId_parse(&node, UA_STRING(up->node_id)) !=
+    if (UA_NodeId_parse(&node, UA_STRING(node_text)) !=
         UA_STATUSCODE_GOOD) {
         tdot_sample_bad(out, "invalid node id: %s", up->node_id);
         return 0;
@@ -1633,8 +1902,14 @@ static int write_point(tdot_connector_t *self, tdot_device_t *dev,
         return -1;
     }
 
+    const char *reason = NULL;
+    char *node_text = point_node(up, &reason);
+    if (!node_text) {
+        snprintf(err, errlen, "%s", reason);
+        return -1;
+    }
     UA_NodeId node;
-    if (UA_NodeId_parse(&node, UA_STRING(up->node_id)) !=
+    if (UA_NodeId_parse(&node, UA_STRING(node_text)) !=
         UA_STATUSCODE_GOOD) {
         snprintf(err, errlen, "invalid node id: %s", up->node_id);
         return -1;
@@ -1764,6 +2039,90 @@ static void on_subscription_inactivity(UA_Client *client, UA_UInt32 sub_id,
     mark_subscription_lost(sub_ctx);
 }
 
+/* Queue a bad sample for a pushed point, as a notification would. */
+static void push_bad(tdot_device_t *dev, tdot_point_t *pt, const char *reason) {
+    ua_device_t *ua = dev->proto;
+    ua_pending_t *slot = ua_ring_slot(&ua->queue);
+    if (!slot)
+        return;
+    slot->pt = pt;
+    tdot_sample_init(&slot->sample);
+    tdot_sample_bad(&slot->sample, "%s", reason);
+    ua_ring_commit(&ua->queue);
+}
+
+/* Create the monitored item of one point on `node_text`. */
+static UA_StatusCode monitor_point(tdot_device_t *dev, tdot_point_t *pt,
+                                   char *node_text) {
+    ua_device_t *ua = dev->proto;
+    UA_NodeId node;
+    if (UA_NodeId_parse(&node, UA_STRING(node_text)) != UA_STATUSCODE_GOOD) {
+        UA_NodeId_clear(&node);
+        return UA_STATUSCODE_BADNODEIDINVALID;
+    }
+    UA_MonitoredItemCreateRequest mreq = UA_MonitoredItemCreateRequest_default(node);
+    mreq.requestedParameters.samplingInterval = tdot_ua_sampling_interval_ms(pt);
+    mreq.requestedParameters.queueSize = ((ua_point_t *)pt->proto)->queue_size;
+    mreq.requestedParameters.discardOldest = true;
+    UA_MonitoredItemCreateResult mres = UA_Client_MonitoredItems_createDataChange(
+        ua->client, ua->sub_id, UA_TIMESTAMPSTORETURN_BOTH, mreq, pt /*monContext*/,
+        on_data_change, NULL);
+    UA_NodeId_clear(&node);
+    UA_StatusCode rc = mres.statusCode;
+    if (rc == UA_STATUSCODE_GOOD &&
+        tdot_ua_revised(mreq.requestedParameters.samplingInterval,
+                        mres.revisedSamplingInterval))
+        fprintf(stderr,
+                "info  device %s: point %s: the server revised the point's "
+                "sampling interval: requested %.0fms, revised %.0fms\n",
+                dev->name, pt->id, mreq.requestedParameters.samplingInterval,
+                mres.revisedSamplingInterval);
+    UA_MonitoredItemCreateResult_clear(&mres); /* filterResult may be heap */
+    return rc;
+}
+
+/* Try the subscribed points waiting for their namespace again (design D5):
+ * those that now have a node get their monitored item, the others report why.
+ * Every UA_RETRY_INTERVAL_S, from drain_subscriptions(). */
+static void retry_pending(tdot_device_t *dev) {
+    ua_device_t *ua = dev->proto;
+    bool any = false;
+    for (size_t j = 0; j < dev->npoints && !any; j++) {
+        const ua_point_t *up = dev->points[j].proto;
+        any = up && up->pending;
+    }
+    if (!any || mono_s() < ua->retry_at)
+        return;
+    ua->retry_at = mono_s() + UA_RETRY_INTERVAL_S;
+    translate_device(dev, true);
+    char added[512] = "";
+    for (size_t j = 0; j < dev->npoints; j++) {
+        tdot_point_t *pt = &dev->points[j];
+        ua_point_t *up = pt->proto;
+        if (!up || !up->pending)
+            continue;
+        const char *reason = NULL;
+        char *node_text = point_node(up, &reason);
+        if (!node_text) {
+            push_bad(dev, pt, reason);
+            continue;
+        }
+        UA_StatusCode rc = monitor_point(dev, pt, node_text);
+        if (rc != UA_STATUSCODE_GOOD) {
+            char why[200];
+            snprintf(why, sizeof why, "monitored item rejected: %s", UA_StatusCode_name(rc));
+            push_bad(dev, pt, why);
+            continue;
+        }
+        up->pending = false;
+        size_t len = strlen(added);
+        snprintf(added + len, sizeof added - len, "%s%s", len ? ", " : "", pt->id);
+    }
+    if (added[0])
+        fprintf(stderr, "info  device %s: subscribed after translating their namespace: %s\n",
+                dev->name, added);
+}
+
 static int subscribe_device(tdot_connector_t *self, tdot_device_t *dev,
                             char *err, size_t errlen) {
     (void)self;
@@ -1845,8 +2204,22 @@ static int subscribe_device(tdot_connector_t *self, tdot_device_t *dev,
             if (!pt->subscribe || !(pt->access & TDOT_ACCESS_READ))
                 continue;
             ua_point_t *up = pt->proto;
+            const char *reason = NULL;
+            char *node_text = point_node(up, &reason);
+            if (!node_text) {
+                /* Waiting for its namespace (design D4, D5): pushed, so it
+                 * stays off the polling schedule -- its bad samples come
+                 * through the queue and say nothing about the link -- and
+                 * retry_pending() gives it its monitored item once the
+                 * namespace is there. */
+                up->pending = true;
+                pt->subscribed = true;
+                push_bad(dev, pt, reason);
+                armed++;
+                continue;
+            }
             UA_NodeId node;
-            if (UA_NodeId_parse(&node, UA_STRING(up->node_id)) !=
+            if (UA_NodeId_parse(&node, UA_STRING(node_text)) !=
                 UA_STATUSCODE_GOOD) {
                 UA_NodeId_clear(&node);
                 continue; /* the polling path reports this as a bad sample */
@@ -1914,6 +2287,7 @@ static int subscribe_device(tdot_connector_t *self, tdot_device_t *dev,
     free(items);
     free(contexts);
     free(callbacks);
+    ua->retry_at = mono_s() + UA_RETRY_INTERVAL_S;
     if (armed == 0) {
         /* The subscription exists but carries nothing: tear it down rather than
          * leaving an idle one on the server. */
@@ -1970,6 +2344,10 @@ static int drain_subscriptions(tdot_connector_t *self, tdot_device_t *dev,
     if (session_state != UA_SESSIONSTATE_ACTIVATED ||
         connect_status != UA_STATUSCODE_GOOD)
         return -1;
+
+    retry_pending(dev);
+    if (ua->renew_session)
+        return -1; /* reconnect: see ua_device_t.renew_session */
 
     ua_pending_t *slot;
     while ((slot = ua_ring_peek(&ua->queue))) {
