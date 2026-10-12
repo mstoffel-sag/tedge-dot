@@ -751,6 +751,35 @@ static void add_point_labels(cJSON *caps, const tdot_config_t *cfg) {
     }
 }
 
+/* `methods` of the capability descriptor (contract §7): every configured
+ * `call_method` point, with its `name` / `description` when it declares them and
+ * its `address` exactly as configured, so a consumer learns which methods a
+ * device has, their arguments and the node each one calls -- methods never
+ * sample, so nothing else announces them. A configuration without methods adds
+ * nothing. Mirrors descriptor.rs `methods`. */
+static void add_methods(cJSON *caps, const tdot_config_t *cfg) {
+    cJSON *methods = NULL;
+    for (size_t i = 0; i < cfg->ndevices; i++) {
+        const tdot_device_t *dev = &cfg->devices[i];
+        for (size_t j = 0; j < dev->npoints; j++) {
+            const tdot_point_t *pt = &dev->points[j];
+            if (!(pt->access & TDOT_ACCESS_CALL))
+                continue;
+            if (!methods)
+                methods = cJSON_AddArrayToObject(caps, "methods");
+            cJSON *entry = cJSON_CreateObject();
+            cJSON_AddStringToObject(entry, "device", dev->name);
+            cJSON_AddStringToObject(entry, "point", pt->id);
+            if (pt->name)
+                cJSON_AddStringToObject(entry, "name", pt->name);
+            if (pt->description)
+                cJSON_AddStringToObject(entry, "description", pt->description);
+            cJSON_AddItemToObject(entry, "address", tdot_point_address_json(pt));
+            cJSON_AddItemToArray(methods, entry);
+        }
+    }
+}
+
 /* `parameter_keys` of the capability descriptor (contract §7): every configured
  * point that names its own key inside its parameter sets (`meta.parameter.key`),
  * with the `set` / `group` that name those sets, exactly as configured -- and
@@ -832,6 +861,7 @@ static char *augmented_capabilities(const char *json, const tdot_config_t *cfg) 
     add_unique(features, "management");
     add_point_labels(caps, cfg);
     add_parameter_keys(caps, cfg);
+    add_methods(caps, cfg);
     /* `reports` (§7): the declared reporting policies, so a consumer knows
      * which points are filtered and how often a quiet one still reports. */
     cJSON *reports = tdot_config_reports(cfg);

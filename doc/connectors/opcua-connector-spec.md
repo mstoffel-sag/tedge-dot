@@ -40,7 +40,8 @@ cloud-side certificate operations, keys in an HSM/TPM.
 ```
 
 `bytes` (ByteString values, §3.7) is advertised by both builds, and so is `call-method`
-(method calls, §3.10). Security is configuration, not a capability: both builds support all of §3.
+(method calls, §3.10). A configuration with method points adds their list, `methods` (contract
+§7), each with its `address` (`object_id`, `method_id`, `inputs`). Security is configuration, not a capability: both builds support all of §3.
 
 ## 3. Configuration
 

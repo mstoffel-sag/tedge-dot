@@ -1942,6 +1942,10 @@ void tdot_config_replace(tdot_config_t *dst, tdot_config_t *src) {
     free(src);
 }
 
+cJSON *tdot_point_address_json(const tdot_point_t *pt) {
+    return pt->address ? toml_to_json_table(pt->address) : cJSON_CreateObject();
+}
+
 char *tdot_config_root_json(const tdot_config_t *cfg) {
     if (!cfg->root)
         return strdup("{}");

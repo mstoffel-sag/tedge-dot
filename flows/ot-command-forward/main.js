@@ -14,6 +14,8 @@
 //   ot_set_config    -> set-config     (covers c8y_ModbusConfiguration / c8y_SerialConfiguration)
 //   ot_define_device -> define-device  (covers c8y_ModbusDevice / c8y_Coils / c8y_Registers)
 //   ot_remove_device -> remove-device
+//   ot_call_method   -> call-method    (call a `call_method` point, e.g. an OPC UA method;
+//                                       `arguments` pass through, `outputs` come back)
 //
 // One command type is reshaped rather than passed through: `parameter_update` (device
 // parameters — the command type of the tedge-parameter-plugin, whose c8y_ParameterUpdate

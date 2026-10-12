@@ -2184,6 +2184,10 @@ fn capability_payload(caps: &Capabilities, config: &ConnectorConfig) -> String {
     if !keys.is_empty() {
         json["parameter_keys"] = serde_json::Value::Array(keys);
     }
+    let methods = crate::descriptor::methods(config);
+    if !methods.is_empty() {
+        json["methods"] = serde_json::Value::Array(methods);
+    }
     if let Some(reports) = crate::descriptor::reports(config) {
         json["reports"] = reports;
     }
@@ -3867,6 +3871,64 @@ protocol_address = {}
         .unwrap();
         let json: serde_json::Value = serde_json::from_str(&capability_payload(&caps, &empty)).unwrap();
         assert!(json.get("reports").is_none());
+    }
+
+    /// Every `call_method` point is listed, labelled or not, with its address as configured; a
+    /// configuration without methods adds no `methods` (§7).
+    #[test]
+    fn capability_payload_lists_methods() {
+        let caps = Capabilities {
+            protocol: "opcua",
+            version: "0",
+            modes: vec![],
+            datatypes: vec![],
+            point_kinds: vec![],
+            command_verbs: vec![CALL_METHOD_VERB.into()],
+            features: vec![],
+            subscribe: false,
+        };
+        let config: ConnectorConfig = toml::from_str(
+            r#"
+[connector]
+protocol = "opcua"
+
+[[device]]
+name = "Pump01"
+protocol_address = {}
+  [[device.point]]
+  id = "flow"
+  datatype = "float64"
+  name = "Flow"
+  address = { node_id = "ns=2;i=9" }
+  [[device.point]]
+  id = "startPump"
+  access = "call_method"
+  address = { object_id = "ns=2;i=6", method_id = "ns=2;i=25" }
+  [[device.point]]
+  id = "setOperatingLevel"
+  access = "call_method"
+  name = "Set operating level"
+  description = "Target level in %"
+  address = { object_id = "ns=2;i=6", method_id = "ns=2;i=27", inputs = ["int64"] }
+"#,
+        )
+        .unwrap();
+        let payload: serde_json::Value =
+            serde_json::from_str(&capability_payload(&caps, &config)).unwrap();
+        assert_eq!(
+            payload["methods"],
+            serde_json::json!([
+                { "device": "Pump01", "point": "startPump",
+                  "address": { "object_id": "ns=2;i=6", "method_id": "ns=2;i=25" } },
+                { "device": "Pump01", "point": "setOperatingLevel",
+                  "name": "Set operating level", "description": "Target level in %",
+                  "address": { "object_id": "ns=2;i=6", "method_id": "ns=2;i=27", "inputs": ["int64"] } }
+            ])
+        );
+        let plain: ConnectorConfig = toml::from_str(BASE).unwrap();
+        let payload: serde_json::Value =
+            serde_json::from_str(&capability_payload(&caps, &plain)).unwrap();
+        assert!(payload.get("methods").is_none());
     }
 
     #[test]

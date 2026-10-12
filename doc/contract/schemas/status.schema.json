@@ -128,6 +128,22 @@
             }
           }
         },
+        "methods": {
+          "type": "array",
+          "description": "Every configured call_method point (§3.1, §6.6), labelled or not: which methods a device has, with their `name` / `description` when declared and their `address` as configured (the connector spec defines its shape; OPC UA: object_id, method_id, inputs). Methods never sample, so nothing else announces them. Absent when no point is a method.",
+          "items": {
+            "type": "object",
+            "required": ["device", "point", "address"],
+            "additionalProperties": false,
+            "properties": {
+              "device": { "type": "string", "minLength": 1 },
+              "point": { "type": "string", "minLength": 1 },
+              "name": { "type": "string" },
+              "description": { "type": "string" },
+              "address": { "type": "object", "description": "The point's address exactly as configured." }
+            }
+          }
+        },
         "reports": {
           "type": "object",
           "description": "The reporting policies (§5.3). `default` is [connector] report; `devices` lists each device declaring a report; `points` lists the effective (merged) policy of each point whose policy differs from its device's. A point's policy is its `points` entry if present, else its device's entry merged over `default`. Absent when no report is configured.",

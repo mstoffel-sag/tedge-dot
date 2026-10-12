@@ -42,7 +42,7 @@ See proposal.md for the motivation. The state of the code this design builds on:
   `BadUserAccessDenied`) reaches the command result instead.
 - Structured (`ExtensionObject`) input arguments, and decoding structured output arguments.
 - A `call-method-batch` verb, a CLI subcommand for method calls, and a Cumulocity operation that
-  maps onto `call-method`. Each can follow without changing what this change defines.
+  maps onto `ot_call_method` (an operation template and the mapping of a node id to a point). Each can follow without changing what this change defines.
 - Method calls for any protocol other than OPC UA.
 
 ## Decisions
@@ -180,6 +180,22 @@ come back, so an output that cannot be rendered never turns a successful call in
 callbacks); the client's Call service builds and links without it, so turning it on would only
 add server code the connector never runs. Measured on macOS arm64, the stripped binary is the
 same size (1,085,192 bytes) with the flag on and off. The CMake comment now says so.
+
+### D11: Announcing the methods
+
+Methods never sample, and `command_verbs` only says a connector *can* call methods, so the
+descriptor gains `methods`, built from the configuration like `point_labels` and `parameter_keys`
+and republished with them. Each entry copies the point's `address` as configured: the SDK stays
+protocol-neutral (as with a sample's `addr`), and a consumer still gets the argument types and the
+node ids — what a cloud operation naming a `nodeId` needs to find the point.
+
+On thin-edge.io, `ot-registration` also subscribes to the descriptors and publishes the
+`ot_call_method` command capability, carrying the method list, on each device that has methods:
+the cloud mapper needs that capability to route a method-call operation to the device, and the
+device-level list is what a cloud UI reads. The flow remembers methods per device so the
+descriptor and the device's registration may arrive in either order, and clears the capability
+when the methods go away. Alternative: add `ot_call_method` to `command_capabilities` for every
+device — rejected, it would advertise method calls on Modbus devices too.
 
 ### D10: Tests
 

@@ -43,6 +43,11 @@
 - [x] 6.3 `opcua_e2e.robot`: the cases listed in design D10. `just test-e2e opcua` and `just test-e2e-c opcua` pass.
 - [x] 6.4 `doc/connectors/opcua-connector-spec.md`: a "Method calls" section (addressing, arguments, outputs, failure reasons, namespace tables) and `call-method` in §2 Capability descriptor. Verify the TOML example in the doc loads with `tedge-dot describe`.
 
-## 7. Integration
+## 7. Announcing the methods
 
-- [x] 7.1 `just test`, `just lint`, `just c-test`, `just c-describe-parity`, and both OPC UA e2e suites pass on the branch; `openspec validate opcua-method-calls --strict` passes.
+- [x] 7.1 Descriptor `methods` in both SDKs (`descriptor.rs`/`capability_payload`, `runtime.c` `add_methods`), contract §7 and `status.schema.json`. Rust unit test `capability_payload_lists_methods`; both builds checked by the e2e case "Capability Descriptor Lists The Methods".
+- [x] 7.2 `ot-registration` publishes and clears `te/device/<device>///cmd/ot_call_method`. Flow tests in `flows/test-flows.sh` (both orders, unchanged list, removal, device without methods); e2e cases "A Device With Methods Advertises The ot_call_method Command" and "A thin-edge Command Calls A Method".
+
+## 8. Integration
+
+- [ ] 8.1 `just test`, `just lint`, `just c-test`, `just c-describe-parity`, and both OPC UA e2e suites pass on the branch; `openspec validate opcua-method-calls --strict` passes.

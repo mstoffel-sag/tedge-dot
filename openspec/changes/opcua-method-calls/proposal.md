@@ -41,6 +41,10 @@ read, but the Rust runtime polls them too. OPC UA defines write-only the same wa
   `Call` service, and returns the output arguments as JSON. Both node ids are translated through
   the device's namespace table like any other node id. A method call is never retried.
 - The C build needs no open62541 change: its client Call service is compiled in already.
+- The capability descriptor gains **`methods`**: every `call_method` point with its address, so
+  a consumer learns which methods a device has. The `ot-registration` flow turns it into the
+  thin-edge `ot_call_method` command capability of each device with methods, so the cloud
+  mapper can route method calls to it; the existing command flows already forward the command.
 - The OPC UA simulator gains methods to call, and the e2e suite covers method calls and
   write-only points in both builds.
 

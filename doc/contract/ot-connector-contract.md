@@ -1139,6 +1139,21 @@ Result (`status: "failed"`):
 
 Like every command, the transitions echo the request's `origin` (§6.4).
 
+The descriptor's `methods` (§7) lists the methods a connector can call, for instance:
+
+```json
+"methods": [
+  { "device": "Pump01", "point": "setOperatingLevel", "name": "Set operating level",
+    "address": { "object_id": "ns=2;i=6", "method_id": "ns=2;i=27", "inputs": ["int64"] } }
+]
+```
+
+On thin-edge.io the `ot-registration` flow turns it into the `ot_call_method` command capability
+of each device that has methods, a retained `{"methods":[...]}` on
+`te/device/<device>///cmd/ot_call_method` listing the same entries without `device`, so the cloud
+mapper routes method calls to the device; the command flows forward `ot_call_method` to
+`call-method`.
+
 ## 7. Capability model
 
 On startup a connector MUST publish a retained **capability descriptor** to
@@ -1188,13 +1203,14 @@ same fields with its own values (and typically `"subscribe": true`):
 | `subscribe` | Whether the connector supports event-driven (push) reads in addition to polling. |
 | `point_labels` | The human-readable `name`/`description` of the configured points (§3.1), so a consumer can show something friendlier than the point id. Only points declaring one of them appear, and each entry carries only the fields it declares — **no entry means the id is the label**, so a configuration that labels nothing adds nothing here. Unlike the fields above, this describes the *configuration* rather than the connector's abilities; it lives here because it is static per point, which makes one retained message the right place for it and a per-sample echo the wrong one (§5 samples are a time series). |
 | `parameter_keys` | The configured points that name their own key inside their parameter sets (`meta.parameter.key`, §5.2), with the key and any `set` / `group` exactly as configured — so a key of the form `<set>.<key>` names its set too. Also every literal parameter (`meta.parameter.fragment`, §5.2), as `{ device, point, fragment }` with the fragment as configured. A consumer learns from it which point a key or fragment belongs to before the point samples — after a restart, since samples are not retained, and for a write-only point, which never samples. Only points naming a key or a fragment appear, so a configuration naming neither adds nothing here. Like `point_labels`, this describes the configuration. |
+| `methods` | Every configured `"call_method"` point (§3.1), labelled or not, with its `name` / `description` when it declares them and its `address` exactly as configured: which methods a device has, what their arguments are (in the address, as the connector spec defines it) and which node each one calls. Methods never sample, so nothing else announces them. Absent when no point is a method. Like `point_labels`, this describes the configuration. |
 | `reports` | The reporting policies (§5.3): `default` is `[connector] report`, `devices` lists each device declaring a `report`, and `points` lists the **effective** (merged) policy of each point whose policy differs from its device's. A point's policy is its `points` entry if it has one, otherwise its device's entry merged over `default`. Absent when no `report` is configured. Like `point_labels`, this describes the configuration. |
 
 Tooling and the conformance suite use the descriptor to decide which tests apply.
 
 The descriptor is retained, so it MUST be republished whenever something it reports changes.
-Everything except `point_labels`, `parameter_keys` and `reports` is a property of the connector build and so
-is published once at startup; those three follow the configuration, and a connector MUST therefore republish
+Everything except `point_labels`, `parameter_keys`, `methods` and `reports` is a property of the connector build and so
+is published once at startup; those four follow the configuration, and a connector MUST therefore republish
 the descriptor after a management command (§6.3) changes it — a retained message describing the
 configuration as it was at startup is worse than none. Note also that labelling every point of
 a large list has a size: two hundred fully labelled points add on the order of ten kilobytes to

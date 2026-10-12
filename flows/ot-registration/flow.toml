@@ -1,5 +1,6 @@
-# ot-registration: connector link status -> thin-edge child-device registration
-input.mqtt.topics = ["te/+/+/ot/+/status/link"]
+# ot-registration: connector link status -> thin-edge child-device registration, and the
+# connector capability descriptors -> the ot_call_method capability of devices with methods
+input.mqtt.topics = ["te/+/+/ot/+/status/link", "te/device/main/service/+/ot/capabilities"]
 
 [config]
 # thin-edge entity type assigned to registered OT devices that do not declare one. A connector

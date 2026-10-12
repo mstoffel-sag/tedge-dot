@@ -229,7 +229,8 @@ struct ReadArgs {
     #[arg(short, long, default_value = "*")]
     device: String,
     /// Point id or wildcard pattern; repeat to read several. Default: every readable point
-    /// (wildcard patterns skip write-only points; explicitly named points are always read).
+    /// (wildcard patterns skip write-only points and methods; explicitly named points are always
+    /// read).
     #[arg(short, long = "point", value_name = "POINT")]
     points: Vec<String>,
     /// Keep polling instead of reading once, at each device's configured poll interval.

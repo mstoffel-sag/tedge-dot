@@ -1161,6 +1161,15 @@ check "command-forward: init forwarded" ot-command-forward \
   '[te/device/plc1/ot/modbus/cmd/write/ot--abc] {"status":"init","point":"coil_rw","value":true}'
 check_empty "command-forward: non-init ignored" ot-command-forward \
   '[te/device/plc1///cmd/ot_write/abc] {"status":"successful","point":"coil_rw"}'
+# ot_call_method -> call-method: the arguments pass through, the outputs come back.
+check_params "command-forward: ot_call_method -> call-method with its arguments" ot-command-forward 'protocol = "opcua"' \
+  '[te/device/Pump01///cmd/ot_call_method/m1] {"status":"init","point":"setOperatingLevel","arguments":[75]}' \
+  '[te/device/Pump01/ot/opcua/cmd/call-method/ot--m1] {"status":"init","point":"setOperatingLevel","arguments":[75]}'
+check_multi "command-result: call-method outputs complete the ot_call_method command" \
+  "ot-command-forward ot-command-result" \
+  '[te/device/Pump01///cmd/ot_call_method/m2] {"status":"init","point":"startPump"}
+[te/device/Pump01/ot/opcua/cmd/call-method/ot--m2] {"status":"successful","point":"startPump","outputs":[true]}' \
+  '[te/device/Pump01///cmd/ot_call_method/m2] {"status":"successful","point":"startPump","outputs":[true]'
 # Management verbs change one connector instance's configuration, so they go to its service topic
 # (contract §6.3) — the named `service`, else the packaged tedge-dot-<protocol> — with the entity
 # the command was issued on recorded in origin.device for ot-command-result.
@@ -1205,6 +1214,24 @@ check_empty "command-result: init not mirrored (no loop)" ot-command-result \
 check "command-result: c8y-mapper metadata preserved in result" ot-command-result \
   $'[te/device/plc1/ot/modbus/cmd/write/ot--abc] {"status":"init","point":"coil_rw","value":true,"c8y-mapper":{"on_fragment":"c8y_SetCoil","output":null}}\n[te/device/plc1/ot/modbus/cmd/write/ot--abc] {"status":"successful","point":"coil_rw","value":true}' \
   '"c8y-mapper":{"on_fragment":"c8y_SetCoil","output":null}'
+
+# --- ot-registration: the ot_call_method capability of devices with methods (descriptor `methods`) ---
+CAPS='[te/device/main/service/tedge-dot-opcua-pump/ot/capabilities] {"protocol":"opcua","command_verbs":["write","call-method"],"methods":[{"device":"Pump01","point":"startPump","address":{"object_id":"ns=2;i=6","method_id":"ns=2;i=25"}},{"device":"Pump01","point":"setOperatingLevel","name":"Set level","address":{"object_id":"ns=2;i=6","method_id":"ns=2;i=27","inputs":["int64"]}}]}'
+CAPS_NONE='[te/device/main/service/tedge-dot-opcua-pump/ot/capabilities] {"protocol":"opcua","command_verbs":["write","call-method"]}'
+LINK='[te/device/Pump01/ot/opcua/status/link] {"status":"connected"}'
+METHODS='[te/device/Pump01///cmd/ot_call_method] {"methods":[{"point":"startPump","address":{"object_id":"ns=2;i=6","method_id":"ns=2;i=25"}},{"point":"setOperatingLevel","name":"Set level","address":{"object_id":"ns=2;i=6","method_id":"ns=2;i=27","inputs":["int64"]}}]}'
+check "registration: methods from the descriptor are advertised once the device registers" ot-registration \
+  "$CAPS"$'\n'"$LINK" "$METHODS"
+check "registration: a registered device gets its methods when the descriptor arrives" ot-registration \
+  "$LINK"$'\n'"$CAPS" "$METHODS"
+check_count "registration: an unchanged descriptor republishes nothing" ot-registration \
+  "$LINK"$'\n'"$CAPS"$'\n'"$CAPS" '///cmd/ot_call_method]' 1
+# One publish with the methods, then one empty retained message clearing them.
+check_count "registration: methods removed from the descriptor clear the capability" ot-registration \
+  "$LINK"$'\n'"$CAPS"$'\n'"$CAPS_NONE" '[te/device/Pump01///cmd/ot_call_method]' 2
+check_absent "registration: a device without methods gets no ot_call_method" ot-registration \
+  "$CAPS"$'\n''[te/device/plc1/ot/modbus/status/link] {"status":"connected"}' \
+  '[te/device/plc1//]' 'plc1///cmd/ot_call_method'
 
 echo
 echo "flows: $pass passed, $fail failed"

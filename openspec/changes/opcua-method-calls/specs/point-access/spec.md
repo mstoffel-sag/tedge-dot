@@ -100,3 +100,36 @@ The SDK runtimes and connectors SHALL NOT retry a method call, whatever the fail
 #### Scenario: Timeout
 - **WHEN** a method call times out
 - **THEN** the command ends `failed` and the method is not called again
+
+### Requirement: The capability descriptor lists the methods
+The capability descriptor SHALL carry `methods`, listing every `call_method` point of the
+configuration with its `device`, `point`, its `name` / `description` when declared, and its
+`address` exactly as configured, in both builds. It SHALL be absent when no point is a method, and
+republished when a configuration change alters it.
+
+#### Scenario: Unlabelled method is listed
+- **WHEN** a device has a `call_method` point without `name` or `description`
+- **THEN** the descriptor's `methods` contains an entry with its device, point id and address
+
+#### Scenario: No methods
+- **WHEN** no point of the configuration is a `call_method` point
+- **THEN** the descriptor has no `methods` field
+
+### Requirement: Devices with methods advertise the ot_call_method command
+The `ot-registration` flow SHALL publish a retained `{"methods":[...]}` on
+`te/device/<device>///cmd/ot_call_method` for every registered device the descriptor lists methods
+for, with the descriptor's entries without `device`, whichever of the registration and the
+descriptor comes first. It SHALL clear the message when a later descriptor lists no methods for
+the device, and SHALL NOT republish an unchanged list.
+
+#### Scenario: Descriptor before registration
+- **WHEN** the descriptor listing Pump01's methods arrives before Pump01's first connected link status
+- **THEN** the capability is published when Pump01 registers
+
+#### Scenario: Methods removed
+- **WHEN** a later descriptor lists no methods for Pump01
+- **THEN** an empty retained message is published on `te/device/Pump01///cmd/ot_call_method`
+
+#### Scenario: A thin-edge command calls a method
+- **WHEN** `{"status":"init","point":"multiply","arguments":[3,4]}` is published on `te/device/machine///cmd/ot_call_method/<id>`
+- **THEN** the command ends `successful` with `"outputs":[12]` on the same topic

@@ -285,6 +285,11 @@ tdot_point_t *tdot_device_point(tdot_device_t *dev, const char *id);
  * document and write it back as TOML. Caller frees. */
 char *tdot_config_root_json(const tdot_config_t *cfg);
 
+/* A point's `address` table exactly as configured, as a JSON object (an empty
+ * one when it has none). For the capability descriptor's `methods` (contract
+ * §7), which copies it without interpreting it. Caller frees (cJSON_Delete). */
+struct cJSON *tdot_point_address_json(const tdot_point_t *pt);
+
 /* What a configuration was loaded from, as one JSON string: its document and
  * every point library it resolved, in load order. Two configurations with the
  * same fingerprint resolve to the same devices and points, which is how a

@@ -760,6 +760,33 @@ Method And Write-Only Points Are Never Sampled
     END
 
 
+Capability Descriptor Lists The Methods
+    [Documentation]    Every call_method point is listed in the descriptor with its address (contract §7).
+    ${payload}=    Wait For Retained    ${CAPS_TOPIC}    timeout=${READY_TIMEOUT}
+    ${methods}=    Get Json Field    ${payload}    methods
+    ${multiply}=    Evaluate    [m for m in $methods if m["device"] == "machine" and m["point"] == "multiply"][0]
+    Should Be Equal    ${multiply}[address][method_id]    ns=2;s=Machine.Multiply
+    Should Be Equal    ${multiply}[address][inputs]    ${{["int32", "int32"]}}
+    ${points}=    Evaluate    sorted(m["point"] for m in $methods if m["device"] == "machine")
+    Should Be Equal    ${points}    ${{["fail", "multiply", "ping"]}}
+
+A Device With Methods Advertises The ot_call_method Command
+    [Documentation]    The ot-registration flow publishes the thin-edge command capability with the
+    ...    device's methods, so the cloud mapper routes method calls to it.
+    ${payload}=    Wait For Retained    te/device/machine///cmd/ot_call_method    timeout=${FLOWS_TIMEOUT}
+    ${methods}=    Get Json Field    ${payload}    methods
+    ${points}=    Evaluate    sorted(m["point"] for m in $methods)
+    Should Be Equal    ${points}    ${{["fail", "multiply", "ping"]}}
+
+A thin-edge Command Calls A Method
+    [Documentation]    te/device/<device>///cmd/ot_call_method reaches call-method through the
+    ...    command flows, and the outputs come back on the thin-edge command.
+    Publish Message    te/device/machine///cmd/ot_call_method/tm-1
+    ...    {"status":"init","point":"multiply","arguments":[3,4]}    retain=True
+    ${result}=    Wait For Message Containing    te/device/machine///cmd/ot_call_method/tm-1    "status":"successful"    timeout=${FLOWS_TIMEOUT}
+    ${outputs}=    Get Json Field    ${result}    outputs
+    Should Be Equal As Numbers    ${outputs}[0]    12
+
 *** Keywords ***
 Burst Values
     [Documentation]    The values of every sample seen on a Burst topic, in arrival order.
