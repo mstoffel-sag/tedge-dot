@@ -44,8 +44,11 @@ static const char *const CASE_KEYS[] = {"eq", "min", "max", "to", "write", NULL}
 static const char *const TRANSFORM_KEYS[] = {"multiplier", "divisor",
                                              "decimal_shift", "offset", NULL};
 static const char *const LIBRARY_TOP_KEYS[] = {"library", "point", NULL};
+/* `namespaces` is OPC UA's namespace table (its connector spec §3.4): it
+ * describes the library's addresses, so it travels with them (point->library).
+ * The loader does not interpret it. */
 static const char *const LIBRARY_KEYS[] = {"protocol", "type", "description",
-                                           "version", NULL};
+                                           "version", "namespaces", NULL};
 
 /* Levenshtein distance over bytes (as the Rust loader computes it). */
 static size_t edit_distance(const char *a, const char *b) {
@@ -754,7 +757,10 @@ static int check_point_fields(toml_table_t *pt, char *err, size_t errlen) {
  * meaningful thing, so an override that changes the address states all of it.
  * `pt` has been through check_point_fields, so every value it declares is
  * valid. */
-static void apply_point_table(toml_table_t *pt, tdot_point_t *point) {
+/* `library` is the [library] table of the library `pt` comes from, NULL for the
+ * device's own definitions. */
+static void apply_point_table(toml_table_t *pt, tdot_point_t *point,
+                              toml_table_t *library) {
     toml_datum_t d = toml_string_in(pt, "id");
     if (d.ok) {
         free(point->id);
@@ -865,9 +871,13 @@ static void apply_point_table(toml_table_t *pt, tdot_point_t *point) {
         free(d.u.s);
     }
 
+    /* An address is replaced wholesale, and with it goes the library it
+     * belonged to: an inline address is the device's own (point->library). */
     toml_table_t *address = toml_table_in(pt, "address");
-    if (address)
+    if (address) {
         point->address = address;
+        point->library = library;
+    }
 }
 
 /* Checks that only make sense once every definition of a point has been
@@ -1327,7 +1337,8 @@ static toml_array_t *load_library(tdot_config_t *cfg, const char *path,
 /* Add one point definition to a device's growing point list: a definition
  * whose id is already present patches it, a new id is appended. */
 static int merge_point(tdot_device_t *dev, toml_table_t *pt,
-                       tdot_mode_t device_mode, char *err, size_t errlen) {
+                       toml_table_t *library, tdot_mode_t device_mode, char *err,
+                       size_t errlen) {
     toml_datum_t id = toml_string_in(pt, "id");
     tdot_point_t *existing = NULL;
     if (id.ok) {
@@ -1335,7 +1346,7 @@ static int merge_point(tdot_device_t *dev, toml_table_t *pt,
         free(id.u.s);
     }
     if (existing) {
-        apply_point_table(pt, existing);
+        apply_point_table(pt, existing, library);
         return 0;
     }
 
@@ -1348,7 +1359,7 @@ static int merge_point(tdot_device_t *dev, toml_table_t *pt,
     dev->points = grown;
     tdot_point_t *point = &dev->points[dev->npoints++];
     init_point(point, dev->poll_interval_s, device_mode);
-    apply_point_table(pt, point);
+    apply_point_table(pt, point, library);
     return 0;
 }
 
@@ -1449,7 +1460,8 @@ static int resolve_device_points(tdot_config_t *cfg, tdot_device_t *dev,
             }
             for (int j = 0; j < toml_array_nelem(points); j++) {
                 toml_table_t *pt = toml_table_at(points, j);
-                if (pt && merge_point(dev, pt, device_mode, err, errlen) != 0) {
+                if (pt && merge_point(dev, pt, toml_table_in(lib_root, "library"),
+                                      device_mode, err, errlen) != 0) {
                     search_path_free(&sp);
                     return -1;
                 }
@@ -1467,7 +1479,7 @@ static int resolve_device_points(tdot_config_t *cfg, tdot_device_t *dev,
     int ninline = inline_points ? toml_array_nelem(inline_points) : 0;
     for (int j = 0; j < ninline; j++) {
         toml_table_t *pt = toml_table_at(inline_points, j);
-        if (pt && merge_point(dev, pt, device_mode, err, errlen) != 0)
+        if (pt && merge_point(dev, pt, NULL, device_mode, err, errlen) != 0)
             return -1;
     }
 

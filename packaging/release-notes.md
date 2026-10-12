@@ -137,6 +137,23 @@ that a raw point on a structure now publishes good samples where it published ba
 package does not support this yet. See `doc/connectors/opcua-connector-spec.md` §3.7 and the
 `demo-sim-structures` point library.
 
+### OPC UA namespace tables
+
+An OPC UA node id such as `ns=3;i=1234` names its namespace by position in the server's
+namespace array. A firmware update, or another instance of the same device type, can number the
+namespaces differently, and the id then reads a different node, or none. A device
+(`protocol_address.namespaces`) or a point library (`[library] namespaces`) can now record the
+array its ids were written against. On every connect the connector maps each index through
+that table to the server's current one, and logs a namespace that moved:
+`plc-7: namespace urn:acme:plc local 2 -> server 3`.
+
+- Node ids stay numeric, as copied from UaExpert. Without a table nothing changes.
+- A namespace the server does not list fails only its own points (`namespace not found: <uri>`)
+  and is tried again, so one the server adds later is picked up.
+- Both packages support it. An older package ignores a device's table and reads the configured
+  index. It rejects a library that carries one.
+- See `doc/connectors/opcua-connector-spec.md` §3.9.
+
 ### Measurement units reach Cumulocity
 
 A point's `unit` now arrives in Cumulocity with every measurement (`{"value": 6.6, "unit": "l/m"}`)

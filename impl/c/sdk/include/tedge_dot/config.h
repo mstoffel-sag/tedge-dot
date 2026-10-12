@@ -67,6 +67,12 @@ typedef struct tdot_point {
      * the same config samples at the same rate in both builds. */
     double sampling_interval_s;
     toml_table_t *address;  /* protocol-specific, borrowed from the doc */
+    /* The [library] table of the point library that supplied `address`, NULL
+     * when the address is the device's own (contract §3.4). Protocol-specific
+     * library settings that describe addresses (OPC UA's `namespaces`) are
+     * read from here. Borrowed from the library document. Mirrors
+     * PointConfig::library in the Rust SDK. */
+    toml_table_t *library;
     /* The point's own `report` table (contract §5.3) as a cJSON object, every
      * definition merged key by key (a library's, then the site's), numbers
      * kept as the text they were written as (cJSON raw items). NULL when no

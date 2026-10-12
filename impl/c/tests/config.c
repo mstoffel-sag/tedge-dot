@@ -389,6 +389,66 @@ static void check_named_library_is_inherited(void) {
     scratch_free(&s);
 }
 
+/* Each point remembers the [library] table its address came from, so a
+ * protocol can read the library's address settings (OPC UA's `namespaces`).
+ * Mirrors library.rs::a_library_point_records_the_library_its_address_belongs_to
+ * and a_point_cannot_write_the_address_origin. */
+static void check_address_origin(void) {
+    scratch_t s;
+    scratch_init(&s);
+    char with_ns[2048];
+    snprintf(with_ns, sizeof with_ns,
+             "[library]\nprotocol = \"modbus\"\n"
+             "namespaces = [\"http://opcfoundation.org/UA/\", \"urn:acme\"]\n%s",
+             LIBRARY + strlen("[library]\nprotocol = \"modbus\"\n"));
+    write_file(&s, "modbus/acme-meter.toml", with_ns);
+    write_file(&s, "modbus/tweaks.toml",
+               "[library]\nprotocol = \"modbus\"\n\n[[point]]\nid = \"pump_run\"\n"
+               "poll_interval = \"30s\"\n");
+    const char *inline_points =
+        "[[device.point]]\n"
+        "id      = \"boiler_temp\"\n"
+        "address = { table = \"holding\", address = 70, count = 2 }\n"
+        "\n"
+        "[[device.point]]\n"
+        "id       = \"local_only\"\n"
+        "datatype = \"uint16\"\n"
+        "address  = { table = \"holding\", address = 42, count = 1 }\n";
+    char err[512] = "";
+    tdot_config_t *cfg =
+        load_with_libs(&s, "\"acme-meter\", \"tweaks\"", inline_points, err, sizeof err);
+    if (!cfg) {
+        printf("FAIL library with namespaces did not load: %s\n", err);
+        failures++;
+        scratch_free(&s);
+        return;
+    }
+    tdot_device_t *dev = &cfg->devices[0];
+    tdot_point_t *pump = tdot_device_point(dev, "pump_run");
+    tdot_point_t *boiler = tdot_device_point(dev, "boiler_temp");
+    tdot_point_t *local = tdot_device_point(dev, "local_only");
+    /* A patch without an address keeps the origin of the address it inherits. */
+    toml_array_t *ns = pump && pump->library ? toml_array_in(pump->library, "namespaces") : NULL;
+    toml_datum_t second = ns ? toml_string_at(ns, 1) : (toml_datum_t){0};
+    CHECK(second.ok && strcmp(second.u.s, "urn:acme") == 0,
+          "pump_run should keep the library's namespaces");
+    if (second.ok)
+        free(second.u.s);
+    /* An inline address is the device's own. */
+    CHECK(boiler && boiler->library == NULL, "an overridden address must drop its library");
+    CHECK(local && local->library == NULL, "an inline point has no library");
+    tdot_config_free(cfg);
+
+    cfg = load_with_libs(&s, "\"acme-meter\"",
+                         "[[device.point]]\nid = \"boiler_temp\"\n"
+                         "__library = { namespaces = [\"x\"] }\n",
+                         err, sizeof err);
+    CHECK(cfg == NULL && strstr(err, "unknown key '__library'") != NULL,
+          "a point must not write __library, got '%s'", err);
+    tdot_config_free(cfg);
+    scratch_free(&s);
+}
+
 /* A library is the point list of one device *type*, so it is where the type is
  * named (§3.1): every instance that references it inherits it. A device's own
  * `type` wins, and a second library extends the type rather than redefining it.
@@ -2194,6 +2254,7 @@ int main(void) {
     check_subscribe_defaults_on();
     check_config_without_references_is_unchanged();
     check_named_library_is_inherited();
+    check_address_origin();
     check_device_type_is_inherited_from_the_first_library();
     check_library_is_protocol_scoped();
     check_search_path_order();

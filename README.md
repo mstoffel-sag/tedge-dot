@@ -170,6 +170,10 @@ quickest way to get data out of a device is to give a `[[device]]` its address a
 `points_from = ["demo-sim"]` — no point definitions to type. The demo configs in
 [demo/config/](demo/config/) are written exactly that way.
 
+An OPC UA library can also carry the server's **namespace table** (`[library] namespaces`): its
+node ids then stay correct on every instance, however the server numbers its namespaces (see
+the [OPC UA connector spec §3.9](doc/connectors/opcua-connector-spec.md)).
+
 Because only the *reference* is stored, `define-device` can add an instance at runtime from
 its address alone, which is what lets your own discovery (mDNS, a subnet scan, an asset
 inventory) onboard a known device type without shipping its point list. See

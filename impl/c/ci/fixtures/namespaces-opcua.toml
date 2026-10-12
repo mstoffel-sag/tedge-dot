@@ -1,0 +1,30 @@
+# Namespace tables (openspec opcua-namespace-table): a device's protocol_address.namespaces, as an
+# inline table spanning lines and as a sub-table. describe must accept both in both builds.
+[connector]
+protocol = "opcua"
+
+[[device]]
+name             = "plc-7"
+type             = "acme-plc"
+protocol_address = { endpoint = "opc.tcp://plc-7:4840/", namespaces = [
+  "http://opcfoundation.org/UA/", "urn:plc:server", "urn:acme:plc" ] }
+
+  [[device.point]]
+  id       = "setpoint"
+  datatype = "int32"
+  access   = "read_write"
+  address  = { node_id = "ns=2;i=1234" }
+
+[[device]]
+name = "plc-8"
+type = "acme-plc"
+
+  [device.protocol_address]
+  endpoint   = "opc.tcp://plc-8:4840/"
+  namespaces = ["http://opcfoundation.org/UA/", "urn:plc:server", "urn:acme:plc"]
+
+  [[device.point]]
+  id       = "setpoint"
+  datatype = "int32"
+  access   = "read_write"
+  address  = { node_id = "ns=2;i=1234" }

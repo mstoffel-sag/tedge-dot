@@ -1,0 +1,61 @@
+# Namespace-table e2e stack for the OPC UA connector (openspec change opcua-namespace-table).
+# tests/opcua_namespace_e2e.robot starts it with
+# `Setup OT Stack    opcua    compose_file=...`.
+#
+# Two simulators with the same address space but different namespace orders:
+#   ns-sim-a  urn:tedge:opcua-sim at index 2, the order the configuration's tables record.
+#             Watches the `ns-control` volume: the suite creates `add-late` to make it add a
+#             namespace while connected, and `shift` before restarting it to move its nodes to
+#             index 3 (see sim/server.py).
+#   ns-sim-b  urn:tedge:opcua-sim at index 3 from the start.
+#
+# The connector image is the one of docker-compose.yaml (IMPL / CONNECTOR_DOCKERFILE select the
+# implementation); namespaces/ is mounted over it with its own entrypoint and configuration. The
+# connector mounts `ns-control` too: the suite creates the control files from there.
+services:
+  broker:
+    image: public.ecr.aws/docker/library/eclipse-mosquitto:2
+    volumes:
+      - ../_shared/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+    ports:
+      - target: 1883
+        published: "${BROKER_PORT:-}"
+
+  ns-sim-a:
+    build:
+      context: ../..
+      dockerfile: connectors/opcua/sim/Dockerfile
+    environment:
+      OPCUA_ENDPOINT_HOST: ns-sim-a
+      OPCUA_SIM_CONTROL_DIR: /control
+    volumes:
+      - ns-control:/control
+
+  ns-sim-b:
+    build:
+      context: ../..
+      dockerfile: connectors/opcua/sim/Dockerfile
+    environment:
+      OPCUA_ENDPOINT_HOST: ns-sim-b
+      OPCUA_SIM_EXTRA_NAMESPACES: "urn:tedge:opcua-sim:other"
+
+  connector:
+    image: tedge-dot-${IMPL:-rust}-opcua-connector
+    build:
+      context: ../..
+      dockerfile: ${CONNECTOR_DOCKERFILE:-connectors/opcua/Dockerfile.connector}
+      args:
+        PROTOCOL: opcua
+    entrypoint: ["/opt/namespaces/entrypoint.sh"]
+    volumes:
+      - ./namespaces:/opt/namespaces:ro
+      - ns-control:/control
+    labels:
+      device-test-core.role: main
+    depends_on:
+      - broker
+      - ns-sim-a
+      - ns-sim-b
+
+volumes:
+  ns-control:

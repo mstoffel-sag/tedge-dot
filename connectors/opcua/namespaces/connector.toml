@@ -1,0 +1,68 @@
+# Namespace-table e2e configuration (openspec change opcua-namespace-table), run by
+# tests/opcua_namespace_e2e.robot against docker-compose.namespaces.yaml.
+#
+# The node ids below were written against a simulator whose namespace urn:tedge:opcua-sim sits
+# at index 2 -- the order the namespace tables record. ns-sim-b lists it at index 3 from the
+# start, and the suite restarts ns-sim-a with it at index 3 too.
+[connector]
+protocol           = "opcua"
+service_name       = "tedge-dot"
+poll_interval      = "1s"
+operation_timeout  = "5s"
+point_library_path = ["/opt/namespaces/points.d"]
+
+[mqtt]
+host = "broker"
+port = 1883
+
+# Library points (table in the library) plus the device's own points (table on the device):
+# one whose namespace the server never lists, and one whose namespace the simulator adds while
+# the session is open.
+[[device]]
+name        = "ns-a"
+points_from = ["ns-sim"]
+
+  [device.protocol_address]
+  endpoint   = "opc.tcp://ns-sim-a:4840/"
+  namespaces = [
+    "http://opcfoundation.org/UA/",
+    "urn:freeopcua:python:server",
+    "urn:tedge:opcua-sim",
+    "urn:not-on-the-server",
+    "urn:tedge:opcua-sim:late",
+  ]
+
+  [[device.point]]
+  id        = "ghost"
+  datatype  = "float64"
+  subscribe = false
+  address   = { node_id = "ns=3;s=Temperature" }
+
+  [[device.point]]
+  id        = "late_polled"
+  datatype  = "float64"
+  subscribe = false
+  address   = { node_id = "ns=4;s=Late" }
+
+  [[device.point]]
+  id        = "late_pushed"
+  datatype  = "float64"
+  address   = { node_id = "ns=4;s=Late" }
+
+# The same library on a server that numbers the namespace differently from the start.
+[[device]]
+name             = "ns-b"
+points_from      = ["ns-sim"]
+protocol_address = { endpoint = "opc.tcp://ns-sim-b:4840/" }
+
+# No table: read as configured, so a renumbering makes it miss its node. On the same server as
+# ns-a, to show what the table prevents.
+[[device]]
+name             = "ns-plain"
+protocol_address = { endpoint = "opc.tcp://ns-sim-a:4840/" }
+
+  [[device.point]]
+  id        = "temperature"
+  datatype  = "float64"
+  subscribe = false
+  address   = { node_id = "ns=2;s=Temperature" }

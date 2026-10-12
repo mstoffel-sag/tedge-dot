@@ -5,8 +5,9 @@ Documentation       Interoperability with a third-party OPC UA stack: the connec
 ...                 wrote, so a misreading of the specification is invisible to it; this suite
 ...                 exists to catch that.
 ...
-...                 One device per situation (connectors/opcua/interop/connector.toml.in, whose
-...                 namespace index is resolved at startup by resolve-ns.py).
+...                 One device per situation (connectors/opcua/interop/connector.toml). Every
+...                 device carries a namespace table, so each point is read through the
+...                 translation to the index this server gives urn:opcua:testserver:nodes.
 ...
 ...                 Run via:  just test-interop opcua   (and just test-interop-c opcua)
 
@@ -20,7 +21,7 @@ Suite Teardown      Teardown OT Stack
 
 *** Variables ***
 ${PROTOCOL}             opcua
-${CONFIG}               /rendered/connector.toml
+${CONFIG}               /opt/interop/connector.toml
 ${READY_TIMEOUT}        150
 ${SAMPLE_TIMEOUT}       30
 # A failing device retries on a 1s -> 60s backoff.

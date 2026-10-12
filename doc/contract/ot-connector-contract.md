@@ -309,6 +309,7 @@ protocol    = "modbus"          # MUST match the referencing connector's protoco
 type        = "acme-meter-v2"   # optional; the device type these points describe (§3.1)
 description = "ACME meter, firmware 2.x"   # optional, informational
 version     = "2.1"                        # optional, informational
+# namespaces = [...]            # optional, protocol-specific: see "Library address settings"
 
 [[point]]                       # exactly the point fields of §3.1/§3.2
 id       = "boiler_temp"
@@ -386,6 +387,16 @@ one; later references extend that type rather than redefine it (`["acme-meter-v2
 A library that declares no `type` leaves the device without one: the file name is deliberately
 not used instead, because the type ends up as a tenant-wide identifier in the cloud (§5.2) and
 is worth declaring on purpose.
+
+#### Library address settings
+
+Some protocols need to know what a library's addresses were written against. `[library]
+namespaces` is the one such key today: OPC UA's namespace table (OPC UA connector spec §3.9).
+The loader does not interpret it. Instead, every resolved point remembers the `[library]` table
+of the library its `address` came from, and a connector reads its protocol's settings from
+there. A definition that replaces the address, inline or from a later library, also replaces
+that origin, so an inline address always counts as the device's own. The origin is never
+written back to a persisted configuration and never appears in a sample.
 
 #### Relationship to the rest of the contract
 

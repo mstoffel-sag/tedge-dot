@@ -1,0 +1,24 @@
+# The simulator's points, written against a server that lists urn:tedge:opcua-sim at index 2.
+# The table makes them valid on every instance, whatever index it gives the namespace.
+[library]
+protocol   = "opcua"
+type       = "opcua-sim"
+namespaces = ["http://opcfoundation.org/UA/", "urn:freeopcua:python:server", "urn:tedge:opcua-sim"]
+
+[[point]]
+id        = "temperature"
+datatype  = "float64"
+subscribe = false
+address   = { node_id = "ns=2;s=Temperature" }
+
+[[point]]
+id       = "ticks"
+datatype = "uint32"
+address  = { node_id = "ns=2;s=Ticks" }
+
+[[point]]
+id        = "setpoint"
+datatype  = "int32"
+access    = "read_write"
+subscribe = false
+address   = { node_id = "ns=2;s=Setpoint" }

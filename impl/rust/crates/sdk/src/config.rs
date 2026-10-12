@@ -236,6 +236,12 @@ pub struct PointConfig {
     /// table means no map. Read it through [`PointConfig::value_map`].
     #[serde(default)]
     pub map: Option<serde_json::Value>,
+    /// The `[library]` table of the point library that supplied this point's `address`, set by
+    /// the loader; `None` when the address is the device's own (§3.4). Protocol-specific library
+    /// settings that describe addresses (OPC UA's `namespaces`) are read from here. Not a
+    /// configuration key: a point that writes it is refused.
+    #[serde(default, rename = "__library")]
+    pub library: Option<serde_json::Value>,
 }
 
 impl PointConfig {

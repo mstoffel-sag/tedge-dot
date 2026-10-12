@@ -120,6 +120,11 @@ impl OpcuaConnection {
 pub struct OpcuaEndpoint {
     /// e.g. `opc.tcp://plc.example.com:4840/`.
     pub endpoint: String,
+    /// The namespace table the device's own node ids were written against (openspec
+    /// `opcua-namespace-table`): the server's `NamespaceArray` at that time. Parsed by
+    /// `namespaces::parse_table` at configure.
+    #[serde(default)]
+    pub namespaces: Option<serde_json::Value>,
     #[serde(default)]
     pub security_policy: Option<String>,
     #[serde(default)]

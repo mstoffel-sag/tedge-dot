@@ -108,7 +108,13 @@ const POINT_KEYS: &[&str] = &[
 ];
 const TRANSFORM_KEYS: &[&str] = &["multiplier", "divisor", "decimal_shift", "offset"];
 const LIBRARY_TOP_KEYS: &[&str] = &["library", "point"];
-const LIBRARY_KEYS: &[&str] = &["protocol", "type", "description", "version"];
+// `namespaces` is OPC UA's namespace table (its connector spec §3.4): it describes the library's
+// addresses, so it travels with the points (`ADDRESS_ORIGIN`). The loader does not interpret it.
+const LIBRARY_KEYS: &[&str] = &["protocol", "type", "description", "version", "namespaces"];
+/// The point key the loader records, on every library point that has an `address`, the
+/// `[library]` table that address belongs to ([`crate::config::PointConfig::library`]). Not in
+/// `POINT_KEYS`, so a point that writes it is refused as an unknown key.
+const ADDRESS_ORIGIN: &str = "__library";
 
 /// Refuse the keys of `table` that are not `known`, naming the table (`place`) and, for each, the
 /// known key it most resembles when one is close enough to be what was meant. Every unknown key
@@ -1022,9 +1028,25 @@ fn read_library(path: &Path, protocol: &str) -> Result<Library, String> {
         }
         seen.push(id);
     }
+    // Each point carries the `[library]` table its address belongs to, so a protocol can read
+    // the library's address settings per point after the points of several libraries and the
+    // device's own definitions have been merged (see `merge_point_table`).
+    let library = table.get("library").cloned();
+    let points = points
+        .iter()
+        .map(|point| {
+            let mut point = point.clone();
+            if let (Some(library), Some(point)) = (&library, point.as_table_mut()) {
+                if point.contains_key("address") {
+                    point.insert(ADDRESS_ORIGIN.to_string(), library.clone());
+                }
+            }
+            point
+        })
+        .collect();
     Ok(Library {
         device_type,
-        points: points.clone(),
+        points,
     })
 }
 
@@ -1051,6 +1073,11 @@ fn merge_point(points: &mut Vec<Value>, incoming: Value) {
 /// Apply an overriding point definition onto an inherited one: `meta` and `transform` merge
 /// key by key so a single field can be adjusted, everything else replaces.
 fn merge_point_table(base: &mut Table, over: &Table) {
+    // An address is replaced wholesale, and with it goes the library it belonged to: an inline
+    // address is the device's own, another library's address brings that library's origin.
+    if over.contains_key("address") {
+        base.remove(ADDRESS_ORIGIN);
+    }
     for (key, value) in over {
         let deep = DEEP_MERGED_KEYS.contains(&key.as_str());
         match (deep, base.get_mut(key), value) {
@@ -1438,6 +1465,55 @@ points_from      = ["acme-meter"]
             Some(crate::model::DataType::Float32),
             "and inherits what it does not restate"
         );
+    }
+
+    #[test]
+    fn a_library_point_records_the_library_its_address_belongs_to() {
+        let dir = Dir::new("origin");
+        dir.write(
+            "modbus/acme-meter.toml",
+            &LIBRARY.replace(
+                "protocol = \"modbus\"",
+                "protocol = \"modbus\"\nnamespaces = [\"http://opcfoundation.org/UA/\", \"urn:acme\"]",
+            ),
+        );
+        dir.write(
+            "modbus/tweaks.toml",
+            "[library]\nprotocol = \"modbus\"\n\n[[point]]\nid = \"pump_run\"\npoll_interval = \"30s\"\n",
+        );
+        let inline = r#"
+  [[device.point]]
+  id      = "boiler_temp"
+  address = { table = "holding", address = 70, count = 2 }
+
+  [[device.point]]
+  id       = "local_only"
+  datatype = "uint16"
+  address  = { table = "holding", address = 42, count = 1 }
+"#;
+        let cfg = resolve_in(dir.path(), "\"acme-meter\", \"tweaks\"", inline).unwrap();
+        let point = |id: &str| cfg.devices[0].points.iter().find(|p| p.id == id).unwrap();
+        // A patch without an address keeps the origin of the address it inherits.
+        assert_eq!(
+            point("pump_run").library.as_ref().unwrap()["namespaces"][1],
+            serde_json::json!("urn:acme")
+        );
+        // An inline address is the device's own, whether it overrides a library's or is new.
+        assert_eq!(point("boiler_temp").library, None);
+        assert_eq!(point("local_only").library, None);
+    }
+
+    #[test]
+    fn a_point_cannot_write_the_address_origin() {
+        let dir = Dir::new("origin-reserved");
+        dir.write("modbus/acme-meter.toml", LIBRARY);
+        let inline = r#"
+  [[device.point]]
+  id        = "boiler_temp"
+  __library = { namespaces = ["x"] }
+"#;
+        let err = resolve_in(dir.path(), "\"acme-meter\"", inline).unwrap_err();
+        assert!(err.contains("unknown key '__library'"), "{err}");
     }
 
     #[test]
