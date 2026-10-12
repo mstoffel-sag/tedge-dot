@@ -9,6 +9,7 @@
 #   ns=2;s=Running       -> bool    false  (read/write round-trip)
 #   ns=2;s=DoesNotExist  -> read returns a Bad status -> quality "bad"
 #   ns=2;s=Ticks         -> uint32, +1 every second -> push delivery via subscription
+#   ns=2;s=Machine.*     -> methods called with call-method (device "machine")
 
 [connector]
 protocol      = "opcua"
@@ -180,3 +181,43 @@ sampling_interval = "200ms"
   id       = "ticks"
   datatype = "uint32"
   address  = { node_id = "ns=2;s=Ticks" }
+
+# OPC UA methods (openspec change opcua-method-calls), called with the call-method verb on the
+# simulator's Machine object, and a write-only point, which is written but never read. On the
+# sampling simulator, out of the way of the outage tests. See "Calls A Method And Returns Its
+# Outputs" and the cases after it in tests/opcua_e2e.robot.
+[[device]]
+name             = "machine"
+type             = "opcua-machine"
+protocol_address = { endpoint = "opc.tcp://sampling-simulator:4840/", security_policy = "None", security_mode = "none" }
+default_mode     = "typed"
+
+  [[device.point]]
+  id      = "multiply"
+  access  = "call_method"
+  address = { object_id = "ns=2;s=Machine", method_id = "ns=2;s=Machine.Multiply", inputs = ["int32", "int32"] }
+
+  [[device.point]]
+  id      = "ping"
+  access  = "call_method"
+  address = { object_id = "ns=2;s=Machine", method_id = "ns=2;s=Machine.Ping" }
+
+  [[device.point]]
+  id      = "fail"
+  access  = "call_method"
+  address = { object_id = "ns=2;s=Machine", method_id = "ns=2;s=Machine.Fail" }
+
+  # Written by the suite, never polled: no sample may ever appear for it.
+  [[device.point]]
+  id       = "setpoint_wo"
+  datatype = "int32"
+  access   = "write"
+  address  = { node_id = "ns=2;s=Setpoint" }
+
+  # A readable point on the same device, so the suite can tell "never sampled" from "device
+  # down".
+  [[device.point]]
+  id        = "count"
+  subscribe = false
+  datatype  = "uint32"
+  address   = { node_id = "ns=2;s=Count" }

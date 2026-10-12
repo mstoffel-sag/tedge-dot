@@ -4,7 +4,7 @@
 
 use crate::config::{parse_duration, ConnectorConfig};
 use crate::connector::{
-    Access, Capabilities, CommandRequest, CommandResult, Connector, ConnectorError, LinkReport,
+    Access, Capabilities, ConfigError, CommandRequest, CommandResult, Connector, ConnectorError, LinkReport,
     LinkStatus, PointRef, SampleSink,
 };
 use crate::decode::{Endianness, WordOrder};
@@ -473,9 +473,7 @@ pub async fn run_until_reloadable(
         .unwrap_or_default();
 
     // 1. Configure the protocol module with the parsed config.
-    connector
-        .configure(&config)
-        .map_err(|e| format!("configure failed: {e}"))?;
+    configure(connector.as_mut(), &config).map_err(|e| format!("configure failed: {e}"))?;
     let mut caps = connector.capabilities();
     augment_management_caps(&mut caps);
     augment_batch_caps(&mut caps);
@@ -849,9 +847,9 @@ pub async fn run_until_reloadable(
                 // A write the device rejects or clamps leaves the value it reads back unchanged,
                 // which a change filter would withhold — while the parameter twin already shows
                 // the written value. So after a write, the device's next readings are published.
-                // Every device verb is a write of some kind (`write`, `write-batch`, a module's
-                // alias such as Modbus `write-coil`); only a new request counts, not the
-                // transitions this connector publishes on the same topic.
+                // Every device verb may change the device's values (`write`, `write-batch`, a
+                // module's alias such as Modbus `write-coil`, `call-method`); only a new request
+                // counts, not the transitions this connector publishes on the same topic.
                 let is_request = serde_json::from_slice::<serde_json::Value>(&p.payload)
                     .is_ok_and(|j| j["status"] == "init");
                 let written = match route_command(&p.topic, &protocol, &service, &config) {
@@ -928,9 +926,7 @@ pub async fn run_stdout_until(
     shutdown: impl std::future::Future<Output = ()> + Send,
 ) -> Result<(), BoxError> {
     let limits = Limits::from_config(&config);
-    connector
-        .configure(&config)
-        .map_err(|e| format!("configure failed: {e}"))?;
+    configure(connector.as_mut(), &config).map_err(|e| format!("configure failed: {e}"))?;
     let caps = connector.capabilities();
 
     match bounded(limits, "connect", connector.connect()).await {
@@ -1294,7 +1290,8 @@ fn print_sample(
     println!("{}", envelope_with_meta(sample, meta_index));
 }
 
-/// Build the polling schedule, skipping points that are delivered by subscription.
+/// Build the polling schedule, skipping points that are delivered by subscription and points
+/// that are never read (write-only points and methods, §3.1).
 fn build_schedule(
     config: &ConnectorConfig,
     subscribed: &HashSet<(usize, String)>,
@@ -1303,7 +1300,7 @@ fn build_schedule(
     let mut schedule = Vec::new();
     for (device_index, device) in config.devices.iter().enumerate() {
         for point in &device.points {
-            if subscribed.contains(&(device_index, point.id.clone())) {
+            if subscribed.contains(&(device_index, point.id.clone())) || !is_read(point) {
                 continue;
             }
             let interval = config.poll_interval(device, point);
@@ -1466,9 +1463,15 @@ async fn subscribe_device(
     Ok(())
 }
 
+/// Whether the runtime reads `point` at all: polls it, subscribes to it, reads it for a
+/// heartbeat. A write-only point and a method never sample (§3.1, §5.2).
+fn is_read(point: &crate::config::PointConfig) -> bool {
+    Access::parse(point.access.as_deref()).can_read()
+}
+
 /// The points of `device` to ask `connector` to push: those not configured `subscribe = false`
-/// that the module delivers by push ([`Connector::pushes_point`]). Everything else stays on the
-/// polling schedule. Each carries its effective sampling interval as the sampling hint
+/// that the module delivers by push ([`Connector::pushes_point`]), and only points that are read
+/// at all. Everything else that is read stays on the polling schedule. Each carries its effective sampling interval as the sampling hint
 /// ([`ConnectorConfig::sampling_interval`]).
 fn push_points(
     connector: &dyn Connector,
@@ -1483,7 +1486,7 @@ fn push_points(
     device
         .points
         .iter()
-        .filter(|p| p.subscribe.unwrap_or(true))
+        .filter(|p| p.subscribe.unwrap_or(true) && is_read(p))
         .map(|p| {
             let mut r = point_ref(p, device.default_mode);
             r.interval = Some(config.sampling_interval(device, p));
@@ -1576,14 +1579,6 @@ fn device_type_of<'a>(config: &'a ConnectorConfig, device: &str) -> Option<&'a s
         .filter(|t| !t.is_empty())
 }
 
-fn access_str(access: Access) -> &'static str {
-    match access {
-        Access::Read => "read",
-        Access::Write => "write",
-        Access::ReadWrite => "read_write",
-    }
-}
-
 /// The sample envelope as published: the contract envelope plus the point's `meta` (if any)
 /// and its `access`.
 fn envelope_with_meta(sample: &Sample, meta_index: &MetaIndex) -> serde_json::Value {
@@ -1592,7 +1587,7 @@ fn envelope_with_meta(sample: &Sample, meta_index: &MetaIndex) -> serde_json::Va
         if let Some(meta) = &extras.meta {
             envelope["meta"] = meta.clone();
         }
-        envelope["access"] = serde_json::Value::String(access_str(extras.access).into());
+        envelope["access"] = serde_json::Value::String(extras.access.as_str().into());
         if let Some(device_type) = &extras.device_type {
             envelope["type"] = serde_json::Value::String(device_type.clone());
         }
@@ -1691,6 +1686,31 @@ pub fn raw_unit_request(
         _ => request.clone(),
     };
     unmapped.to_raw_units(&point)
+}
+
+/// The verb that calls a `call_method` point (§6).
+pub const CALL_METHOD_VERB: &str = "call-method";
+
+/// Configure `connector` with `config`, refusing a configuration with a `call_method` point when
+/// the connector does not support the `call-method` verb (§3.3): such a point could never be
+/// read, written or called. Every configure of a running or CLI connector goes through here.
+pub fn configure(connector: &mut dyn Connector, config: &ConnectorConfig) -> Result<(), ConfigError> {
+    let caps = connector.capabilities();
+    if !caps.command_verbs.iter().any(|v| v == CALL_METHOD_VERB) {
+        for device in &config.devices {
+            if let Some(point) = device
+                .points
+                .iter()
+                .find(|p| Access::parse(p.access.as_deref()) == Access::CallMethod)
+            {
+                return Err(ConfigError::Invalid(format!(
+                    "device '{}': point '{}': the {} connector cannot call methods",
+                    device.name, point.id, caps.protocol
+                )));
+            }
+        }
+    }
+    connector.configure(config)
 }
 
 /// Execute a write `verb` for `request` (engineering units) on `connector`. The one place every
@@ -1822,6 +1842,12 @@ async fn handle_command(
         return Ok(false);
     }
 
+    if verb == CALL_METHOD_VERB {
+        handle_call_method(connector, client, config, topic, &device, &json, limits).await?;
+        debug!(%device, %verb, "command handled");
+        return Ok(false);
+    }
+
     let point = json
         .get("point")
         .and_then(|p| p.as_str())
@@ -1885,6 +1911,84 @@ async fn handle_command(
     }
     debug!(%device, %verb, "command handled");
     Ok(false)
+}
+
+/// `call-method` (§6): `{"status":"init","point":...,"arguments":[...]}` -> executing ->
+/// successful with the method's `outputs`, or failed. The runtime checks that the point is a
+/// `call_method` point and that `arguments` is an array; the module converts and sends them.
+/// Unlike a write, no transform or map applies: arguments and outputs are not point values.
+async fn handle_call_method(
+    connector: &mut Box<dyn Connector>,
+    client: &Mqtt,
+    config: &ConnectorConfig,
+    topic: &str,
+    device: &str,
+    json: &serde_json::Value,
+    limits: Limits,
+) -> Result<(), BoxError> {
+    let point = json
+        .get("point")
+        .and_then(|p| p.as_str())
+        .unwrap_or_default()
+        .to_string();
+    let origin = json.get("origin");
+    publish_retained(
+        client,
+        topic,
+        with_origin(serde_json::json!({ "status": "executing", "point": point }), origin)
+            .to_string(),
+    )
+    .await?;
+
+    let result = match call_method_request(config, device, &point, json) {
+        Ok(request) => {
+            let device = device.to_string();
+            let call = connector.execute(&device, CALL_METHOD_VERB, &request);
+            bounded(limits, CALL_METHOD_VERB, call).await.map_err(|e| e.to_string())
+        }
+        Err(reason) => Err(reason),
+    };
+    let payload = match result {
+        Ok(result) => serde_json::json!({
+            "status": "successful",
+            "point": point,
+            "outputs": result.value.unwrap_or_else(|| serde_json::json!([])),
+        }),
+        Err(reason) => {
+            warn!(%device, %point, "call-method failed: {reason}");
+            serde_json::json!({ "status": "failed", "point": point, "reason": reason })
+        }
+    };
+    publish_retained(client, topic, with_origin(payload, origin).to_string()).await
+}
+
+/// The module request for a `call-method` command, or why there is none: the point must be a
+/// configured `call_method` point, and `arguments` (default none) an array. The arguments travel
+/// in [`CommandRequest::value`].
+pub fn call_method_request(
+    config: &ConnectorConfig,
+    device: &str,
+    point: &str,
+    json: &serde_json::Value,
+) -> Result<CommandRequest, String> {
+    let configured = config
+        .devices
+        .iter()
+        .find(|d| d.name == device)
+        .and_then(|d| d.points.iter().find(|p| p.id == point))
+        .ok_or_else(|| {
+            ConnectorError::UnknownPoint { device: device.to_string(), point: point.to_string() }
+                .to_string()
+        })?;
+    if Access::parse(configured.access.as_deref()) != Access::CallMethod {
+        return Err(format!("point {point} is not a method"));
+    }
+    let arguments = match json.get("arguments") {
+        None => serde_json::json!([]),
+        Some(a @ serde_json::Value::Array(_)) => a.clone(),
+        Some(_) => return Err("arguments must be an array".into()),
+    };
+    Ok(CommandRequest { point: point.to_string(), value: Some(arguments), value_repr: None, raw: None })
 }
 
 /// Advertise the runtime-provided `write-batch` verb for every module that implements
@@ -2080,6 +2184,10 @@ fn capability_payload(caps: &Capabilities, config: &ConnectorConfig) -> String {
     if !keys.is_empty() {
         json["parameter_keys"] = serde_json::Value::Array(keys);
     }
+    let methods = crate::descriptor::methods(config);
+    if !methods.is_empty() {
+        json["methods"] = serde_json::Value::Array(methods);
+    }
     if let Some(reports) = crate::descriptor::reports(config) {
         json["reports"] = reports;
     }
@@ -2165,7 +2273,7 @@ async fn handle_management(
     };
 
     // Validate against the protocol module before committing.
-    if let Err(e) = connector.configure(&new_config) {
+    if let Err(e) = configure(connector.as_mut(), &new_config) {
         let _ = connector.configure(config); // restore previous good state
         publish_failed(client, topic, &format!("configure failed: {e}"), origin).await?;
         return Ok(false);
@@ -2303,7 +2411,7 @@ async fn reload_from_file(
         info!("reload: {path} is unchanged");
         return Reloaded::Unchanged;
     }
-    if let Err(e) = connector.configure(&new_config) {
+    if let Err(e) = configure(connector.as_mut(), &new_config) {
         let _ = connector.configure(config); // restore the running configuration
         error!("reload: {path}: configure failed: {e}; keeping the running configuration");
         return Reloaded::Kept;
@@ -3164,6 +3272,45 @@ protocol_address = { host = "127.0.0.1" }
         assert_eq!(ids, ["trap_link", "uptime"], "default: every point not opted out");
     }
 
+    /// A write-only point and a method are never read (§3.1): neither polled nor offered for
+    /// push, whatever `subscribe` says. Points that can be read are unaffected.
+    #[test]
+    fn points_that_cannot_be_read_are_neither_polled_nor_pushed() {
+        let text = MIXED.to_string()
+            + r#"
+  [[device.point]]
+  id = "setpoint"
+  datatype = "int32"
+  access = "read_write"
+  address = {}
+  [[device.point]]
+  id = "setpoint_wo"
+  datatype = "int32"
+  access = "write"
+  address = {}
+  [[device.point]]
+  id = "polled_wo"
+  datatype = "int32"
+  access = "write"
+  subscribe = false
+  address = {}
+  [[device.point]]
+  id = "reset"
+  access = "call_method"
+  address = {}
+"#;
+        let config: ConnectorConfig = toml::from_str(&text).unwrap();
+        let device = &config.devices[0];
+
+        let pushed = push_points(&PushPrefix(None), &config, device);
+        let ids: Vec<&str> = pushed.iter().map(|p| p.id.as_str()).collect();
+        assert_eq!(ids, ["trap_link", "uptime", "setpoint"]);
+
+        let schedule = build_schedule(&config, &HashSet::new());
+        let polled: Vec<&str> = schedule.iter().map(|e| e.point.id.as_str()).collect();
+        assert_eq!(polled, ["trap_link", "uptime", "trap_opted_out", "setpoint"]);
+    }
+
     /// A pushed point's hint is its effective sampling interval; `sampling_interval` never
     /// touches the polling schedule, so an opted-out point is still polled at its poll interval.
     #[test]
@@ -3726,6 +3873,64 @@ protocol_address = {}
         assert!(json.get("reports").is_none());
     }
 
+    /// Every `call_method` point is listed, labelled or not, with its address as configured; a
+    /// configuration without methods adds no `methods` (§7).
+    #[test]
+    fn capability_payload_lists_methods() {
+        let caps = Capabilities {
+            protocol: "opcua",
+            version: "0",
+            modes: vec![],
+            datatypes: vec![],
+            point_kinds: vec![],
+            command_verbs: vec![CALL_METHOD_VERB.into()],
+            features: vec![],
+            subscribe: false,
+        };
+        let config: ConnectorConfig = toml::from_str(
+            r#"
+[connector]
+protocol = "opcua"
+
+[[device]]
+name = "Pump01"
+protocol_address = {}
+  [[device.point]]
+  id = "flow"
+  datatype = "float64"
+  name = "Flow"
+  address = { node_id = "ns=2;i=9" }
+  [[device.point]]
+  id = "startPump"
+  access = "call_method"
+  address = { object_id = "ns=2;i=6", method_id = "ns=2;i=25" }
+  [[device.point]]
+  id = "setOperatingLevel"
+  access = "call_method"
+  name = "Set operating level"
+  description = "Target level in %"
+  address = { object_id = "ns=2;i=6", method_id = "ns=2;i=27", inputs = ["int64"] }
+"#,
+        )
+        .unwrap();
+        let payload: serde_json::Value =
+            serde_json::from_str(&capability_payload(&caps, &config)).unwrap();
+        assert_eq!(
+            payload["methods"],
+            serde_json::json!([
+                { "device": "Pump01", "point": "startPump",
+                  "address": { "object_id": "ns=2;i=6", "method_id": "ns=2;i=25" } },
+                { "device": "Pump01", "point": "setOperatingLevel",
+                  "name": "Set operating level", "description": "Target level in %",
+                  "address": { "object_id": "ns=2;i=6", "method_id": "ns=2;i=27", "inputs": ["int64"] } }
+            ])
+        );
+        let plain: ConnectorConfig = toml::from_str(BASE).unwrap();
+        let payload: serde_json::Value =
+            serde_json::from_str(&capability_payload(&caps, &plain)).unwrap();
+        assert!(payload.get("methods").is_none());
+    }
+
     #[test]
     fn capability_payload_carries_parameter_keys() {
         let caps = Capabilities {
@@ -3835,6 +4040,105 @@ protocol_address = { transport = "tcp", host = "127.0.0.1", port = 502, unit_id 
         async fn disconnect(&mut self) -> Result<(), ConnectorError> {
             Ok(())
         }
+    }
+
+    /// A module that can call methods, or not: only its verbs differ.
+    struct Methods(bool);
+
+    #[async_trait::async_trait]
+    impl Connector for Methods {
+        fn configure(&mut self, _: &ConnectorConfig) -> Result<(), crate::connector::ConfigError> {
+            Ok(())
+        }
+        fn capabilities(&self) -> Capabilities {
+            let mut verbs = vec!["write".to_string()];
+            if self.0 {
+                verbs.push(CALL_METHOD_VERB.to_string());
+            }
+            Capabilities {
+                protocol: "test",
+                version: "0",
+                modes: vec![Mode::Typed],
+                datatypes: vec![],
+                point_kinds: vec![],
+                command_verbs: verbs,
+                features: vec![],
+                subscribe: false,
+            }
+        }
+        async fn connect(&mut self) -> Result<Vec<LinkReport>, ConnectorError> {
+            Ok(vec![])
+        }
+        async fn read_points(
+            &mut self,
+            _: &crate::model::DeviceId,
+            _: &[PointRef],
+        ) -> Result<Vec<Sample>, ConnectorError> {
+            Ok(vec![])
+        }
+        async fn disconnect(&mut self) -> Result<(), ConnectorError> {
+            Ok(())
+        }
+    }
+
+    const METHODS: &str = r#"
+[connector]
+protocol = "test"
+
+[[device]]
+name = "plc-1"
+protocol_address = {}
+  [[device.point]]
+  id = "setpoint"
+  datatype = "int32"
+  access = "read_write"
+  address = {}
+  [[device.point]]
+  id = "multiply"
+  access = "call_method"
+  address = {}
+"#;
+
+    /// A `call_method` point is refused unless the connector lists `call-method` (§3.3); a
+    /// configuration without one is configured as before by any connector.
+    #[test]
+    fn call_method_points_need_a_connector_that_calls_methods() {
+        let config: ConnectorConfig = toml::from_str(METHODS).unwrap();
+        assert!(configure(&mut Methods(true), &config).is_ok());
+        assert_eq!(
+            configure(&mut Methods(false), &config).unwrap_err().to_string(),
+            "invalid configuration: device 'plc-1': point 'multiply': the test connector cannot call methods"
+        );
+        let plain: ConnectorConfig = toml::from_str(&METHODS.replace("call_method", "write")).unwrap();
+        assert!(configure(&mut Methods(false), &plain).is_ok());
+    }
+
+    /// What the runtime checks before a `call-method` reaches the module, and the request the
+    /// module then receives: the arguments, default none, as an array in `value`.
+    #[test]
+    fn call_method_requests_are_checked_before_the_module() {
+        let config: ConnectorConfig = toml::from_str(METHODS).unwrap();
+        let request = |point: &str, json: serde_json::Value| {
+            call_method_request(&config, "plc-1", point, &json)
+        };
+
+        let ok = request("multiply", serde_json::json!({ "arguments": [6, "7"] })).unwrap();
+        assert_eq!(ok.point, "multiply");
+        assert_eq!(ok.value, Some(serde_json::json!([6, "7"])));
+        assert_eq!(request("multiply", serde_json::json!({})).unwrap().value, Some(serde_json::json!([])));
+
+        assert_eq!(
+            request("multiply", serde_json::json!({ "arguments": 5 })).unwrap_err(),
+            "arguments must be an array"
+        );
+        assert_eq!(
+            request("setpoint", serde_json::json!({ "arguments": [] })).unwrap_err(),
+            "point setpoint is not a method"
+        );
+        assert_eq!(
+            request("nope", serde_json::json!({})).unwrap_err(),
+            "unknown point nope on device plc-1"
+        );
     }
 
     const SCALED: &str = r#"

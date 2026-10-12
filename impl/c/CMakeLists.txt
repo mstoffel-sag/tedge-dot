@@ -158,6 +158,8 @@ if(TDOT_OPCUA)
     endforeach()
 
     set(UA_ENABLE_SUBSCRIPTIONS ON CACHE BOOL "" FORCE)
+    # Server-side method nodes only: the client's Call service, which the call-method verb
+    # uses (openspec change opcua-method-calls), is compiled in regardless.
     set(UA_ENABLE_METHODCALLS OFF CACHE BOOL "" FORCE)
     # PubSub (on by default) needs method calls; its server code only links in optimised
     # builds, where nothing pulls it in. The connector is a client and needs neither.

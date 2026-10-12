@@ -452,6 +452,72 @@ static void handle_write(rt_t *rt, const char *topic, const char *dev_name,
     cJSON_Delete(res);
 }
 
+/* `call-method` (contract §6): {"status":"init","point":...,"arguments":[...]}
+ * -> executing -> successful {"point","outputs":[...]} | failed. Mirrors
+ * handle_write; the method is called once and never retried. Not routed through
+ * tdot_connector_write: arguments are positional method inputs, not point
+ * values, so no transform or map applies. */
+static void handle_call_method(rt_t *rt, const char *topic, const char *dev_name,
+                               tdot_device_t *dev, const cJSON *req) {
+    const cJSON *jpoint = cJSON_GetObjectItem(req, "point");
+    const char *point_id = cJSON_IsString(jpoint) ? jpoint->valuestring : NULL;
+    const cJSON *args = cJSON_GetObjectItem(req, "arguments");
+
+    cJSON *exec = cJSON_CreateObject();
+    cJSON_AddStringToObject(exec, "status", "executing");
+    if (point_id)
+        cJSON_AddStringToObject(exec, "point", point_id);
+    add_origin(exec, req);
+    publish_retained(rt, topic, exec);
+    cJSON_Delete(exec);
+
+    tdot_point_t *pt = point_id ? tdot_device_point(dev, point_id) : NULL;
+    cJSON *empty = NULL;
+    cJSON *outputs = NULL;
+    /* Room for a namespace translation reason plus an OPC UA status name. */
+    char reason[512] = "";
+    if (!pt) {
+        snprintf(reason, sizeof reason, "unknown point: %s",
+                 point_id ? point_id : "(missing)");
+    } else if (!(pt->access & TDOT_ACCESS_CALL)) {
+        snprintf(reason, sizeof reason, "point %s is not a method", pt->id);
+    } else if (args && !cJSON_IsArray(args)) {
+        snprintf(reason, sizeof reason, "arguments must be an array");
+    } else if (!rt->conn->call_method) {
+        snprintf(reason, sizeof reason, "unsupported verb: call-method");
+    } else {
+        if (!args)
+            args = empty = cJSON_CreateArray();
+        if (rt->conn->call_method(rt->conn, dev, pt, args, &outputs, reason,
+                                  sizeof reason) != 0) {
+            cJSON_Delete(outputs);
+            outputs = NULL;
+            if (!reason[0])
+                snprintf(reason, sizeof reason, "call failed");
+        } else if (!outputs) {
+            outputs = cJSON_CreateArray();
+        }
+    }
+    cJSON_Delete(empty);
+    bool ok = outputs != NULL;
+
+    cJSON *res = cJSON_CreateObject();
+    cJSON_AddStringToObject(res, "status", ok ? "successful" : "failed");
+    if (point_id)
+        cJSON_AddStringToObject(res, "point", point_id);
+    if (ok) {
+        cJSON_AddItemToObject(res, "outputs", outputs);
+        logmsg("info", "cmd call-method %s/%s: ok", dev_name, point_id);
+    } else {
+        cJSON_AddStringToObject(res, "reason", reason);
+        logmsg("warn", "cmd call-method %s/%s: %s", dev_name,
+               point_id ? point_id : "?", reason);
+    }
+    add_origin(res, req);
+    publish_retained(rt, topic, res);
+    cJSON_Delete(res);
+}
+
 /* `write-batch` (contract §6.4): {"status":"init","writes":[{point,value},...]}.
  * Writes run sequentially in request order and stop at the first failure; the
  * terminal message lists one result per attempted write. Implemented once
@@ -620,6 +686,10 @@ static void on_message(struct mosquitto *mosq, void *ud,
     } else if (strcmp(verb, "write-batch") == 0) {
         handle_write_batch(rt, msg->topic, dev_name, dev, req);
         reset_device_reports(dev);
+    } else if (strcmp(verb, "call-method") == 0) {
+        handle_call_method(rt, msg->topic, dev_name, dev, req);
+        /* A method may change any value of the device, as a write does. */
+        reset_device_reports(dev);
     } else if (is_management_verb(verb)) {
         handle_management(rt, msg->topic, verb, req);
     } else {
@@ -677,6 +747,35 @@ static void add_point_labels(cJSON *caps, const tdot_config_t *cfg) {
             if (pt->description)
                 cJSON_AddStringToObject(entry, "description", pt->description);
             cJSON_AddItemToArray(labels, entry);
+        }
+    }
+}
+
+/* `methods` of the capability descriptor (contract §7): every configured
+ * `call_method` point, with its `name` / `description` when it declares them and
+ * its `address` exactly as configured, so a consumer learns which methods a
+ * device has, their arguments and the node each one calls -- methods never
+ * sample, so nothing else announces them. A configuration without methods adds
+ * nothing. Mirrors descriptor.rs `methods`. */
+static void add_methods(cJSON *caps, const tdot_config_t *cfg) {
+    cJSON *methods = NULL;
+    for (size_t i = 0; i < cfg->ndevices; i++) {
+        const tdot_device_t *dev = &cfg->devices[i];
+        for (size_t j = 0; j < dev->npoints; j++) {
+            const tdot_point_t *pt = &dev->points[j];
+            if (!(pt->access & TDOT_ACCESS_CALL))
+                continue;
+            if (!methods)
+                methods = cJSON_AddArrayToObject(caps, "methods");
+            cJSON *entry = cJSON_CreateObject();
+            cJSON_AddStringToObject(entry, "device", dev->name);
+            cJSON_AddStringToObject(entry, "point", pt->id);
+            if (pt->name)
+                cJSON_AddStringToObject(entry, "name", pt->name);
+            if (pt->description)
+                cJSON_AddStringToObject(entry, "description", pt->description);
+            cJSON_AddItemToObject(entry, "address", tdot_point_address_json(pt));
+            cJSON_AddItemToArray(methods, entry);
         }
     }
 }
@@ -762,6 +861,7 @@ static char *augmented_capabilities(const char *json, const tdot_config_t *cfg) 
     add_unique(features, "management");
     add_point_labels(caps, cfg);
     add_parameter_keys(caps, cfg);
+    add_methods(caps, cfg);
     /* `reports` (§7): the declared reporting policies, so a consumer knows
      * which points are filtered and how often a quiet one still reports. */
     cJSON *reports = tdot_config_reports(cfg);
@@ -1370,12 +1470,12 @@ static int try_configure(rt_t *rt, tdot_config_t *candidate, char *reason,
         rt->conn->disconnect_device(rt->conn, &cfg->devices[i]);
     tdot_config_release_protos(cfg);
     char err[256];
-    if (rt->conn->configure(rt->conn, candidate, err, sizeof err) == 0)
+    if (tdot_connector_configure(rt->conn, candidate, err, sizeof err) == 0)
         return 0;
     tdot_config_free(candidate);
     snprintf(reason, rlen, "configure failed: %s", err);
     char err2[256];
-    if (rt->conn->configure(rt->conn, cfg, err2, sizeof err2) != 0)
+    if (tdot_connector_configure(rt->conn, cfg, err2, sizeof err2) != 0)
         logmsg("error", "re-configure of the previous config failed: %s", err2);
     for (size_t i = 0; i < cfg->ndevices; i++) {
         cfg->devices[i].link = TDOT_LINK_UNKNOWN;
@@ -1659,7 +1759,7 @@ static int run_connector(tdot_connector_t *conn, tdot_config_t *cfg,
                .progress = progress};
     char err[256];
 
-    if (conn->configure(conn, cfg, err, sizeof err) != 0) {
+    if (tdot_connector_configure(conn, cfg, err, sizeof err) != 0) {
         logmsg("error", "configure failed: %s", err);
         return -1;
     }

@@ -126,7 +126,7 @@ report        = { on_change = true }  # optional: default reporting policy for t
   poll_interval = "1s"          # optional per-point override
   sampling_interval = "200ms"   # optional: how often the source samples this point when pushed (§3.1)
   address  = { } # protocol-specific: how to address this point. Shape per connector spec.
-  access   = "read"             # "read" | "write" | "read_write" (default "read")
+  access   = "read"             # "read" | "write" | "read_write" | "call_method" (default "read")
   unit     = "raw"              # optional free-form hint passed through in the sample
   name     = "<short label>"    # optional human-readable label (§3.1); the id stays an identifier
   description = "<what this signal is>"  # optional longer explanation (§3.1)
@@ -185,7 +185,7 @@ keeping the configuration it has when the file cannot be used.
 | `word_order` | `"big"` \| `"little"` | no | Word order for multi-word `typed`; default `"big"`. |
 | `poll_interval` | duration string | no | Overrides device/connector default. |
 | `sampling_interval` | duration string | no | How often the *source* samples the point when it is delivered by push, e.g. an OPC UA monitored item's sampling interval. Overrides the device/connector `sampling_interval`; with none set, the effective `poll_interval` is used. Ignored for a polled point. See *Sampling interval* below. |
-| `access` | `"read"` \| `"write"` \| `"read_write"` | no | Default `"read"`. |
+| `access` | `"read"` \| `"write"` \| `"read_write"` \| `"call_method"` | no | Default `"read"`. See *Access* below. |
 | `unit` | string | no | Opaque hint echoed into the sample for flows. |
 | `name` | string | no | Short human-readable label, for wherever a name is displayed instead of the `id` — which is a topic segment and a parameter-set key, so it stays a plain identifier. Feeds a parameter's DTM title (§5.2) and the capability descriptor's `point_labels` (§7). |
 | `description` | string | no | Longer human-readable explanation of the signal. Feeds a parameter's DTM description and `point_labels` (§7). |
@@ -195,6 +195,22 @@ keeping the configuration it has when the file cannot be used.
 | `meta` | object | no | Free-form signal metadata echoed verbatim as `meta` in every sample envelope. Never interpreted by the connector; flows and tooling read it for per-signal behaviour, for naming the point's measurement or, with `meta.measurement = false`, keeping it out of the measurements, for declaring the signal's alarms and events (`meta.alarm`, `meta.event`, read by the `ot-alarm` / `ot-event` flows), and for exposing the point as an operator-editable *parameter* (`meta.parameter`, see §5.2). |
 | `subscribe` | boolean | no | Default `true`. `false` keeps the point on the polling schedule even when the connector supports push delivery. |
 | `enabled` | boolean | no | Default `true`. `false` keeps the definition but leaves the point out of the device (§3.3) — how a site switches off one point of a library it does not own (§3.4). |
+
+**Access.** `access` states what the connector may do with the point:
+
+| `access` | Read (poll, subscribe, heartbeat) | `write`, `write-batch` | `call-method` |
+| --- | --- | --- | --- |
+| `"read"` (default) | yes | no | no |
+| `"write"` | no | yes | no |
+| `"read_write"` | yes | yes | no |
+| `"call_method"` | no | no | yes |
+
+A point that cannot be read is never polled, subscribed or read for a heartbeat, so it never
+publishes a sample; a write-only point is still written. A `"call_method"` point is a protocol
+operation rather than a value — an OPC UA method, for instance — and is called with the
+`call-method` verb (§6.6). It is not a value, so it is never a parameter (§5.2) and declares
+none of the value fields (§3.3). Only a connector listing `call-method` in its capability
+descriptor (§7) accepts such points.
 | `address` | object | yes | **Protocol-specific**; shape defined by the connector spec. |
 
 `name` and `description` are **not** echoed in the sample envelope: they are static per point,
@@ -287,6 +303,12 @@ that they are objects and that each connector documents and schema-validates the
   resolved point, since a library may declare the map and the site the datatype. A value read leniently instead — an unknown `access` as
   `"read"`, an unparseable `poll_interval` as the device's — would load and quietly do the
   wrong thing.
+- A `"call_method"` point (§3.1) MUST NOT declare `mode`, `datatype`, `endianness`,
+  `word_order`, `transform`, `map`, `poll_interval`, `sampling_interval`, `subscribe`, `report`
+  or `meta.parameter`, checked on the resolved point, so a library's method point patched by the
+  site is checked too. Settings it only inherits from its device or `[connector]` are not its
+  own and are allowed. A configuration with a `"call_method"` point MUST be rejected when the
+  connector does not list `call-method` in its `command_verbs` (§7).
 - A key the contract does not define MUST be rejected — at the top level, in `[connector]` and
   `[mqtt]`, in a `[[device]]` (a disabled one included), in a point, inline or in a point
   library (§3.4), in its `transform`, its `map` and each of the map's `cases`, and in a
@@ -1080,9 +1102,57 @@ device would replace the real result of the instance that does.
 #### Other verbs
 
 `write` is the only point-I/O verb a conformant connector MUST support (for writable points), and
-SDK-based connectors additionally provide `write-batch` and the three management verbs above. Connectors MAY support
-further verbs (e.g. `read-now`, `rescan`); any such verb MUST be declared in the capability
+SDK-based connectors additionally provide `write-batch` and the three management verbs above. A
+connector whose protocol has callable operations MAY support `call-method` (§6.6). Connectors MAY
+support further verbs (e.g. `read-now`, `rescan`); any such verb MUST be declared in the capability
 descriptor (§7) and documented in the connector spec.
+
+### 6.6 The `call-method` verb (standard, optional)
+
+Calls a `"call_method"` point (§3.1), such as an OPC UA method. Request (`status: "init"`):
+
+```json
+{ "status": "init", "point": "multiply", "arguments": [6, 7] }
+```
+
+- `arguments` is the list of input arguments, in order; omitted, it is empty. The connector
+  converts them as its spec defines (OPC UA: to the point's declared `inputs`). No `transform` or
+  `map` applies: arguments are not point values.
+- The command MUST fail when `arguments` is not an array, and when the point's `access` is not
+  `"call_method"`. `write` and `write-batch` MUST fail for a `"call_method"` point.
+- A method call MUST NOT be retried, whatever the failure: the operation may have taken effect
+  even when no answer came back, so a `failed` result after a timeout does not prove it did not.
+- As after a write, the SDK runtimes reset the device's reporting state (§5.3) after the command,
+  so the next reading of every point is published.
+
+Result (`status: "successful"`) — `outputs` lists the output arguments, in order:
+
+```json
+{ "status": "successful", "point": "multiply", "outputs": [42] }
+```
+
+Result (`status: "failed"`):
+
+```json
+{ "status": "failed", "point": "fail", "reason": "call rejected: BadInvalidState" }
+```
+
+Like every command, the transitions echo the request's `origin` (§6.4).
+
+The descriptor's `methods` (§7) lists the methods a connector can call, for instance:
+
+```json
+"methods": [
+  { "device": "Pump01", "point": "setOperatingLevel", "name": "Set operating level",
+    "address": { "object_id": "ns=2;i=6", "method_id": "ns=2;i=27", "inputs": ["int64"] } }
+]
+```
+
+On thin-edge.io the `ot-registration` flow turns it into the `ot_call_method` command capability
+of each device that has methods, a retained `{"methods":[...]}` on
+`te/device/<device>///cmd/ot_call_method` listing the same entries without `device`, so the cloud
+mapper routes method calls to the device; the command flows forward `ot_call_method` to
+`call-method`.
 
 ## 7. Capability model
 
@@ -1128,18 +1198,19 @@ same fields with its own values (and typically `"subscribe": true`):
 | `modes` | Output modes supported. MUST include at least one of `raw`/`typed`. |
 | `datatypes` | Subset of §4 the connector can decode in `typed` mode. |
 | `point_kinds` | Protocol-specific kinds the connector understands (free strings, documented per spec). |
-| `command_verbs` | Verbs accepted on `cmd/<verb>`. MUST include `write` if any point is writable; SDK-based connectors also list `write-batch` (§6.4) and the management verbs (§6.3). |
+| `command_verbs` | Verbs accepted on `cmd/<verb>`. MUST include `write` if any point is writable; SDK-based connectors also list `write-batch` (§6.4) and the management verbs (§6.3), and a connector that calls methods lists `call-method` (§6.6). |
 | `features` | Optional capability tags: `polling`, `subscribe`, `bitfield`, `string`, `bulk_read`, … |
 | `subscribe` | Whether the connector supports event-driven (push) reads in addition to polling. |
 | `point_labels` | The human-readable `name`/`description` of the configured points (§3.1), so a consumer can show something friendlier than the point id. Only points declaring one of them appear, and each entry carries only the fields it declares — **no entry means the id is the label**, so a configuration that labels nothing adds nothing here. Unlike the fields above, this describes the *configuration* rather than the connector's abilities; it lives here because it is static per point, which makes one retained message the right place for it and a per-sample echo the wrong one (§5 samples are a time series). |
 | `parameter_keys` | The configured points that name their own key inside their parameter sets (`meta.parameter.key`, §5.2), with the key and any `set` / `group` exactly as configured — so a key of the form `<set>.<key>` names its set too. Also every literal parameter (`meta.parameter.fragment`, §5.2), as `{ device, point, fragment }` with the fragment as configured. A consumer learns from it which point a key or fragment belongs to before the point samples — after a restart, since samples are not retained, and for a write-only point, which never samples. Only points naming a key or a fragment appear, so a configuration naming neither adds nothing here. Like `point_labels`, this describes the configuration. |
+| `methods` | Every configured `"call_method"` point (§3.1), labelled or not, with its `name` / `description` when it declares them and its `address` exactly as configured: which methods a device has, what their arguments are (in the address, as the connector spec defines it) and which node each one calls. Methods never sample, so nothing else announces them. Absent when no point is a method. Like `point_labels`, this describes the configuration. |
 | `reports` | The reporting policies (§5.3): `default` is `[connector] report`, `devices` lists each device declaring a `report`, and `points` lists the **effective** (merged) policy of each point whose policy differs from its device's. A point's policy is its `points` entry if it has one, otherwise its device's entry merged over `default`. Absent when no `report` is configured. Like `point_labels`, this describes the configuration. |
 
 Tooling and the conformance suite use the descriptor to decide which tests apply.
 
 The descriptor is retained, so it MUST be republished whenever something it reports changes.
-Everything except `point_labels`, `parameter_keys` and `reports` is a property of the connector build and so
-is published once at startup; those three follow the configuration, and a connector MUST therefore republish
+Everything except `point_labels`, `parameter_keys`, `methods` and `reports` is a property of the connector build and so
+is published once at startup; those four follow the configuration, and a connector MUST therefore republish
 the descriptor after a management command (§6.3) changes it — a retained message describing the
 configuration as it was at startup is worse than none. Note also that labelling every point of
 a large list has a size: two hundred fully labelled points add on the order of ten kilobytes to

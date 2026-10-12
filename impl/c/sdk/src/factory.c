@@ -33,6 +33,21 @@ tdot_connector_t *tdot_connector_factory(const char *protocol) {
     return NULL;
 }
 
+int tdot_connector_configure(tdot_connector_t *conn, tdot_config_t *cfg, char *err,
+                             size_t errlen) {
+    for (size_t i = 0; !conn->call_method && i < cfg->ndevices; i++) {
+        const tdot_device_t *dev = &cfg->devices[i];
+        for (size_t j = 0; j < dev->npoints; j++)
+            if (dev->points[j].access & TDOT_ACCESS_CALL) {
+                snprintf(err, errlen,
+                         "device '%s': point '%s': the %s connector cannot call methods",
+                         dev->name, dev->points[j].id, cfg->protocol);
+                return -1;
+            }
+    }
+    return conn->configure(conn, cfg, err, errlen);
+}
+
 /* The value write_point receives for a requested one (contract §4.2): see
  * tdot_connector_write. */
 static int write_value(const tdot_point_t *pt, const tdot_value_t *in,

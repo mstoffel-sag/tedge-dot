@@ -24,6 +24,10 @@ extern "C" {
 
 #define TDOT_ACCESS_READ 0x1
 #define TDOT_ACCESS_WRITE 0x2
+/* `access = "call_method"` (contract §3.1): the point is a method, called with
+ * the `call-method` verb. Never combined with READ or WRITE, so a method point
+ * is neither read, written nor a parameter. */
+#define TDOT_ACCESS_CALL 0x4
 
 /* Per-point output mode (contract §3.1): typed decodes a primitive, raw
  * publishes the wire bytes only. */
@@ -32,12 +36,28 @@ typedef enum {
     TDOT_MODE_RAW,
 } tdot_mode_t;
 
+/* Bits of tdot_point_t.own_fields. */
+#define TDOT_FIELD_DATATYPE 0x001
+#define TDOT_FIELD_MODE 0x002
+#define TDOT_FIELD_ENDIANNESS 0x004
+#define TDOT_FIELD_WORD_ORDER 0x008
+#define TDOT_FIELD_TRANSFORM 0x010
+#define TDOT_FIELD_MAP 0x020
+#define TDOT_FIELD_POLL_INTERVAL 0x040
+#define TDOT_FIELD_SAMPLING_INTERVAL 0x080
+#define TDOT_FIELD_SUBSCRIBE 0x100
+#define TDOT_FIELD_REPORT 0x200
+
 typedef struct tdot_point {
     char *id;
     tdot_datatype_t datatype;
     tdot_order_t endianness; /* default big */
     tdot_order_t word_order; /* default big */
     int access;              /* TDOT_ACCESS_* bits; default read */
+    /* The value fields some definition of the point declares itself
+     * (TDOT_FIELD_* bits), not inherited from the device or connector. Only
+     * the loader uses it: a call_method point must declare none (§3.3). */
+    unsigned own_fields;
     tdot_mode_t mode;        /* point.mode ?? device.default_mode ?? typed */
     char *unit;              /* optional */
     /* Human-readable labels (contract §3.1). `name` is a short display label,
@@ -264,6 +284,11 @@ tdot_point_t *tdot_device_point(tdot_device_t *dev, const char *id);
  * arrays-of-tables -> arrays). Used by the management verbs, which patch the
  * document and write it back as TOML. Caller frees. */
 char *tdot_config_root_json(const tdot_config_t *cfg);
+
+/* A point's `address` table exactly as configured, as a JSON object (an empty
+ * one when it has none). For the capability descriptor's `methods` (contract
+ * §7), which copies it without interpreting it. Caller frees (cJSON_Delete). */
+struct cJSON *tdot_point_address_json(const tdot_point_t *pt);
 
 /* What a configuration was loaded from, as one JSON string: its document and
  * every point library it resolved, in load order. Two configurations with the

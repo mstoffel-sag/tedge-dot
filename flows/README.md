@@ -23,7 +23,7 @@ modules that run inside a mapper and are hot-reloaded without restarts.
 | [ot-measurement](ot-measurement/) | OT → thin-edge | `ot/<protocol>/sample/<point>` | `m/<group>` measurement, `m/<group>/meta` units (retained) |
 | [ot-alarm](ot-alarm/) | OT → thin-edge | `sample/<point>` (`meta.alarm`), `status/link`; or one `m/<group>` series | `a/<type>` alarm, retained: raised and cleared |
 | [ot-event](ot-event/) | OT → thin-edge | `sample/<point>` (`meta.event`); or one `m/<group>` series | `e/<type>` event |
-| [ot-registration](ot-registration/) | OT → thin-edge | `ot/<protocol>/status/link` | `te/device/<device>//` child registration (+ optional `twin/<fragment>`) |
+| [ot-registration](ot-registration/) | OT → thin-edge | `ot/<protocol>/status/link`, `service/<service>/ot/capabilities` | `te/device/<device>//` child registration (+ optional `twin/<fragment>`, + `cmd/ot_call_method` for devices with methods) |
 | [ot-command-forward](ot-command-forward/) | thin-edge → OT | `cmd/ot_<verb>/<id>` (incl. `parameter_update`) | `ot/<protocol>/cmd/<verb>/<id>`, or `service/<service>/ot/cmd/<verb>/<id>` for management verbs |
 | [ot-command-result](ot-command-result/) | OT → thin-edge | `ot/<protocol>/cmd/<verb>/<id>`, `service/<service>/ot/cmd/<verb>/<id>` | `cmd/ot_<verb>/<id>` (or the `origin.command`) |
 | [ot-parameter-state](ot-parameter-state/) | OT → thin-edge | `sample/<point>`, `cmd/write*/<id>`, `status/link` | `twin/<set>` |
@@ -218,7 +218,13 @@ Linear scaling
 text to numbers) are per-point properties declared on the connector point (applied by the SDK),
 so the sample already carries the scaled, mapped value.
 `ot-registration` can additionally publish the connector's device descriptor as a digital-twin
-fragment (`twin_fragment`, e.g. `c8y_ModbusDevice`).
+fragment (`twin_fragment`, e.g. `c8y_ModbusDevice`). It also reads each connector's capability
+descriptor and gives every device with methods (`access = "call_method"` points) the
+`ot_call_method` command capability, a retained `{"methods":[...]}` on
+`te/device/<device>///cmd/ot_call_method` listing them; it is cleared when the methods are removed.
+A `te/device/<device>///cmd/ot_call_method/<id>` command then reaches the connector's
+`call-method` verb through `ot-command-forward`, and its result, `outputs` included, comes back
+through `ot-command-result`.
 
 ## Pipeline
 

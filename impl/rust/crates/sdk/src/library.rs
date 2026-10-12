@@ -228,7 +228,7 @@ const DATATYPES: &[&str] = &[
     "float64", "string", "bytes",
 ];
 const ORDERS: &[&str] = &["big", "little"];
-const ACCESSES: &[&str] = &["read", "write", "read_write"];
+const ACCESSES: &[&str] = &["read", "write", "read_write", "call_method"];
 const DURATION: &str = "a duration such as \"500ms\", \"2s\" or \"5m\"";
 
 /// The ` (got '...')` suffix naming a refused string value; nothing for other types.
@@ -341,6 +341,47 @@ fn check_resolved_maps(config: &crate::config::ConnectorConfig) -> Result<(), St
             if let Some(map) = point.value_map() {
                 map.check_point(point.resolved_mode(device.default_mode), point.datatype)
                     .map_err(|e| format!("device '{}': point '{}': {e}", device.name, point.id))?;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// A `call_method` point is not a value (§3.1): every field that describes a value or how it is
+/// read would load and do nothing, so the resolved point must declare none of them. Inherited
+/// settings (a device's `poll_interval`, `[connector] report`) are not the point's own and pass.
+/// The C loader checks the same fields in the same order with the same messages.
+fn check_resolved_methods(config: &crate::config::ConnectorConfig) -> Result<(), String> {
+    for device in &config.devices {
+        for point in &device.points {
+            if crate::connector::Access::parse(point.access.as_deref())
+                != crate::connector::Access::CallMethod
+            {
+                continue;
+            }
+            let parameter = point
+                .meta
+                .as_ref()
+                .and_then(|m| m.get("parameter"))
+                .is_some();
+            let declared = [
+                ("mode", point.mode.is_some()),
+                ("datatype", point.datatype.is_some()),
+                ("endianness", point.endianness.is_some()),
+                ("word_order", point.word_order.is_some()),
+                ("transform", point.transform.is_some()),
+                ("map", point.map.is_some()),
+                ("poll_interval", point.poll_interval.is_some()),
+                ("sampling_interval", point.sampling_interval.is_some()),
+                ("subscribe", point.subscribe.is_some()),
+                ("report", point.report.is_some()),
+                ("meta.parameter", parameter),
+            ];
+            if let Some((field, _)) = declared.iter().find(|(_, set)| *set) {
+                return Err(format!(
+                    "device '{}': point '{}': {field} does not apply to a call_method point",
+                    device.name, point.id
+                ));
             }
         }
     }
@@ -487,6 +528,7 @@ pub fn resolve(text: &str, base_dir: &Path) -> Result<ConnectorConfig, String> {
         .try_into()
         .map_err(|e: toml::de::Error| format!("failed to parse config: {e}"))?;
     check_resolved_maps(&config)?;
+    check_resolved_methods(&config)?;
     // Absolute, so a later change of working directory cannot move what it points at.
     config.base_dir = Some(std::path::absolute(base_dir).unwrap_or_else(|_| base_dir.to_path_buf()));
     Ok(config)
@@ -2031,11 +2073,13 @@ protocol_address = { unit_id = 1 }
         ("address = \"holding:1\"", "address must be a table"),
         (
             "access = \"bogus\"",
-            "access must be one of \"read\", \"write\", \"read_write\" (got 'bogus')",
+            "access must be one of \"read\", \"write\", \"read_write\", \"call_method\" \
+             (got 'bogus')",
         ),
         (
             "access = \"readwrite\"",
-            "access must be one of \"read\", \"write\", \"read_write\" (got 'readwrite')",
+            "access must be one of \"read\", \"write\", \"read_write\", \"call_method\" \
+             (got 'readwrite')",
         ),
         ("unit = 7", "unit must be a string"),
         ("name = true", "name must be a string"),
@@ -2088,6 +2132,57 @@ protocol_address = { unit_id = 1 }
                 "library: {field}: {err}"
             );
         }
+    }
+
+    /// The fields a `call_method` point must not declare, in the order both loaders check them.
+    /// Mirrored by `METHOD_FIELD_CASES` in impl/c/tests/config.c.
+    const METHOD_FIELD_CASES: &[(&str, &str)] = &[
+        ("mode = \"typed\"", "mode"),
+        ("datatype = \"int32\"", "datatype"),
+        ("endianness = \"big\"", "endianness"),
+        ("word_order = \"little\"", "word_order"),
+        ("transform = { multiplier = 2 }", "transform"),
+        ("map = { cases = [{ eq = 1, to = \"on\" }] }", "map"),
+        ("poll_interval = \"5s\"", "poll_interval"),
+        ("sampling_interval = \"1s\"", "sampling_interval"),
+        ("subscribe = false", "subscribe"),
+        ("report = { on_change = true }", "report"),
+        ("meta = { parameter = true }", "meta.parameter"),
+    ];
+
+    /// A method is not a value, so a `call_method` point declaring a value field is refused —
+    /// inline, and when a library's method point is patched by the site — while settings it
+    /// only inherits, and free-form `meta`, are fine.
+    #[test]
+    fn call_method_points_refuse_value_fields() {
+        let dir = Dir::new("method-fields");
+        dir.write(
+            "modbus/machine.toml",
+            "[library]\nprotocol = \"modbus\"\n\n[[point]]\nid = \"reset\"\naccess = \"call_method\"\naddress = { method = 1 }\n",
+        );
+        for (field, name) in METHOD_FIELD_CASES {
+            let expected =
+                format!("device 'plc-1': point 'reset': {name} does not apply to a call_method point");
+            let inline = format!(
+                "[[device.point]]\nid = \"reset\"\naccess = \"call_method\"\naddress = {{ method = 1 }}\n{field}\n"
+            );
+            assert_eq!(resolve_in(dir.path(), "", &inline).unwrap_err(), expected, "inline: {field}");
+            let patch = format!("[[device.point]]\nid = \"reset\"\n{field}\n");
+            assert_eq!(
+                resolve_in(dir.path(), "\"machine\"", &patch).unwrap_err(),
+                expected,
+                "patch: {field}"
+            );
+        }
+
+        let inherited = config_with(Some(dir.path()), "\"machine\"", "")
+            .replace("[[device]]\n", "[[device]]\npoll_interval = \"5s\"\nreport = { on_change = true }\n")
+            .replace("protocol = \"modbus\"\n", "protocol = \"modbus\"\npoll_interval = \"1s\"\n");
+        let config = resolve(&inherited, dir.path()).unwrap();
+        assert_eq!(config.devices[0].points[0].access.as_deref(), Some("call_method"));
+
+        let meta = "[[device.point]]\nid = \"reset\"\nmeta = { group = \"maintenance\" }\n";
+        assert!(resolve_in(dir.path(), "\"machine\"", meta).is_ok());
     }
 
     /// The device- and connector-level fields the two loaders interpret. Mirrors

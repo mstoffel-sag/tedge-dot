@@ -29,6 +29,7 @@ use std::collections::HashMap;
 use std::str::FromStr;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
+use tedge_dot_sdk::runtime::CALL_METHOD_VERB;
 use tedge_dot_sdk::{
     Access, Capabilities, CommandRequest, CommandResult, ConfigError, Connector, ConnectorConfig,
     ConnectorError, DataType, DeviceId, LinkReport, LinkStatus, Mode, PointRef, Quality, Sample,
@@ -45,7 +46,7 @@ use opcua::crypto::{CertificateStore, PrivateKey, SecurityPolicy, X509};
 use opcua::types::{
     AttributeId, BinaryEncodable, DataValue, MessageSecurityMode, MonitoredItemCreateRequest,
     MonitoringMode, MonitoringParameters, NodeId, NumericRange, ReadValueId, StatusCode,
-    TimestampsToReturn, UAString, UserTokenPolicy, Variant, WriteValue,
+    TimestampsToReturn, UAString, UserTokenPolicy, Variant, WriteValue, CallMethodRequest,
 };
 use pki::{OwnCertificate, Pki};
 use tracing::warn;
@@ -86,6 +87,31 @@ struct OpcuaPoint {
     access: Access,
     unit: Option<String>,
     transform: Transform,
+    /// A `call_method` point: `node_id` is then the method, and this the rest of the call.
+    method: Option<MethodTarget>,
+}
+
+/// What a `call_method` point calls besides its method id (openspec `opcua-method-calls`).
+#[derive(Clone)]
+struct MethodTarget {
+    /// The object the method is called on, as configured; translated like `node_id`.
+    object: NodeId,
+    /// The datatypes of the input arguments, in order.
+    inputs: Vec<DataType>,
+}
+
+/// The key under which a method point's object id is translated, beside the point's own id for
+/// its method id. A point id cannot contain the NUL, so no point's key can collide with it.
+fn object_key(point: &str) -> String {
+    format!("{point}\u{0}object")
+}
+
+/// The point (and node) a translation key names, for the log.
+fn key_label(key: &str) -> String {
+    match key.strip_suffix("\u{0}object") {
+        Some(point) => format!("{point} (object_id)"),
+        None => key.to_string(),
+    }
 }
 
 struct DeviceModel {
@@ -192,6 +218,55 @@ pub struct OpcuaConnector {
 }
 
 impl OpcuaConnector {
+    /// Call a `call_method` point's method with `request.value` as its arguments (openspec
+    /// `opcua-method-calls`, design D8). The reasons are the C build's. Never retried: the method
+    /// may have run even when no answer came back.
+    async fn call_method(&self, device: &DeviceId, request: &CommandRequest) -> Result<CommandResult, String> {
+        let model = self
+            .devices
+            .get(device)
+            .and_then(|d| d.points.get(&request.point))
+            .ok_or_else(|| format!("unknown point {} on device {device}", request.point))?;
+        let method = model
+            .method
+            .as_ref()
+            .ok_or_else(|| format!("point {} is not a method", request.point))?;
+        let handle = self
+            .sessions
+            .get(device)
+            .ok_or_else(|| format!("device {device} is not connected"))?;
+        let (object_id, method_id) =
+            effective_method(&request.point, model, method, &lock(&handle.translation))?;
+        let empty = Vec::new();
+        let arguments = request.value.as_ref().and_then(|v| v.as_array()).unwrap_or(&empty);
+        let input_arguments = method_arguments(&method.inputs, arguments)?;
+
+        let call = CallMethodRequest { object_id, method_id, input_arguments: Some(input_arguments) };
+        let timeout = Duration::from_secs(self.conn.request_timeout_s.max(1));
+        let results = tokio::time::timeout(timeout, handle.session.call(vec![call]))
+            .await
+            .map_err(|_| format!("call failed: {}", StatusCode::BadTimeout))?
+            .map_err(|status| format!("call failed: {status}"))?;
+        let result = results
+            .into_iter()
+            .next()
+            .ok_or_else(|| format!("call failed: {}", StatusCode::BadUnexpectedError))?;
+        for (k, status) in result.input_argument_results.iter().flatten().enumerate() {
+            if !status.is_good() {
+                return Err(format!("call rejected: argument {}: {status}", k + 1));
+            }
+        }
+        if !result.status_code.is_good() {
+            return Err(format!("call rejected: {}", result.status_code));
+        }
+        let outputs = result.output_arguments.unwrap_or_default();
+        Ok(CommandResult {
+            point: request.point.clone(),
+            value: Some(serde_json::Value::Array(outputs.iter().map(output_json).collect())),
+            raw: None,
+        })
+    }
+
     /// Connect one device and describe the outcome as its link report.
     async fn connect_one(&mut self, name: &str) -> LinkReport {
         self.warn_expiry();
@@ -407,6 +482,26 @@ fn monitored_item(item: &MonitoredItem) -> MonitoredItemCreateRequest {
     )
 }
 
+/// The node ids of `points` to translate, each under its translation key: every point with a
+/// namespace table, or with `retry` only those not translated yet. A method point translates two
+/// ids, its method under its own id and its object under [`object_key`] (design D7).
+fn translation_keys<'a>(
+    points: &'a HashMap<String, OpcuaPoint>,
+    translation: &namespaces::Translation,
+    retry: bool,
+) -> Vec<(String, &'a NodeId, &'a namespaces::Table)> {
+    let failed = |key: &str| matches!(translation.nodes.get(key), Some(Err(_)));
+    points
+        .iter()
+        .filter(|(id, p)| !retry || failed(id) || (p.method.is_some() && failed(&object_key(id))))
+        .filter_map(|(id, p)| p.table.as_ref().map(|table| (id, p, table)))
+        .flat_map(|(id, p, table)| {
+            let object = p.method.as_ref().map(|m| (object_key(id), &m.object, table));
+            std::iter::once((id.clone(), &p.node_id, table)).chain(object)
+        })
+        .collect()
+}
+
 /// See [`OpcuaConnector::translate`]; free so the retry task of a subscription can call it.
 async fn translate(
     name: &str,
@@ -416,16 +511,11 @@ async fn translate(
     retry: bool,
     timeout: Duration,
 ) -> Option<Vec<String>> {
-    let mapped: Vec<namespaces::Mapped> = {
-        let translation = lock(translation);
-        points
-            .iter()
-            .filter(|(id, _)| !retry || matches!(translation.nodes.get(id.as_str()), Some(Err(_))))
-            .filter_map(|(id, p)| {
-                p.table.as_ref().map(|table| namespaces::Mapped { point: id, node: &p.node_id, table })
-            })
-            .collect()
-    };
+    let keyed = translation_keys(points, &lock(translation), retry);
+    let mapped: Vec<namespaces::Mapped> = keyed
+        .iter()
+        .map(|(key, node, table)| namespaces::Mapped { point: key, node, table })
+        .collect();
     if mapped.is_empty() {
         return None;
     }
@@ -437,7 +527,7 @@ async fn translate(
     if !retry {
         for p in &mapped {
             if let Some(Err(e)) = translation.nodes.get(p.point) {
-                warn!("device '{name}' point '{}': {e}", p.point);
+                warn!("device '{name}' point '{}': {e}", key_label(p.point));
             }
         }
     }
@@ -459,6 +549,25 @@ fn effective(id: &str, model: &OpcuaPoint, translation: &namespaces::Translation
         Some(Err(e)) => Err(e.clone()),
         None => Err("namespace not translated".into()),
     }
+}
+
+/// The object and method ids a method point calls in this session, or why it has none: each is
+/// translated like a variable's node id when the point has a namespace table (design D7).
+fn effective_method(
+    id: &str,
+    model: &OpcuaPoint,
+    method: &MethodTarget,
+    translation: &namespaces::Translation,
+) -> Result<(NodeId, NodeId), String> {
+    if model.table.is_none() {
+        return Ok((method.object.clone(), model.node_id.clone()));
+    }
+    let node = |key: &str| match translation.nodes.get(key) {
+        Some(Ok(node)) => Ok(node.clone()),
+        Some(Err(e)) => Err(e.clone()),
+        None => Err("namespace not translated".to_string()),
+    };
+    Ok((node(&object_key(id))?, node(id)?))
 }
 
 /// Resolve, for a new session, what the device's structure and raw points need: the
@@ -575,6 +684,29 @@ impl Connector for OpcuaConnector {
                 let addr: NodeAddress = serde_json::from_value(p.address.clone()).map_err(|e| {
                     ConfigError::Invalid(format!("point '{}' address: {e}", p.id))
                 })?;
+                let access = Access::parse(p.access.as_deref());
+                if access == Access::CallMethod {
+                    let library_table = p.library.as_ref().and_then(|l| l.get("namespaces"));
+                    let point = method_point(&addr, library_table, device_table.as_ref())
+                        .map_err(|e| {
+                            let gap = if e.starts_with(':') { "" } else { " " };
+                            ConfigError::Invalid(format!("point '{}'{gap}{e}", p.id))
+                        })?;
+                    points.insert(p.id.clone(), point);
+                    continue;
+                }
+                for (key, set) in [
+                    ("object_id", addr.object_id.is_some()),
+                    ("method_id", addr.method_id.is_some()),
+                    ("inputs", addr.inputs.is_some()),
+                ] {
+                    if set {
+                        return Err(ConfigError::Invalid(format!(
+                            "point '{}' address: {key} applies only to a call_method point",
+                            p.id
+                        )));
+                    }
+                }
                 let node_id = node_id_from(&addr).map_err(|e| {
                     ConfigError::Invalid(format!("point '{}' address: {e}", p.id))
                 })?;
@@ -618,7 +750,6 @@ impl Connector for OpcuaConnector {
                         p.id
                     )));
                 }
-                let access = Access::parse(p.access.as_deref());
                 if (field.is_some() || addr.index.is_some()) && access != Access::Read {
                     return Err(ConfigError::Invalid(format!(
                         "point '{}': points with address.field or address.index are read-only",
@@ -639,6 +770,7 @@ impl Connector for OpcuaConnector {
                         access,
                         unit: p.unit.clone(),
                         transform: p.transform.unwrap_or_default(),
+                        method: None,
                     },
                 );
             }
@@ -689,7 +821,7 @@ impl Connector for OpcuaConnector {
                 DataType::Bytes,
             ],
             point_kinds: vec!["variable".into()],
-            command_verbs: vec!["write".into()],
+            command_verbs: vec!["write".into(), CALL_METHOD_VERB.into()],
             features: vec!["polling".into(), "subscribe".into()],
             subscribe: true,
         }
@@ -781,6 +913,10 @@ impl Connector for OpcuaConnector {
                 .into_iter()
                 .map(|(id, model)| {
                     let model = model.map(|m| match effective(&id, &m, &translation) {
+                        _ if m.method.is_some() => {
+                            let reason = format!("point {id} is a method");
+                            (m, Some(reason))
+                        }
                         Ok(translated) => (translated, None),
                         Err(reason) => (m, Some(reason)),
                     });
@@ -1152,6 +1288,9 @@ impl Connector for OpcuaConnector {
         verb: &str,
         request: &CommandRequest,
     ) -> Result<CommandResult, ConnectorError> {
+        if verb == CALL_METHOD_VERB {
+            return self.call_method(device, request).await.map_err(ConnectorError::Other);
+        }
         if verb != "write" {
             return Err(ConnectorError::Unsupported(verb.to_string()));
         }
@@ -1230,6 +1369,85 @@ impl Connector for OpcuaConnector {
 }
 
 /// Build a `NodeId` from the configured address (textual or structured).
+/// The model of a `call_method` point (openspec `opcua-method-calls`, spec "Method addressing").
+/// Its namespace table is the library's when a library supplied the address, else the device's,
+/// as for a variable; it applies when either id has a namespace other than 0. Errors read
+/// `address: ...` or `: ...` after the point, as the C build's do.
+fn method_point(
+    addr: &NodeAddress,
+    library_table: Option<&serde_json::Value>,
+    device_table: Option<&namespaces::Table>,
+) -> Result<OpcuaPoint, String> {
+    for (key, set) in [
+        ("node_id", addr.node_id.is_some()),
+        ("namespace", addr.namespace.is_some()),
+        ("identifier", addr.identifier.is_some()),
+        ("field", addr.field.is_some()),
+        ("index", addr.index.is_some()),
+        ("queue_size", addr.queue_size.is_some()),
+    ] {
+        if set {
+            return Err(format!("address: {key} does not apply to a call_method point"));
+        }
+    }
+    let node = |key: &str, text: &Option<String>| {
+        let text = text
+            .as_ref()
+            .ok_or_else(|| format!("address: {key} is required for a call_method point"))?;
+        NodeId::from_str(text).map_err(|_| format!("address: invalid {key} '{text}'"))
+    };
+    let object = node("object_id", &addr.object_id)?;
+    let method = node("method_id", &addr.method_id)?;
+    let inputs = method_inputs(addr.inputs.as_ref()).map_err(|e| format!("address: {e}"))?;
+    let table = match library_table {
+        Some(value) => Some(namespaces::parse_table(value).map_err(|e| format!(": [library] {e}"))?),
+        None => device_table.cloned(),
+    };
+    let table = match table {
+        Some(table) if object.namespace != 0 || method.namespace != 0 => {
+            namespaces::check_index(&object, &table)
+                .and_then(|()| namespaces::check_index(&method, &table))
+                .map_err(|e| format!(": {e}"))?;
+            Some(table)
+        }
+        _ => None,
+    };
+    Ok(OpcuaPoint {
+        addr_node: method.to_string(),
+        node_id: method,
+        table,
+        field: None,
+        index: None,
+        queue_size: config::DEFAULT_QUEUE_SIZE,
+        mode: Mode::Typed,
+        datatype: None,
+        access: Access::CallMethod,
+        unit: None,
+        transform: Transform::default(),
+        method: Some(MethodTarget { object, inputs }),
+    })
+}
+
+/// `address.inputs`: the scalar datatypes a method's input arguments are converted to.
+fn method_inputs(inputs: Option<&serde_json::Value>) -> Result<Vec<DataType>, String> {
+    let Some(inputs) = inputs else { return Ok(Vec::new()) };
+    let entries = inputs.as_array().ok_or("inputs must be an array of datatypes")?;
+    entries
+        .iter()
+        .enumerate()
+        .map(|(k, entry)| {
+            let name = entry.as_str().ok_or("inputs must be an array of datatypes")?;
+            match serde_json::from_value::<DataType>(serde_json::json!(name)) {
+                Ok(DataType::Bytes) => {
+                    Err(format!("inputs[{k}]: bytes is not supported as a method argument"))
+                }
+                Ok(datatype) => Ok(datatype),
+                Err(_) => Err(format!("inputs[{k}]: unknown datatype '{name}'")),
+            }
+        })
+        .collect()
+}
+
 fn node_id_from(addr: &NodeAddress) -> Result<NodeId, String> {
     if let Some(text) = &addr.node_id {
         return NodeId::from_str(text).map_err(|_| format!("invalid node_id '{text}'"));
@@ -1668,6 +1886,90 @@ fn uint64_value(u: u64) -> Value {
     }
 }
 
+/// A method's input arguments, each converted to its declared datatype; the position in a reason
+/// is 1-based. Stricter than a write's conversion, and the same as the C build's: an integer must
+/// be whole and in range for its type (a 64-bit one beyond 2^53 - 1 only as a decimal string),
+/// and a bool, float or string must be a JSON bool, number or string.
+fn method_arguments(inputs: &[DataType], arguments: &[serde_json::Value]) -> Result<Vec<Variant>, String> {
+    if arguments.len() != inputs.len() {
+        return Err(format!("expected {} arguments, got {}", inputs.len(), arguments.len()));
+    }
+    inputs
+        .iter()
+        .zip(arguments)
+        .enumerate()
+        .map(|(k, (datatype, value))| {
+            method_argument(*datatype, value).ok_or_else(|| {
+                let name = serde_json::to_value(datatype).ok();
+                let name = name.as_ref().and_then(|n| n.as_str()).unwrap_or("value");
+                format!("argument {}: {value} is not a valid {name}", k + 1)
+            })
+        })
+        .collect()
+}
+
+fn method_argument(datatype: DataType, value: &serde_json::Value) -> Option<Variant> {
+    use serde_json::Value as Json;
+    let int = || value.as_i64();
+    let uint = || value.as_u64();
+    let safe = |n: i64| (n.abs() <= MAX_SAFE_INT).then_some(n);
+    Some(match datatype {
+        DataType::Bool => Variant::Boolean(value.as_bool()?),
+        DataType::Int8 => Variant::SByte(int()?.try_into().ok()?),
+        DataType::Uint8 => Variant::Byte(uint()?.try_into().ok()?),
+        DataType::Int16 => Variant::Int16(int()?.try_into().ok()?),
+        DataType::Uint16 => Variant::UInt16(uint()?.try_into().ok()?),
+        DataType::Int32 => Variant::Int32(int()?.try_into().ok()?),
+        DataType::Uint32 => Variant::UInt32(uint()?.try_into().ok()?),
+        DataType::Int64 => Variant::Int64(match value {
+            Json::String(s) => s.parse().ok()?,
+            _ => safe(int()?)?,
+        }),
+        DataType::Uint64 => Variant::UInt64(match value {
+            Json::String(s) => s.parse().ok()?,
+            _ => uint().filter(|&n| n <= MAX_SAFE_INT as u64)?,
+        }),
+        DataType::Float32 => Variant::Float(value.as_f64()? as f32),
+        DataType::Float64 => Variant::Double(value.as_f64()?),
+        DataType::String => Variant::String(UAString::from(value.as_str()?)),
+        DataType::Bytes => return None,
+    })
+}
+
+/// A method's output argument as JSON: a scalar as a sample's value would carry it (64-bit
+/// integers beyond 2^53 - 1 as strings), an array of scalars as an array, anything else `null`
+/// (design D8). Integers stay integers, as the C build prints them.
+fn output_json(v: &Variant) -> serde_json::Value {
+    use serde_json::json;
+    match v {
+        Variant::Boolean(b) => json!(b),
+        Variant::SByte(i) => json!(i),
+        Variant::Byte(u) => json!(u),
+        Variant::Int16(i) => json!(i),
+        Variant::UInt16(u) => json!(u),
+        Variant::Int32(i) => json!(i),
+        Variant::UInt32(u) => json!(u),
+        Variant::Int64(i) if i.abs() <= MAX_SAFE_INT => json!(i),
+        Variant::Int64(i) => json!(i.to_string()),
+        Variant::UInt64(u) if *u <= MAX_SAFE_INT as u64 => json!(u),
+        Variant::UInt64(u) => json!(u.to_string()),
+        Variant::Float(f) => serde_json::Number::from_f64(*f as f64).map_or(json!(null), Into::into),
+        Variant::Double(d) => serde_json::Number::from_f64(*d).map_or(json!(null), Into::into),
+        Variant::String(s) => json!(s.as_ref()),
+        Variant::Array(array) => serde_json::Value::Array(
+            array
+                .values
+                .iter()
+                .map(|v| match v {
+                    Variant::Array(_) => serde_json::Value::Null,
+                    scalar => output_json(scalar),
+                })
+                .collect(),
+        ),
+        _ => serde_json::Value::Null,
+    }
+}
+
 /// Build an OPC-UA `Variant` for a write, coercing the JSON value to the point's datatype.
 fn build_variant(dt: DataType, value: &serde_json::Value) -> Result<Variant, String> {
     let num_err = || format!("value {value} is not valid for datatype {dt:?}");
@@ -2054,6 +2356,9 @@ mod tests {
                    field: None,
             index: None,
             queue_size: None,
+            object_id: None,
+            method_id: None,
+            inputs: None,
         };
         let nid = node_id_from(&addr).unwrap();
         assert_eq!(nid.namespace, 2);
@@ -2068,6 +2373,9 @@ mod tests {
                    field: None,
             index: None,
             queue_size: None,
+            object_id: None,
+            method_id: None,
+            inputs: None,
         };
         let nid = node_id_from(&addr).unwrap();
         assert_eq!(nid.namespace, 3);
@@ -2259,5 +2567,190 @@ mod tests {
         let before = OffsetDateTime::now_utc();
         let ts = data_value_ts(&DataValue::default());
         assert!(ts >= before);
+    }
+
+    /// A device with a namespace table, a method point and `point` (TOML) as a second point.
+    fn method_config(method: &str, point: &str) -> String {
+        format!(
+            r#"
+            [connector]
+            protocol = "opcua"
+            [[device]]
+            name = "plc"
+            protocol_address = {{ endpoint = "opc.tcp://127.0.0.1:4840", namespaces = ["http://opcfoundation.org/UA/", "urn:a", "urn:machine"] }}
+              [[device.point]]
+              id = "multiply"
+              access = "call_method"
+              address = {{ {method} }}
+            {point}
+            "#
+        )
+    }
+
+    const MULTIPLY: &str =
+        r#"object_id = "ns=2;s=Machine", method_id = "ns=2;s=Machine.Multiply", inputs = ["int32", "int64"]"#;
+
+    /// A method point needs no datatype; its method is its node, its object and inputs the rest.
+    #[test]
+    fn method_points_are_configured() {
+        let c = configure(&method_config(MULTIPLY, "")).unwrap();
+        let point = &c.devices["plc"].points["multiply"];
+        assert_eq!(point.node_id, NodeId::new(2, "Machine.Multiply"));
+        assert_eq!(point.access, Access::CallMethod);
+        assert!(point.table.is_some());
+        let method = point.method.as_ref().unwrap();
+        assert_eq!(method.object, NodeId::new(2, "Machine"));
+        assert_eq!(method.inputs, [DataType::Int32, DataType::Int64]);
+
+        let bare = r#"object_id = "i=2253", method_id = "i=11492""#;
+        let c = configure(&method_config(bare, "")).unwrap();
+        let point = &c.devices["plc"].points["multiply"];
+        assert!(point.method.as_ref().unwrap().inputs.is_empty());
+        assert!(point.table.is_none(), "namespace 0 is never translated");
+    }
+
+    /// Spec "Method addressing": every refused address, with the point it names.
+    #[test]
+    fn method_addresses_are_validated() {
+        let refused = |method: &str, point: &str| match configure(&method_config(method, point)) {
+            Err(ConfigError::Invalid(e)) => e,
+            Ok(_) => panic!("accepted: {method} {point}"),
+        };
+        let o = r#"object_id = "ns=2;s=Machine""#;
+        let m = r#"method_id = "ns=2;s=Machine.Multiply""#;
+        assert_eq!(
+            refused(o, ""),
+            "point 'multiply' address: method_id is required for a call_method point"
+        );
+        assert_eq!(
+            refused(m, ""),
+            "point 'multiply' address: object_id is required for a call_method point"
+        );
+        assert_eq!(
+            refused(&format!(r#"object_id = "ns=2;x=1", {m}"#), ""),
+            "point 'multiply' address: invalid object_id 'ns=2;x=1'"
+        );
+        for key in [
+            r#"node_id = "ns=2;s=A""#,
+            "namespace = 2",
+            r#"identifier = "A""#,
+            r#"field = "A""#,
+            "index = 1",
+            "queue_size = 2",
+        ] {
+            let name = key.split(' ').next().unwrap();
+            assert_eq!(
+                refused(&format!("{o}, {m}, {key}"), ""),
+                format!("point 'multiply' address: {name} does not apply to a call_method point")
+            );
+        }
+        assert_eq!(
+            refused(&format!(r#"{o}, {m}, inputs = "int32""#), ""),
+            "point 'multiply' address: inputs must be an array of datatypes"
+        );
+        assert_eq!(
+            refused(&format!(r#"{o}, {m}, inputs = ["int32", "float"]"#), ""),
+            "point 'multiply' address: inputs[1]: unknown datatype 'float'"
+        );
+        assert_eq!(
+            refused(&format!(r#"{o}, {m}, inputs = ["bytes"]"#), ""),
+            "point 'multiply' address: inputs[0]: bytes is not supported as a method argument"
+        );
+        assert_eq!(
+            refused(&format!(r#"object_id = "ns=7;s=Machine", {m}"#), ""),
+            "point 'multiply': namespace index 7 is not in the namespace table (3 entries)"
+        );
+        for key in [r#"object_id = "ns=2;s=M""#, r#"method_id = "ns=2;s=M""#, r#"inputs = []"#] {
+            let name = key.split(' ').next().unwrap();
+            let variable = format!(
+                "[[device.point]]\nid = \"temp\"\ndatatype = \"float64\"\naddress = {{ node_id = \"ns=2;s=T\", {key} }}"
+            );
+            assert_eq!(
+                refused(MULTIPLY, &variable),
+                format!("point 'temp' address: {name} applies only to a call_method point")
+            );
+        }
+    }
+
+    /// Both ids of a method point go through the namespace table: a moved namespace moves both,
+    /// and one missing on the server is the call's reason (spec "Namespace translation").
+    #[test]
+    fn method_ids_are_translated_through_the_table() {
+        let object = r#"object_id = "ns=1;s=Line", method_id = "ns=2;s=Machine.Multiply""#;
+        let c = configure(&method_config(object, "")).unwrap();
+        let points = &c.devices["plc"].points;
+        let model = &points["multiply"];
+        let method = model.method.as_ref().unwrap();
+
+        let translate = |server: &[&str]| {
+            let mut translation = namespaces::Translation::default();
+            let keyed = translation_keys(points, &translation, false);
+            let mapped: Vec<namespaces::Mapped> = keyed
+                .iter()
+                .map(|(key, node, table)| namespaces::Mapped { point: key, node, table })
+                .collect();
+            let server = Ok(server.iter().map(|u| u.to_string()).collect());
+            translation.apply(&mapped, &server);
+            effective_method("multiply", model, method, &translation)
+        };
+
+        let (object, method_id) =
+            translate(&["http://opcfoundation.org/UA/", "urn:x", "urn:machine", "urn:a"]).unwrap();
+        assert_eq!(object, NodeId::new(3, "Line"));
+        assert_eq!(method_id, NodeId::new(2, "Machine.Multiply"));
+
+        assert_eq!(
+            translate(&["http://opcfoundation.org/UA/", "urn:machine"]).unwrap_err(),
+            "namespace not found: urn:a"
+        );
+        assert_eq!(
+            effective_method("multiply", model, method, &namespaces::Translation::default()).unwrap_err(),
+            "namespace not translated"
+        );
+    }
+
+    /// Spec "Input arguments": the count first, then each value as a write converts it.
+    #[test]
+    fn method_arguments_are_converted_by_their_inputs() {
+        let inputs = [DataType::Int32, DataType::Uint64, DataType::String];
+        let args = |v: serde_json::Value| method_arguments(&inputs, v.as_array().unwrap());
+        assert_eq!(
+            args(serde_json::json!([6, "18446744073709551615", "x"])).unwrap(),
+            [Variant::Int32(6), Variant::UInt64(u64::MAX), Variant::String("x".into())]
+        );
+        assert_eq!(args(serde_json::json!([6])).unwrap_err(), "expected 3 arguments, got 1");
+        // The C build's reasons, word for word.
+        assert_eq!(
+            args(serde_json::json!(["six", 1, "x"])).unwrap_err(),
+            r#"argument 1: "six" is not a valid int32"#
+        );
+        assert_eq!(
+            args(serde_json::json!([2147483648i64, 1, "x"])).unwrap_err(),
+            "argument 1: 2147483648 is not a valid int32"
+        );
+        assert_eq!(args(serde_json::json!([1.5, 1, "x"])).unwrap_err(), "argument 1: 1.5 is not a valid int32");
+        assert_eq!(args(serde_json::json!([6, -1, "x"])).unwrap_err(), "argument 2: -1 is not a valid uint64");
+        assert_eq!(
+            args(serde_json::json!([6, 9007199254740992u64, "x"])).unwrap_err(),
+            "argument 2: 9007199254740992 is not a valid uint64"
+        );
+        assert_eq!(args(serde_json::json!([6, 1, 2])).unwrap_err(), "argument 3: 2 is not a valid string");
+        assert!(method_arguments(&[], &[]).unwrap().is_empty());
+    }
+
+    /// Spec "Output arguments".
+    #[test]
+    fn method_outputs_render_as_json() {
+        use serde_json::json;
+        assert_eq!(output_json(&Variant::Int32(42)), json!(42));
+        assert_eq!(output_json(&Variant::Boolean(true)), json!(true));
+        assert_eq!(output_json(&Variant::Double(1.5)), json!(1.5));
+        assert_eq!(output_json(&Variant::Double(f64::NAN)), json!(null));
+        assert_eq!(output_json(&Variant::String("ok".into())), json!("ok"));
+        assert_eq!(output_json(&Variant::Int64(i64::MAX)), json!(i64::MAX.to_string()));
+        assert_eq!(output_json(&Variant::UInt64(7)), json!(7));
+        let array = Variant::from(vec![1i32, 2, 3]);
+        assert_eq!(output_json(&array), json!([1, 2, 3]));
+        assert_eq!(output_json(&Variant::from(NodeId::new(2, "x"))), json!(null));
     }
 }

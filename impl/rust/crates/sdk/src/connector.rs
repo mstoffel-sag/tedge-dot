@@ -13,6 +13,8 @@ pub enum Access {
     Read,
     Write,
     ReadWrite,
+    /// The point is a method: it is called with `call-method`, and never read or written.
+    CallMethod,
 }
 
 impl Access {
@@ -20,8 +22,25 @@ impl Access {
         match s.map(|s| s.to_ascii_lowercase()).as_deref() {
             Some("write") => Access::Write,
             Some("read_write") | Some("readwrite") => Access::ReadWrite,
+            Some("call_method") => Access::CallMethod,
             _ => Access::Read,
         }
+    }
+
+    /// The access as configured (§3.1).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Access::Read => "read",
+            Access::Write => "write",
+            Access::ReadWrite => "read_write",
+            Access::CallMethod => "call_method",
+        }
+    }
+
+    /// Whether the point is read: polled, subscribed and sampled. A write-only point and a
+    /// method never are (§3.1).
+    pub fn can_read(self) -> bool {
+        matches!(self, Access::Read | Access::ReadWrite)
     }
 
     pub fn can_write(self) -> bool {

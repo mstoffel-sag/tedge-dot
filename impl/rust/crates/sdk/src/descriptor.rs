@@ -825,6 +825,35 @@ pub fn point_labels(config: &ConnectorConfig) -> Vec<Value> {
     labels
 }
 
+/// The `methods` of the capability descriptor (§7): every configured `call_method` point (§3.1),
+/// with its `name` / `description` when it declares them and its `address` exactly as resolved,
+/// so a consumer learns which methods a device has, what each one's arguments are and which
+/// protocol node it calls — methods never sample, so nothing else announces them. The address is
+/// copied, not interpreted: the SDK stays protocol-neutral, as with a sample's `addr`. A
+/// configuration without methods adds nothing.
+pub fn methods(config: &ConnectorConfig) -> Vec<Value> {
+    let mut methods = Vec::new();
+    for device in &config.devices {
+        for point in &device.points {
+            if Access::parse(point.access.as_deref()) != Access::CallMethod {
+                continue;
+            }
+            let mut entry = Map::new();
+            entry.insert("device".into(), json!(device.name));
+            entry.insert("point".into(), json!(point.id));
+            if let Some(name) = &point.name {
+                entry.insert("name".into(), json!(name));
+            }
+            if let Some(description) = &point.description {
+                entry.insert("description".into(), json!(description));
+            }
+            entry.insert("address".into(), point.address.clone());
+            methods.push(Value::Object(entry));
+        }
+    }
+    methods
+}
+
 /// The `parameter_keys` of the capability descriptor (§7): every configured point that names its
 /// own key inside its parameter sets (`meta.parameter.key`), with the `set` / `group` that name
 /// those sets, exactly as configured — and every point that is a literal parameter

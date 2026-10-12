@@ -1506,9 +1506,9 @@ static const struct {
     {"sampling_interval = \"fast\"", "sampling_interval " DURATION_MSG " (got 'fast')"},
     {"address = \"holding:1\"", "address must be a table"},
     {"access = \"bogus\"",
-     "access must be one of \"read\", \"write\", \"read_write\" (got 'bogus')"},
+     "access must be one of \"read\", \"write\", \"read_write\", \"call_method\" (got 'bogus')"},
     {"access = \"readwrite\"",
-     "access must be one of \"read\", \"write\", \"read_write\" (got 'readwrite')"},
+     "access must be one of \"read\", \"write\", \"read_write\", \"call_method\" (got 'readwrite')"},
     {"unit = 7", "unit must be a string"},
     {"name = true", "name must be a string"},
     {"description = [\"pump\"]", "description must be a string"},
@@ -2232,6 +2232,235 @@ static void check_report_tables_are_validated_where_they_are(void) {
     scratch_free(&s);
 }
 
+/* ---- call_method points (openspec change opcua-method-calls) ------------ */
+
+/* A modbus config whose device inherits `report` and a `poll_interval` and has
+ * one method point, `m`, with `fields` spliced in. */
+static tdot_config_t *load_method_point(scratch_t *s, const char *fields, char *err,
+                                        size_t errlen) {
+    char body[2048];
+    snprintf(body, sizeof body,
+             "[connector]\nprotocol = \"modbus\"\nreport = { on_change = true }\n\n"
+             "[[device]]\nname = \"plc1\"\npoll_interval = \"5s\"\n"
+             "protocol_address = { transport = \"tcp\", host = \"127.0.0.1\", "
+             "port = 502, unit_id = 1 }\n"
+             "  [[device.point]]\n  id = \"m\"\n  access = \"call_method\"\n"
+             "  address = { table = \"holding\", address = 1, count = 1 }\n%s",
+             fields);
+    write_file(s, "etc/modbus.toml", body);
+    return tdot_config_load(scratch_path(s, "etc/modbus.toml"), err, errlen);
+}
+
+static void check_call_method_points(void) {
+    scratch_t s;
+    scratch_init(&s);
+    char err[512] = "";
+
+    /* No datatype needed; inherited poll_interval/report are not its own. */
+    tdot_config_t *cfg = load_method_point(&s, "", err, sizeof err);
+    CHECK(cfg != NULL, "a bare call_method point should load: %s", err);
+    if (cfg) {
+        CHECK(cfg->devices[0].points[0].access == TDOT_ACCESS_CALL,
+              "access call_method should be TDOT_ACCESS_CALL alone, got %d",
+              cfg->devices[0].points[0].access);
+        tdot_config_free(cfg);
+    }
+
+    static const struct {
+        const char *field;
+        const char *key;
+    } refused[] = {
+        {"  mode = \"typed\"\n", "mode"},
+        {"  datatype = \"int32\"\n", "datatype"},
+        {"  endianness = \"little\"\n", "endianness"},
+        {"  word_order = \"little\"\n", "word_order"},
+        {"  transform = { multiplier = 2 }\n", "transform"},
+        {"  map = { cases = [{ eq = 1, to = \"on\" }] }\n", "map"},
+        {"  poll_interval = \"1s\"\n", "poll_interval"},
+        {"  sampling_interval = \"1s\"\n", "sampling_interval"},
+        {"  subscribe = false\n", "subscribe"},
+        {"  report = { on_change = false }\n", "report"},
+        {"  meta = { parameter = true }\n", "meta.parameter"},
+        /* the first in the contract's order wins */
+        {"  datatype = \"int32\"\n  mode = \"raw\"\n", "mode"},
+    };
+    for (size_t i = 0; i < sizeof refused / sizeof refused[0]; i++) {
+        err[0] = '\0';
+        cfg = load_method_point(&s, refused[i].field, err, sizeof err);
+        char want[256];
+        snprintf(want, sizeof want,
+                 "device 'plc1': point 'm': %s does not apply to a call_method point",
+                 refused[i].key);
+        CHECK(!cfg && strcmp(err, want) == 0, "%s: expected \"%s\", got \"%s\"",
+              refused[i].key, want, cfg ? "(loaded)" : err);
+        tdot_config_free(cfg);
+    }
+
+    /* Free-form meta without `parameter` stays allowed. */
+    cfg = load_method_point(&s, "  meta = { note = \"x\" }\n", err, sizeof err);
+    CHECK(cfg != NULL, "meta without parameter should load: %s", err);
+    tdot_config_free(cfg);
+
+    /* A library's datatype counts as the point's own declaration. */
+    write_file(&s, "modbus/methods.toml",
+               "[library]\nprotocol = \"modbus\"\n\n[[point]]\nid = \"m\"\n"
+               "datatype = \"int32\"\n"
+               "address = { table = \"holding\", address = 1, count = 1 }\n");
+    cfg = load_with_libs(&s, "\"methods\"",
+                         "  [[device.point]]\n  id = \"m\"\n  access = \"call_method\"\n", err,
+                         sizeof err);
+    CHECK(!cfg && strcmp(err, "device 'plc1': point 'm': datatype does not apply to a "
+                              "call_method point") == 0,
+          "library datatype on a method point: got \"%s\"", cfg ? "(loaded)" : err);
+    tdot_config_free(cfg);
+    scratch_free(&s);
+}
+
+static int stub_configure(tdot_connector_t *self, tdot_config_t *cfg, char *err,
+                          size_t errlen) {
+    (void)self, (void)cfg, (void)err, (void)errlen;
+    return 0;
+}
+
+static int stub_call(tdot_connector_t *self, tdot_device_t *dev, tdot_point_t *pt,
+                     const cJSON *arguments, cJSON **outputs, char *err, size_t errlen) {
+    (void)self, (void)dev, (void)pt, (void)arguments, (void)err, (void)errlen;
+    *outputs = cJSON_CreateArray();
+    return 0;
+}
+
+/* tdot_connector_configure refuses method points a connector cannot call. */
+static void check_call_method_needs_connector_support(void) {
+    scratch_t s;
+    scratch_init(&s);
+    char err[512] = "";
+    tdot_config_t *cfg = load_method_point(&s, "", err, sizeof err);
+    CHECK(cfg != NULL, "method config should load: %s", err);
+    if (cfg) {
+        tdot_connector_t conn = {.protocol = "modbus", .configure = stub_configure};
+        err[0] = '\0';
+        CHECK(tdot_connector_configure(&conn, cfg, err, sizeof err) != 0 &&
+                  strcmp(err, "device 'plc1': point 'm': the modbus connector cannot call "
+                              "methods") == 0,
+              "a connector without call_method must refuse, got \"%s\"", err);
+        conn.call_method = stub_call;
+        CHECK(tdot_connector_configure(&conn, cfg, err, sizeof err) == 0,
+              "a connector with call_method must accept: %s", err);
+        tdot_config_free(cfg);
+    }
+    scratch_free(&s);
+}
+
+#ifdef TDOT_FEATURE_OPCUA
+/* OPC UA method addresses (spec "Method addressing"): `point` is the whole
+ * point body after `id`. */
+static int opcua_configure_method(const char *dir, const char *device_extra,
+                                  const char *point, char *err, size_t errlen) {
+    char path[512];
+    snprintf(path, sizeof path, "%s/opcua.toml", dir);
+    FILE *fp = fopen(path, "w");
+    fprintf(fp,
+            "[connector]\nprotocol = \"opcua\"\n\n"
+            "[[device]]\nname = \"plc\"\n"
+            "protocol_address = { endpoint = \"opc.tcp://127.0.0.1:4840\"%s }\n"
+            "  [[device.point]]\n  id = \"m\"\n%s",
+            device_extra, point);
+    fclose(fp);
+    err[0] = '\0';
+    tdot_config_t *cfg = tdot_config_load(path, err, errlen);
+    if (!cfg)
+        return -2;
+    tdot_connector_t *c = tdot_connector_factory("opcua");
+    int rc = tdot_connector_configure(c, cfg, err, errlen);
+    for (size_t i = 0; i < cfg->ndevices; i++)
+        c->disconnect_device(c, &cfg->devices[i]);
+    tdot_config_free(cfg);
+    c->destroy(c);
+    return rc;
+}
+
+static void check_opcua_method_addresses(void) {
+    char *dir = scratch_dir();
+    char err[512];
+#define METHOD "  access = \"call_method\"\n"
+    CHECK(opcua_configure_method(dir, "",
+                                 METHOD "  address = { object_id = \"ns=2;s=Machine\", "
+                                        "method_id = \"ns=2;s=Machine.Multiply\", "
+                                        "inputs = [\"int32\", \"int32\"] }\n",
+                                 err, sizeof err) == 0,
+          "valid method point: %s", err);
+    CHECK(opcua_configure_method(dir, "",
+                                 METHOD "  address = { object_id = \"ns=2;s=Machine\", "
+                                        "method_id = \"ns=2;s=Machine.Ping\" }\n",
+                                 err, sizeof err) == 0,
+          "method point without inputs: %s", err);
+
+    static const struct {
+        const char *point;
+        const char *want;
+    } bad[] = {
+        {METHOD "  address = { object_id = \"ns=2;s=Machine\" }\n",
+         "point 'm' address: method_id is required for a call_method point"},
+        {METHOD "  address = { method_id = \"ns=2;s=M\" }\n",
+         "point 'm' address: object_id is required for a call_method point"},
+        {METHOD "  address = { object_id = \"bogus\", method_id = \"ns=2;s=M\" }\n",
+         "point 'm' address: invalid object_id 'bogus'"},
+        {METHOD "  address = { object_id = \"ns=2;s=O\", method_id = \"ns=x\" }\n",
+         "point 'm' address: invalid method_id 'ns=x'"},
+        {METHOD "  address = { object_id = \"ns=2;s=O\", method_id = \"ns=2;s=M\", "
+                "node_id = \"ns=2;s=X\" }\n",
+         "point 'm' address: node_id does not apply to a call_method point"},
+        {METHOD "  address = { object_id = \"ns=2;s=O\", method_id = \"ns=2;s=M\", "
+                "queue_size = 4 }\n",
+         "point 'm' address: queue_size does not apply to a call_method point"},
+        {METHOD "  address = { object_id = \"ns=2;s=O\", method_id = \"ns=2;s=M\", "
+                "inputs = \"int32\" }\n",
+         "point 'm' address: inputs must be an array of datatypes"},
+        {METHOD "  address = { object_id = \"ns=2;s=O\", method_id = \"ns=2;s=M\", "
+                "inputs = [\"int32\", 5] }\n",
+         "point 'm' address: inputs must be an array of datatypes"},
+        {METHOD "  address = { object_id = \"ns=2;s=O\", method_id = \"ns=2;s=M\", "
+                "inputs = [\"int32\", \"int128\"] }\n",
+         "point 'm' address: inputs[1]: unknown datatype 'int128'"},
+        {METHOD "  address = { object_id = \"ns=2;s=O\", method_id = \"ns=2;s=M\", "
+                "inputs = [\"bytes\"] }\n",
+         "point 'm' address: inputs[0]: bytes is not supported as a method argument"},
+        {"  datatype = \"int32\"\n  address = { node_id = \"ns=2;s=X\", "
+         "method_id = \"ns=2;s=M\" }\n",
+         "point 'm' address: method_id applies only to a call_method point"},
+        {"  datatype = \"int32\"\n  address = { node_id = \"ns=2;s=X\", "
+         "inputs = [] }\n",
+         "point 'm' address: inputs applies only to a call_method point"},
+    };
+    for (size_t i = 0; i < sizeof bad / sizeof bad[0]; i++) {
+        int rc = opcua_configure_method(dir, "", bad[i].point, err, sizeof err);
+        CHECK(rc == -1 && strcmp(err, bad[i].want) == 0, "expected \"%s\", got \"%s\" (rc %d)",
+              bad[i].want, err, rc);
+    }
+
+    /* Both ids are checked against the namespace table. */
+    const char *table = ", namespaces = [\"http://opcfoundation.org/UA/\", \"urn:a\"]";
+    CHECK(opcua_configure_method(dir, table,
+                                 METHOD "  address = { object_id = \"i=85\", "
+                                        "method_id = \"ns=1;s=M\" }\n",
+                                 err, sizeof err) == 0,
+          "method in a listed namespace: %s", err);
+    CHECK(opcua_configure_method(dir, table,
+                                 METHOD "  address = { object_id = \"ns=3;s=O\", "
+                                        "method_id = \"ns=1;s=M\" }\n",
+                                 err, sizeof err) == -1 &&
+              strcmp(err, "point 'm': namespace index 3 is not in the namespace table (2 "
+                          "entries)") == 0,
+          "object in an unlisted namespace: got \"%s\"", err);
+#undef METHOD
+    char cmd[512];
+    snprintf(cmd, sizeof cmd, "rm -rf '%s'", dir);
+    if (system(cmd) != 0)
+        printf("warn: could not clean %s\n", dir);
+    free(dir);
+}
+#endif
+
 int main(void) {
     check_local_only_settings();
     check_duration_grammar();
@@ -2275,9 +2504,12 @@ int main(void) {
     check_watchdog_period();
     check_report_merges_through_libraries_and_levels();
     check_report_tables_are_validated_where_they_are();
+    check_call_method_points();
+    check_call_method_needs_connector_support();
 #ifdef TDOT_FEATURE_OPCUA
     check_opcua_security_config();
     check_opcua_queue_size();
+    check_opcua_method_addresses();
 #endif
 
     if (failures) {

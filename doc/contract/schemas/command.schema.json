@@ -18,7 +18,7 @@
     },
     "point": {
       "type": "string",
-      "description": "Target point id. Required for the 'write' verb."
+      "description": "Target point id. Required for the 'write' and 'call-method' verbs."
     },
     "value": {
       "type": [
@@ -68,6 +68,14 @@
     "reason": {
       "type": "string",
       "description": "Failure reason. Required when status=failed."
+    },
+    "arguments": {
+      "type": "array",
+      "description": "'call-method' verb request (§6.6): the input arguments, in order. Omitted means none."
+    },
+    "outputs": {
+      "type": "array",
+      "description": "'call-method' verb successful result (§6.6): the output arguments, in order."
     },
     "writes": {
       "type": "array",

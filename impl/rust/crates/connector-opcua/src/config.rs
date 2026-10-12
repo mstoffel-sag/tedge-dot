@@ -174,6 +174,15 @@ pub struct NodeAddress {
     /// The point's monitored-item queue size; overrides the device's.
     #[serde(default)]
     pub queue_size: Option<serde_json::Value>,
+    /// A `call_method` point: the object the method is called on (spec "Method calls").
+    #[serde(default)]
+    pub object_id: Option<String>,
+    /// A `call_method` point: the method to call.
+    #[serde(default)]
+    pub method_id: Option<String>,
+    /// A `call_method` point: the datatypes of the input arguments, in order.
+    #[serde(default)]
+    pub inputs: Option<serde_json::Value>,
 }
 
 /// A monitored item's queue size when no level sets one (spec §3.8).
