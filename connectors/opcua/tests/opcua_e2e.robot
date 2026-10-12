@@ -62,6 +62,10 @@ ${BURST_TOPIC}              te/device/opc4/ot/${PROTOCOL}/sample/burst
 ${BURST_LATEST_TOPIC}       te/device/opc5/ot/${PROTOCOL}/sample/burst
 ${BULK_PREFIX}              te/device/opc6/ot/${PROTOCOL}/sample
 ${BULK_LINK_TOPIC}          te/device/opc6/ot/${PROTOCOL}/status/link
+# OPC UA methods and a write-only point (openspec opcua-method-calls), on the `machine` device.
+${METHOD_PREFIX}            te/device/machine/ot/${PROTOCOL}/cmd/call-method
+${MACHINE_WRITE_PREFIX}     te/device/machine/ot/${PROTOCOL}/cmd/write
+${MACHINE_SAMPLE_PREFIX}    te/device/machine/ot/${PROTOCOL}/sample
 
 
 *** Test Cases ***
@@ -682,6 +686,78 @@ Structure Fields Recover After The Server Restarts
     ${payload}=    Wait For Message Containing    ${STRUCT_PREFIX}/pump_speed    "quality":"good"    timeout=${RECOVERY_TIMEOUT}
     ${value}=    Get Json Field    ${payload}    value
     Should Be Equal As Numbers    ${value}    1450
+
+
+Capability Descriptor Advertises Call Method
+    [Documentation]    The OPC UA connector calls methods (openspec opcua-method-calls), in both builds.
+    ${payload}=    Wait For Retained    ${CAPS_TOPIC}    timeout=${READY_TIMEOUT}
+    ${verbs}=    Get Json Field    ${payload}    command_verbs
+    List Should Contain Value    ${verbs}    call-method
+
+Calls A Method And Returns Its Outputs
+    [Documentation]    Machine.Multiply(6, 7) on the simulator answers 42; the request's origin is echoed.
+    Publish Message    ${METHOD_PREFIX}/mul-1
+    ...    {"status":"init","point":"multiply","arguments":[6,7],"origin":{"by":"e2e"}}    retain=True
+    ${result}=    Wait For Message Containing    ${METHOD_PREFIX}/mul-1    "status":"successful"    timeout=${SAMPLE_TIMEOUT}
+    ${point}=    Get Json Field    ${result}    point
+    Should Be Equal    ${point}    multiply
+    ${outputs}=    Get Json Field    ${result}    outputs
+    Should Be Equal As Numbers    ${outputs}[0]    42
+    Length Should Be    ${outputs}    1
+    ${origin}=    Get Json Field    ${result}    origin
+    Should Be Equal    ${origin}[by]    e2e
+
+Calls A Method Without Arguments
+    [Documentation]    Machine.Ping takes no input arguments; a request without `arguments` calls it.
+    Publish Message    ${METHOD_PREFIX}/ping-1    {"status":"init","point":"ping"}    retain=True
+    ${result}=    Wait For Message Containing    ${METHOD_PREFIX}/ping-1    "status":"successful"    timeout=${SAMPLE_TIMEOUT}
+    ${outputs}=    Get Json Field    ${result}    outputs
+    Should Be Equal    ${outputs}    ${{["pong"]}}
+
+A Bad Method Status Fails The Call
+    [Documentation]    Machine.Fail answers BadInvalidState, which becomes the reason.
+    Publish Message    ${METHOD_PREFIX}/fail-1    {"status":"init","point":"fail","arguments":[]}    retain=True
+    ${result}=    Wait For Message Containing    ${METHOD_PREFIX}/fail-1    "status":"failed"    timeout=${SAMPLE_TIMEOUT}
+    ${reason}=    Get Json Field    ${result}    reason
+    Should Be Equal    ${reason}    call rejected: BadInvalidState
+
+Wrong Arguments Fail Before The Call
+    [Documentation]    The argument count and each argument's type are checked against `inputs`.
+    Publish Message    ${METHOD_PREFIX}/count-1    {"status":"init","point":"multiply","arguments":[6]}    retain=True
+    ${result}=    Wait For Message Containing    ${METHOD_PREFIX}/count-1    "status":"failed"    timeout=${SAMPLE_TIMEOUT}
+    ${reason}=    Get Json Field    ${result}    reason
+    Should Be Equal    ${reason}    expected 2 arguments, got 1
+    Publish Message    ${METHOD_PREFIX}/type-1    {"status":"init","point":"multiply","arguments":["six",7]}    retain=True
+    ${result}=    Wait For Message Containing    ${METHOD_PREFIX}/type-1    "status":"failed"    timeout=${SAMPLE_TIMEOUT}
+    ${reason}=    Get Json Field    ${result}    reason
+    Should Start With    ${reason}    argument 1:
+    Publish Message    ${METHOD_PREFIX}/args-1    {"status":"init","point":"multiply","arguments":5}    retain=True
+    ${result}=    Wait For Message Containing    ${METHOD_PREFIX}/args-1    "status":"failed"    timeout=${SAMPLE_TIMEOUT}
+    ${reason}=    Get Json Field    ${result}    reason
+    Should Be Equal    ${reason}    arguments must be an array
+
+Call Method And Write Check The Point's Access
+    [Documentation]    call-method refuses a variable, and write refuses a method point.
+    Publish Message    ${METHOD_PREFIX}/var-1    {"status":"init","point":"count","arguments":[]}    retain=True
+    ${result}=    Wait For Message Containing    ${METHOD_PREFIX}/var-1    "status":"failed"    timeout=${SAMPLE_TIMEOUT}
+    ${reason}=    Get Json Field    ${result}    reason
+    Should Be Equal    ${reason}    point count is not a method
+    Publish Message    ${MACHINE_WRITE_PREFIX}/wm-1    {"status":"init","point":"multiply","value":1}    retain=True
+    ${result}=    Wait For Message Containing    ${MACHINE_WRITE_PREFIX}/wm-1    "status":"failed"    timeout=${SAMPLE_TIMEOUT}
+    ${reason}=    Get Json Field    ${result}    reason
+    Should Contain    ${reason}    multiply is not writable
+
+Method And Write-Only Points Are Never Sampled
+    [Documentation]    A write-only point is written but never read, and a method point is never
+    ...    read at all; the device's readable point keeps sampling meanwhile.
+    ${payload}=    Wait For Sample    ${MACHINE_SAMPLE_PREFIX}/count    timeout=${SAMPLE_TIMEOUT}
+    Sample Should Be Good    ${payload}
+    Publish Message    ${MACHINE_WRITE_PREFIX}/wo-1    {"status":"init","point":"setpoint_wo","value":7}    retain=True
+    Wait For Message Containing    ${MACHINE_WRITE_PREFIX}/wo-1    "status":"successful"    timeout=${SAMPLE_TIMEOUT}
+    No Messages On Topic    ${MACHINE_SAMPLE_PREFIX}/setpoint_wo    timeout=5
+    FOR    ${method}    IN    multiply    ping    fail
+        No Messages On Topic    ${MACHINE_SAMPLE_PREFIX}/${method}    timeout=0
+    END
 
 
 *** Keywords ***

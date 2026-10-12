@@ -22,7 +22,9 @@ See proposal.md for the motivation. The state of the code this design builds on:
   `node_id`; `translate` maps each point id to the session's node id and `effective()` applies it.
   C keeps one `ua_point_t` with one `node_id` and per-session `resolved` / `reason` fields filled
   by `translate_device`.
-- **C open62541 build.** `UA_ENABLE_METHODCALLS` is forced `OFF` in `impl/c/CMakeLists.txt`.
+- **C open62541 build.** `UA_ENABLE_METHODCALLS` is forced `OFF` in `impl/c/CMakeLists.txt`. In
+  open62541 v1.5.5 that flag guards only server-side method nodes; the client's Call service is
+  compiled in either way.
 
 ## Goals / Non-Goals
 
@@ -154,13 +156,16 @@ offers one (D2). The module skips them when it walks its own points (`resolve_ty
 
 ### D8: Calling and reporting
 
-Rust uses `Session::call` with one `CallMethodRequest`. C uses `UA_Client_call`. Both are bounded
+Rust uses `Session::call` with one `CallMethodRequest`. C uses `UA_Client_Service_call` with one
+`UA_CallRequest` (`UA_Client_call` returns only the overall status, so it cannot name a rejected
+argument). Both are bounded
 by `request_timeout_s`. Failure reasons, in order:
 
 - `device <name> is not connected`
 - the namespace translation reason
 - `expected N arguments, got M`, and `argument K: <conversion error>` (1-based), before any call
-- `call timed out after Ns (transport down?)` / `call failed: <service status>`
+- `call failed: <service status>`, with a timeout reported as `call failed: BadTimeout` in both
+  builds (open62541 reports its own timeout that way)
 - `call rejected: argument K: <status>` when an input argument result is not good
 - `call rejected: <status>` for the call's own status
 
@@ -171,14 +176,15 @@ come back, so an output that cannot be rendered never turns a successful call in
 
 ### D9: open62541 method calls
 
-`UA_ENABLE_METHODCALLS ON`. `UA_ENABLE_PUBSUB` stays off; the CMake comment that PubSub needs
-method calls stays true. Server-side method nodes are compiled in too, which costs some binary
-size, but the connector does not use them.
+`UA_ENABLE_METHODCALLS` stays `OFF`. It guards only the server side (method nodes and their
+callbacks); the client's Call service builds and links without it, so turning it on would only
+add server code the connector never runs. Measured on macOS arm64, the stripped binary is the
+same size (1,085,192 bytes) with the flag on and off. The CMake comment now says so.
 
 ### D10: Tests
 
 - The simulator adds a `Machine` object with `Multiply(Int32, Int32) -> Int32`,
-  `Ping() -> String` and `Fail()`, which raises `BadInvalidState`.
+  `Ping() -> String` and `Fail()`, which answers `BadInvalidState`.
 - `connectors/opcua/connector.toml` adds method points for all three, plus `setpoint_wo` with
   `access = "write"` on the `Setpoint` node.
 - `opcua_e2e.robot` adds cases for the descriptor, a successful call, a call without inputs or
@@ -202,8 +208,6 @@ size, but the connector does not use them.
 - [`call-method` is retained like every command topic] → A retained `init` would be replayed by a
   connector that restarts before answering it. This is the same exposure `write` has today.
   Requesters should clear the topic after the terminal state, as the contract already says.
-- [The C binary grows with method-call support] → It is small next to the encryption code, and
-  measured in the PR.
 
 ## Migration Plan
 

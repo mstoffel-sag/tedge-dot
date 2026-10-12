@@ -257,7 +257,7 @@ static int cmd_read(const args_t *a) {
     char err[256];
     if (setup(a, &cfg, &conn) != 0)
         return 1;
-    if (conn->configure(conn, cfg, err, sizeof err) != 0) {
+    if (tdot_connector_configure(conn, cfg, err, sizeof err) != 0) {
         fprintf(stderr, "error: %s\n", err);
         return 1;
     }
@@ -382,7 +382,7 @@ static int cmd_write(const args_t *a) {
     char err[256];
     if (setup(a, &cfg, &conn) != 0)
         return 1;
-    if (conn->configure(conn, cfg, err, sizeof err) != 0) {
+    if (tdot_connector_configure(conn, cfg, err, sizeof err) != 0) {
         fprintf(stderr, "error: %s\n", err);
         return 1;
     }

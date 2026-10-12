@@ -40,7 +40,7 @@ read, but the Rust runtime polls them too. OPC UA defines write-only the same wa
   connector converts the arguments to the declared input types, calls the method with the OPC UA
   `Call` service, and returns the output arguments as JSON. Both node ids are translated through
   the device's namespace table like any other node id. A method call is never retried.
-- The C build turns on open62541's `UA_ENABLE_METHODCALLS`.
+- The C build needs no open62541 change: its client Call service is compiled in already.
 - The OPC UA simulator gains methods to call, and the e2e suite covers method calls and
   write-only points in both builds.
 

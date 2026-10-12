@@ -35,11 +35,12 @@ cloud-side certificate operations, keys in an HSM/TPM.
 ```json
 { "protocol": "opcua", "modes": ["raw", "typed"],
   "datatypes": ["bool","int8","uint8","int16","uint16","int32","uint32","int64","uint64","float32","float64","string","bytes"],
-  "point_kinds": ["variable"], "command_verbs": ["write", "write-batch"],
+  "point_kinds": ["variable"], "command_verbs": ["write", "write-batch", "call-method"],
   "features": ["polling", "subscribe"], "subscribe": true }
 ```
 
-`bytes` (ByteString values, §3.7) is advertised by both builds. Security is configuration, not a capability: both builds support all of §3.
+`bytes` (ByteString values, §3.7) is advertised by both builds, and so is `call-method`
+(method calls, §3.10). Security is configuration, not a capability: both builds support all of §3.
 
 ## 3. Configuration
 
@@ -124,6 +125,8 @@ Two optional keys select one value out of a structured or array value (§3.7):
 | --- | --- |
 | `field` | A dotted path into a structure: `"Speed"`, `"Motor.Current"`, `"Items[1].Value"`. A segment may carry one zero-based element index `[n]`. |
 | `index` | One zero-based element of an array variable, selected on the server through `IndexRange`. May be combined with `field` when the elements are structures. |
+
+A method point (`access = "call_method"`) has its own address keys; see §3.10.
 
 One more optional key applies to subscribed points:
 
@@ -379,6 +382,57 @@ then gets its monitored item. That also picks up a namespace the server adds whi
 (the C build renews its session for it: open62541 maps namespace indexes with a table it builds
 per session). Points translated in a session are not translated again until the next one.
 
+### 3.10 Method calls (`call_method`)
+
+A point with `access = "call_method"` (contract §3.1) is an OPC UA method, called with the
+`call-method` verb (contract §6.6). It is never read, subscribed or written, and declares no
+`datatype`. Both builds.
+
+```toml
+[[device.point]]
+id      = "multiply"
+access  = "call_method"
+address = { object_id = "ns=2;s=Machine", method_id = "ns=2;s=Machine.Multiply", inputs = ["int32", "int32"] }
+```
+
+| Key | Meaning |
+| --- | --- |
+| `object_id` | Required. The object (or object type) the method is called on, as a textual node id. |
+| `method_id` | Required. The method, as a textual node id. |
+| `inputs` | The datatypes of the input arguments, in order: `bool`, `int8` … `uint64`, `float32`, `float64` or `string` (contract §4). Omitted: the method takes no arguments. |
+
+The variable keys (`node_id`, `namespace`, `identifier`, `field`, `index`, `queue_size`) do not
+apply to a method point, and the method keys apply to nothing else; either mix is a
+configuration error. The argument types are declared, not read from the method's
+`InputArguments` property: the configuration means the same whatever the server exposes, and a
+connect costs no extra browse.
+
+**Arguments.** A request must carry exactly as many `arguments` as `inputs` lists. Each is
+converted to its datatype by the rules a `write` uses; a 64-bit integer may also be a decimal
+string. A count or value that does not fit fails the command before anything is sent.
+
+**Outputs.** `outputs` lists the method's output arguments in order. A scalar is rendered as in
+a sample's `value` (a 64-bit integer beyond ±2^53−1 as a decimal string), an array of scalars
+as a JSON array, and anything else — a structure, a node id, a nested array — as `null`. An
+output that cannot be rendered never fails the call: the method has already run.
+
+**Failure reasons**, identical in both builds:
+
+| Reason | When |
+| --- | --- |
+| `device <name> is not connected` | The device has no session. |
+| the namespace reason (§3.9) | `object_id` or `method_id` could not be translated. |
+| `expected <n> arguments, got <m>` | The argument count does not match `inputs`. |
+| `argument <k>: <why>` | Argument `k` (1-based) does not fit its datatype. |
+| `call failed: <status>` | The Call service failed, e.g. `BadTimeout` after `request_timeout_s`. |
+| `call rejected: argument <k>: <status>` | The server rejected argument `k`, e.g. `BadTypeMismatch`. |
+| `call rejected: <status>` | The method's own status, e.g. `BadInvalidState`, `BadNotExecutable`, `BadUserAccessDenied`. |
+
+A method call is never retried. A call that times out may still have run on the server.
+
+**Namespace tables.** With a namespace table (§3.9), `object_id` and `method_id` are each
+translated like a variable's node id, and a call fails with the reason of whichever could not be.
+
 ## 4. The PKI directory
 
 ### 4.1 Layout
@@ -599,6 +653,7 @@ Debian purge deletes the directory.
 | Conformance over secured channels | `connectors/opcua/conformance-secure.toml`, `conformance-secure-c.toml` |
 | End to end | `connectors/opcua/tests/opcua_security_e2e.robot` (`docker-compose.secure.yaml`) |
 | Namespace tables (§3.9) | `connector-opcua/src/namespaces.rs`, `connector-opcua/tests/namespaces.rs`, `impl/c/tests/opcua_namespaces.c`; end to end `connectors/opcua/tests/opcua_namespace_e2e.robot` (`docker-compose.namespaces.yaml`) |
+| Method calls (§3.10) | `connector-opcua/src/lib.rs`, `connector-opcua/tests/methods.rs` (in-process server), `impl/c/tests/config.c`; end to end `connectors/opcua/tests/opcua_e2e.robot` (device `machine`) |
 | Interop, third-party server | `connectors/opcua/interop/tests/opcua_interop.robot` (`just test-interop opcua`, and `-c`) |
 | `tedge-dot pki` | `impl/rust/tests/pki_cli.rs`, `impl/c/tests/opcua_pki_cli.sh`, parity `impl/c/ci/pki-parity.sh` |
 | Fuzzing | `connector-opcua/fuzz` (`pki_files`) |

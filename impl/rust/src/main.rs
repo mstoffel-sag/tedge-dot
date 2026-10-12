@@ -998,8 +998,8 @@ struct Target<'a> {
 /// Resolve device and point selectors (literal names or wildcard patterns) against the config.
 ///
 /// Wildcard point patterns only pick up points whose access fits the operation — readable
-/// points for reads, writable for writes — so `-p '*'` never trips over a write-only or
-/// read-only point. Explicitly named points are always taken; the connector enforces access
+/// points for reads, writable for writes — so `-p '*'` never trips over a write-only point, a
+/// method or a read-only point. Explicitly named points are always taken; the connector enforces access
 /// and reports the violation. Every selector must match at least one point somewhere.
 fn resolve_targets<'a>(
     config: &'a ConnectorConfig,
@@ -1035,11 +1035,7 @@ fn resolve_targets<'a>(
                 }
                 if is_pattern(pattern) {
                     let access = Access::parse(point.access.as_deref());
-                    let fits = if for_write {
-                        access.can_write()
-                    } else {
-                        access != Access::Write
-                    };
+                    let fits = if for_write { access.can_write() } else { access.can_read() };
                     if !fits {
                         continue;
                     }
@@ -1136,8 +1132,7 @@ async fn cmd_read(args: ReadArgs) -> Result<(), String> {
     let poll_mode = args.poll || args.interval.is_some() || args.count.is_some();
 
     let mut connector = build_connector(&config.connector.protocol)?;
-    connector
-        .configure(&config)
+    runtime::configure(connector.as_mut(), &config)
         .map_err(|e| format!("invalid configuration: {e}"))?;
     connector.disable_push();
     let (targets, failed_devices) = connect_targets(&mut connector, targets).await?;
@@ -1260,8 +1255,7 @@ async fn cmd_write(args: WriteArgs) -> Result<(), String> {
     let targets = resolve_targets(&config, &args.device, &args.points, true)?;
 
     let mut connector = build_connector(&config.connector.protocol)?;
-    connector
-        .configure(&config)
+    runtime::configure(connector.as_mut(), &config)
         .map_err(|e| format!("invalid configuration: {e}"))?;
     connector.disable_push();
     let (targets, failed_devices) = connect_targets(&mut connector, targets).await?;
@@ -1804,6 +1798,11 @@ poll_interval = "5s"
   access = "write"
   address = { table = "coil", address = 1 }
 
+  [[device.point]]
+  id = "reset"
+  access = "call_method"
+  address = { table = "coil", address = 2 }
+
 [[device]]
 name = "plc2"
 protocol_address = { host = "127.0.0.2" }
@@ -1822,7 +1821,7 @@ protocol_address = { host = "127.0.0.2" }
         let targets = resolve_targets(&config, "*", &["*".to_string()], false).unwrap();
         assert_eq!(targets.len(), 2);
         let plc1: Vec<&str> = targets[0].points.iter().map(|p| p.id.as_str()).collect();
-        // the write-only point is skipped by the wildcard
+        // the write-only point and the method are skipped by the wildcard
         assert_eq!(plc1, vec!["temp_u16", "temp_scaled"]);
         assert_eq!(targets[1].device.name, "plc2");
     }

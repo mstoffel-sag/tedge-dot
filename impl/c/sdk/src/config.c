@@ -534,7 +534,8 @@ static const char *const DATATYPES[] = {
     "bool",   "int8",   "uint8",   "int16",   "uint16", "int32", "uint32",
     "int64",  "uint64", "float32", "float64", "string", "bytes", NULL};
 static const char *const ORDERS[] = {"big", "little", NULL};
-static const char *const ACCESSES[] = {"read", "write", "read_write", NULL};
+static const char *const ACCESSES[] = {"read", "write", "read_write", "call_method",
+                                        NULL};
 #define DURATION_EXPECTED "a duration such as \"500ms\", \"2s\" or \"5m\""
 
 /* `key` of `tbl`, when present, must be one of `allowed` (NULL-terminated),
@@ -767,6 +768,27 @@ static void apply_point_table(toml_table_t *pt, tdot_point_t *point,
         point->id = d.u.s;
     }
 
+    /* The value fields this definition declares itself, for the call_method
+     * check in validate_point. */
+    static const struct {
+        const char *key;
+        unsigned bit;
+    } own[] = {
+        {"datatype", TDOT_FIELD_DATATYPE},
+        {"mode", TDOT_FIELD_MODE},
+        {"endianness", TDOT_FIELD_ENDIANNESS},
+        {"word_order", TDOT_FIELD_WORD_ORDER},
+        {"transform", TDOT_FIELD_TRANSFORM},
+        {"map", TDOT_FIELD_MAP},
+        {"poll_interval", TDOT_FIELD_POLL_INTERVAL},
+        {"sampling_interval", TDOT_FIELD_SAMPLING_INTERVAL},
+        {"subscribe", TDOT_FIELD_SUBSCRIBE},
+        {"report", TDOT_FIELD_REPORT},
+    };
+    for (size_t i = 0; i < sizeof own / sizeof own[0]; i++)
+        if (key_present(pt, own[i].key))
+            point->own_fields |= own[i].bit;
+
     /* parse_mode leaves the mode untouched when the key is absent. */
     parse_mode(pt, "mode", &point->mode);
 
@@ -785,6 +807,8 @@ static void apply_point_table(toml_table_t *pt, tdot_point_t *point,
             point->access = TDOT_ACCESS_WRITE;
         else if (strcmp(d.u.s, "read_write") == 0)
             point->access = TDOT_ACCESS_READ | TDOT_ACCESS_WRITE;
+        else if (strcmp(d.u.s, "call_method") == 0)
+            point->access = TDOT_ACCESS_CALL;
         else
             point->access = TDOT_ACCESS_READ;
         free(d.u.s);
@@ -880,6 +904,45 @@ static void apply_point_table(toml_table_t *pt, tdot_point_t *point,
     }
 }
 
+/* A call_method point is not a value (contract §3.3): a value field it
+ * declares itself -- inline or in a library -- would load and do nothing, so
+ * it is refused. Inherited poll_interval/report are not the point's own.
+ * Mirrors the Rust loader's check, field order and message included. */
+static int validate_method_point(const tdot_device_t *dev, const tdot_point_t *point,
+                                 char *err, size_t errlen) {
+    static const struct {
+        unsigned bit;
+        const char *key;
+    } refused[] = {
+        {TDOT_FIELD_MODE, "mode"},
+        {TDOT_FIELD_DATATYPE, "datatype"},
+        {TDOT_FIELD_ENDIANNESS, "endianness"},
+        {TDOT_FIELD_WORD_ORDER, "word_order"},
+        {TDOT_FIELD_TRANSFORM, "transform"},
+        {TDOT_FIELD_MAP, "map"},
+        {TDOT_FIELD_POLL_INTERVAL, "poll_interval"},
+        {TDOT_FIELD_SAMPLING_INTERVAL, "sampling_interval"},
+        {TDOT_FIELD_SUBSCRIBE, "subscribe"},
+        {TDOT_FIELD_REPORT, "report"},
+    };
+    const char *bad = NULL;
+    for (size_t i = 0; !bad && i < sizeof refused / sizeof refused[0]; i++)
+        if (point->own_fields & refused[i].bit)
+            bad = refused[i].key;
+    if (!bad && point->meta_json) {
+        cJSON *meta = cJSON_Parse(point->meta_json);
+        if (cJSON_GetObjectItemCaseSensitive(meta, "parameter"))
+            bad = "meta.parameter";
+        cJSON_Delete(meta);
+    }
+    if (bad) {
+        snprintf(err, errlen, "device '%s': point '%s': %s does not apply to a call_method point",
+                 dev->name, point->id, bad);
+        return -1;
+    }
+    return 0;
+}
+
 /* Checks that only make sense once every definition of a point has been
  * applied. */
 static int validate_point(const tdot_point_t *point, char *err, size_t errlen) {
@@ -892,7 +955,9 @@ static int validate_point(const tdot_point_t *point, char *err, size_t errlen) {
      * point a library supplies. */
     if (!point->enabled)
         return 0;
-    if (point->mode == TDOT_MODE_TYPED && point->datatype == TDOT_DT_NONE) {
+    /* A method point has no value, so no datatype (validate_method_point). */
+    if (point->access != TDOT_ACCESS_CALL && point->mode == TDOT_MODE_TYPED &&
+        point->datatype == TDOT_DT_NONE) {
         snprintf(err, errlen, "point %s: typed point requires a datatype", point->id);
         return -1;
     }
@@ -1485,6 +1550,10 @@ static int resolve_device_points(tdot_config_t *cfg, tdot_device_t *dev,
 
     for (size_t j = 0; j < dev->npoints; j++)
         if (validate_point(&dev->points[j], err, errlen) != 0)
+            return -1;
+    for (size_t j = 0; j < dev->npoints; j++)
+        if (dev->points[j].enabled && dev->points[j].access == TDOT_ACCESS_CALL &&
+            validate_method_point(dev, &dev->points[j], err, errlen) != 0)
             return -1;
 
     /* The map checks that need the resolved mode and datatype (§4.3): a

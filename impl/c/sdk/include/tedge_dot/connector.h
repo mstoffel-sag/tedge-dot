@@ -103,6 +103,16 @@ struct tdot_connector {
     int (*drain_subscriptions)(tdot_connector_t *self, tdot_device_t *dev,
                                tdot_sample_sink_t sink, void *sink_ctx);
 
+    /* Optional: call the method a `call_method` point names (contract §6,
+     * the `call-method` verb). `arguments` is the request's JSON array, as
+     * sent. Returns 0 with *outputs a JSON array of the output arguments,
+     * owned by the caller, or -1 with err filled. Never retried. NULL means the
+     * connector cannot call methods: a configuration with a call_method point
+     * is then refused (tdot_connector_configure). */
+    int (*call_method)(tdot_connector_t *self, tdot_device_t *dev,
+                       tdot_point_t *pt, const struct cJSON *arguments,
+                       struct cJSON **outputs, char *err, size_t errlen);
+
     /* Close one device's transport (frees device->proto). */
     void (*disconnect_device)(tdot_connector_t *self, tdot_device_t *dev);
 
@@ -140,6 +150,13 @@ tdot_connector_t *tdot_connector_snmp_new(void);
 
 /* Returns NULL when the protocol is unknown or compiled out. */
 tdot_connector_t *tdot_connector_factory(const char *protocol);
+
+/* Configure `conn` with `cfg` through conn->configure, the one way every
+ * caller does it. Refuses first a configuration with a `call_method` point
+ * when the connector has no call_method hook (contract §3.3). Returns 0, or
+ * -1 with err filled. */
+int tdot_connector_configure(tdot_connector_t *conn, tdot_config_t *cfg, char *err,
+                             size_t errlen);
 
 /* Write a requested value to a point through conn->write_point: the one path
  * every write takes (the `write` and `write-batch` verbs, the CLI `write`).

@@ -8,8 +8,10 @@
 #include <open62541/client_highlevel.h>
 #include <open62541/client_subscriptions.h>
 #include <open62541/plugin/certificategroup_default.h>
+#include <ctype.h>
 #include <errno.h>
 #include <limits.h>
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -48,6 +50,18 @@ typedef struct {
     /* A subscribed point waiting for its namespace: no monitored item yet,
      * reported through the push queue and retried (design D5). */
     bool pending;
+    /* `access = "call_method"` (openspec change opcua-method-calls): node_id
+     * is then the method id (so it is translated, and echoed in `addr`, like
+     * a variable's) and object_id the object it is called on. The object id
+     * has its own namespace index and translation; `table` is set when either
+     * id needs one. Never read or subscribed. */
+    bool is_method;
+    char object_id[160];
+    int object_ns;
+    char object_resolved[160];
+    /* `address.inputs`: the input argument datatypes, in order. */
+    size_t ninputs;
+    tdot_datatype_t inputs[];
 } ua_point_t;
 
 /* A monitored item's queue size when no level sets one (spec §3.8). */
@@ -208,7 +222,7 @@ static const char CAPABILITIES[] =
     "\"int32\",\"uint32\",\"int64\",\"uint64\",\"float32\",\"float64\","
     "\"string\",\"bytes\"],"
     "\"point_kinds\":[\"variable\"],"
-    "\"command_verbs\":[\"write\",\"write-batch\"],"
+    "\"command_verbs\":[\"write\",\"write-batch\",\"call-method\"],"
     "\"features\":[\"polling\",\"subscribe\"],\"subscribe\":true}";
 
 /* ---- configuration (spec §3) ------------------------------------------- */
@@ -724,6 +738,63 @@ static void log_moved(const tdot_device_t *dev, ua_device_t *ua, const char *uri
             local, server);
 }
 
+/* Translate one configured node id of a point through its table (design
+ * D3): `ns` is the id's configured namespace index. Namespace 0 is used as
+ * configured. Fills `resolved` and returns true, or fills `reason`. */
+static bool translate_node(const tdot_device_t *dev, ua_device_t *ua, toml_array_t *table,
+                           int ns, const char *node_id, const UA_String *uris, size_t nuris,
+                           char *resolved, size_t rlen, char *reason, size_t reasonlen) {
+    if (ns == 0) {
+        snprintf(resolved, rlen, "%s", node_id);
+        return true;
+    }
+    bool ok = false;
+    /* configure checked that the table lists the index */
+    toml_datum_t uri = toml_string_at(table, ns);
+    size_t found = nuris;
+    for (size_t k = 0; uri.ok && k < nuris && found == nuris; k++)
+        if (uris[k].length == strlen(uri.u.s) &&
+            !memcmp(uris[k].data, uri.u.s, uris[k].length))
+            found = k;
+    /* The index to put in the node id is the CLIENT's for the URI:
+     * open62541 rewrites every encoded node id from its own index to
+     * the server's (client.h, "Namespace Mapping"). For namespaces the
+     * server listed when the session was created the two agree. */
+    UA_UInt16 local = 0;
+    UA_NodeId node;
+    if (!uri.ok) {
+        snprintf(reason, reasonlen, "namespace not translated");
+    } else if (found == nuris) {
+        snprintf(reason, reasonlen, "namespace not found: %s", uri.u.s);
+    } else if (UA_Client_getNamespaceIndex(ua->client, UA_STRING(uri.u.s), &local) !=
+               UA_STATUSCODE_GOOD) {
+        snprintf(reason, reasonlen,
+                 "namespace %s was added after connecting; renewing the session",
+                 uri.u.s);
+        if (!ua->renew_session)
+            fprintf(stderr,
+                    "info  device %s: the server added namespace %s; renewing the "
+                    "session to address it\n",
+                    dev->name, uri.u.s);
+        ua->renew_session = true;
+    } else if (UA_NodeId_parse(&node, UA_STRING((char *)node_id)) == UA_STATUSCODE_GOOD) {
+        node.namespaceIndex = local;
+        UA_String text = UA_STRING_NULL;
+        UA_NodeId_print(&node, &text);
+        snprintf(resolved, rlen, "%.*s", (int)text.length, (const char *)text.data);
+        UA_String_clear(&text);
+        UA_NodeId_clear(&node);
+        ok = true;
+        if ((int)found != ns)
+            log_moved(dev, ua, uri.u.s, ns, found);
+    } else {
+        snprintf(reason, reasonlen, "invalid node id: %s", node_id);
+    }
+    if (uri.ok)
+        free(uri.u.s);
+    return ok;
+}
+
 /* Translate the device's points that have a table: all of them, or with
  * `retry` only those not translated yet (design D3, D5). */
 static void translate_device(tdot_device_t *dev, bool retry) {
@@ -758,58 +829,123 @@ static void translate_device(tdot_device_t *dev, bool retry) {
         up->translated = false;
         if (unavailable[0]) {
             snprintf(up->reason, sizeof up->reason, "%s", unavailable);
-        } else {
-            /* configure checked that the table lists the index */
-            toml_datum_t uri = toml_string_at(up->table, up->ns);
-            size_t found = nuris;
-            for (size_t k = 0; uri.ok && k < nuris && found == nuris; k++)
-                if (uris[k].length == strlen(uri.u.s) &&
-                    !memcmp(uris[k].data, uri.u.s, uris[k].length))
-                    found = k;
-            /* The index to put in the node id is the CLIENT's for the URI:
-             * open62541 rewrites every encoded node id from its own index to
-             * the server's (client.h, "Namespace Mapping"). For namespaces the
-             * server listed when the session was created the two agree. */
-            UA_UInt16 local = 0;
-            UA_NodeId node;
-            if (!uri.ok) {
-                snprintf(up->reason, sizeof up->reason, "namespace not translated");
-            } else if (found == nuris) {
-                snprintf(up->reason, sizeof up->reason, "namespace not found: %s", uri.u.s);
-            } else if (UA_Client_getNamespaceIndex(ua->client, UA_STRING(uri.u.s), &local) !=
-                       UA_STATUSCODE_GOOD) {
-                snprintf(up->reason, sizeof up->reason,
-                         "namespace %s was added after connecting; renewing the session",
-                         uri.u.s);
-                if (!ua->renew_session)
-                    fprintf(stderr,
-                            "info  device %s: the server added namespace %s; renewing the "
-                            "session to address it\n",
-                            dev->name, uri.u.s);
-                ua->renew_session = true;
-            } else if (UA_NodeId_parse(&node, UA_STRING(up->node_id)) == UA_STATUSCODE_GOOD) {
-                node.namespaceIndex = local;
-                UA_String text = UA_STRING_NULL;
-                UA_NodeId_print(&node, &text);
-                snprintf(up->resolved, sizeof up->resolved, "%.*s", (int)text.length,
-                         (const char *)text.data);
-                UA_String_clear(&text);
-                UA_NodeId_clear(&node);
-                up->translated = true;
-                up->reason[0] = '\0';
-                if ((int)found != up->ns)
-                    log_moved(dev, ua, uri.u.s, up->ns, found);
-            } else {
-                snprintf(up->reason, sizeof up->reason, "invalid node id: %s", up->node_id);
-            }
-            if (uri.ok)
-                free(uri.u.s);
+        } else if (translate_node(dev, ua, up->table, up->ns, up->node_id, uris, nuris,
+                                  up->resolved, sizeof up->resolved, up->reason,
+                                  sizeof up->reason) &&
+                   (!up->is_method ||
+                    translate_node(dev, ua, up->table, up->object_ns, up->object_id, uris,
+                                   nuris, up->object_resolved, sizeof up->object_resolved,
+                                   up->reason, sizeof up->reason))) {
+            up->translated = true;
+            up->reason[0] = '\0';
         }
         if (!retry && !up->translated)
             fprintf(stderr, "warn  device '%s' point '%s': %s\n", dev->name, pt->id,
                     up->reason);
     }
     UA_Variant_clear(&array);
+}
+
+/* ---- method points (openspec change opcua-method-calls) ----------------- */
+
+/* Address keys of a method point, refused on a variable. */
+static const char *const METHOD_KEYS[] = {"object_id", "method_id", "inputs"};
+/* Address keys of a variable, refused on a method point. */
+static const char *const VARIABLE_KEYS[] = {"node_id", "namespace", "identifier",
+                                            "field",   "index",     "queue_size"};
+
+static bool address_has(toml_table_t *address, const char *key) {
+    return address && (toml_raw_in(address, key) || toml_array_in(address, key) ||
+                       toml_table_in(address, key));
+}
+
+/* `key` of a method address: a required textual node id, copied to `out`,
+ * with its namespace index in *ns. */
+static int method_node(const tdot_point_t *pt, const char *key, char *out, size_t outlen,
+                       int *ns, char *err, size_t errlen) {
+    toml_datum_t d = toml_string_in(pt->address, key);
+    if (!d.ok) {
+        snprintf(err, errlen, "point '%s' address: %s is required for a call_method point",
+                 pt->id, key);
+        return -1;
+    }
+    snprintf(out, outlen, "%s", d.u.s);
+    UA_NodeId node;
+    if (strlen(d.u.s) >= outlen || UA_NodeId_parse(&node, UA_STRING(d.u.s)) != UA_STATUSCODE_GOOD) {
+        snprintf(err, errlen, "point '%s' address: invalid %s '%s'", pt->id, key, d.u.s);
+        free(d.u.s);
+        return -1;
+    }
+    *ns = node.namespaceIndex;
+    UA_NodeId_clear(&node);
+    free(d.u.s);
+    return 0;
+}
+
+/* Parse a call_method point's address: object_id, method_id and inputs. */
+static int configure_method(tdot_point_t *pt, toml_array_t *table, char *err, size_t errlen) {
+    for (size_t k = 0; k < sizeof VARIABLE_KEYS / sizeof VARIABLE_KEYS[0]; k++)
+        if (address_has(pt->address, VARIABLE_KEYS[k])) {
+            snprintf(err, errlen, "point '%s' address: %s does not apply to a call_method point",
+                     pt->id, VARIABLE_KEYS[k]);
+            return -1;
+        }
+    toml_array_t *inputs = toml_array_in(pt->address, "inputs");
+    if (address_has(pt->address, "inputs") &&
+        (!inputs || (toml_array_nelem(inputs) > 0 && toml_array_kind(inputs) != 'v'))) {
+        snprintf(err, errlen, "point '%s' address: inputs must be an array of datatypes",
+                 pt->id);
+        return -1;
+    }
+    size_t n = inputs ? (size_t)toml_array_nelem(inputs) : 0;
+    ua_point_t *up = calloc(1, sizeof *up + n * sizeof up->inputs[0]);
+    pt->proto = up;
+    up->is_method = true;
+    for (size_t k = 0; k < n; k++) {
+        toml_datum_t d = toml_string_at(inputs, (int)k);
+        if (!d.ok) {
+            snprintf(err, errlen, "point '%s' address: inputs must be an array of datatypes",
+                     pt->id);
+            return -1;
+        }
+        tdot_datatype_t dt = tdot_datatype_parse(d.u.s);
+        if (dt == TDOT_DT_NONE)
+            snprintf(err, errlen, "point '%s' address: inputs[%zu]: unknown datatype '%s'",
+                     pt->id, k, d.u.s);
+        else if (dt == TDOT_DT_BYTES)
+            snprintf(err, errlen,
+                     "point '%s' address: inputs[%zu]: bytes is not supported as a method "
+                     "argument",
+                     pt->id, k);
+        free(d.u.s);
+        if (dt == TDOT_DT_NONE || dt == TDOT_DT_BYTES)
+            return -1;
+        up->inputs[up->ninputs++] = dt;
+    }
+    if (method_node(pt, "object_id", up->object_id, sizeof up->object_id, &up->object_ns,
+                    err, errlen) != 0 ||
+        method_node(pt, "method_id", up->node_id, sizeof up->node_id, &up->ns, err,
+                    errlen) != 0)
+        return -1;
+    if (table && (up->ns != 0 || up->object_ns != 0)) {
+        /* object_id first, then method_id, as the ids are written. */
+        int entries = toml_array_nelem(table);
+        int bad = up->object_ns >= entries ? up->object_ns : up->ns >= entries ? up->ns : -1;
+        if (bad >= 0) {
+            snprintf(err, errlen,
+                     "point '%s': namespace index %d is not in the namespace table (%d "
+                     "entries)",
+                     pt->id, bad, entries);
+            return -1;
+        }
+        up->table = table;
+    }
+    cJSON *addr = cJSON_CreateObject();
+    cJSON_AddStringToObject(addr, "object_id", up->object_id);
+    cJSON_AddStringToObject(addr, "method_id", up->node_id);
+    pt->addr_json = cJSON_PrintUnformatted(addr);
+    cJSON_Delete(addr);
+    return 0;
 }
 
 static int configure(tdot_connector_t *self, tdot_config_t *cfg, char *err,
@@ -918,6 +1054,29 @@ static int configure(tdot_connector_t *self, tdot_config_t *cfg, char *err,
 
         for (size_t j = 0; j < dev->npoints; j++) {
             tdot_point_t *pt = &dev->points[j];
+            /* A library's table describes the library's addresses; the
+             * device's describes the rest. */
+            toml_array_t *table = device_table;
+            if (pt->library && (toml_raw_in(pt->library, "namespaces") ||
+                                toml_array_in(pt->library, "namespaces") ||
+                                toml_table_in(pt->library, "namespaces"))) {
+                if (parse_table(pt->library, &table, why, sizeof why) != 0) {
+                    snprintf(err, errlen, "point '%s': [library] %s", pt->id, why);
+                    return -1;
+                }
+            }
+            if (pt->access & TDOT_ACCESS_CALL) {
+                if (configure_method(pt, table, err, errlen) != 0)
+                    return -1;
+                continue;
+            }
+            for (size_t k = 0; k < sizeof METHOD_KEYS / sizeof METHOD_KEYS[0]; k++)
+                if (address_has(pt->address, METHOD_KEYS[k])) {
+                    snprintf(err, errlen,
+                             "point '%s' address: %s applies only to a call_method point",
+                             pt->id, METHOD_KEYS[k]);
+                    return -1;
+                }
             /* Two address forms, like the Rust module: `node_id = "ns=2;s=X"`
              * or structured `namespace = 2, identifier = "X" | 1001`. */
             ua_point_t *up = calloc(1, sizeof *up);
@@ -957,17 +1116,6 @@ static int configure(tdot_connector_t *self, tdot_config_t *cfg, char *err,
                 up->queue_size = device_queue_size  ? device_queue_size
                                  : st->queue_size   ? st->queue_size
                                                     : UA_QUEUE_SIZE_DEFAULT;
-            /* A library's table describes the library's addresses; the
-             * device's describes the rest. */
-            toml_array_t *table = device_table;
-            if (pt->library && (toml_raw_in(pt->library, "namespaces") ||
-                                toml_array_in(pt->library, "namespaces") ||
-                                toml_table_in(pt->library, "namespaces"))) {
-                if (parse_table(pt->library, &table, why, sizeof why) != 0) {
-                    snprintf(err, errlen, "point '%s': [library] %s", pt->id, why);
-                    return -1;
-                }
-            }
             UA_NodeId parsed;
             if (table && UA_NodeId_parse(&parsed, UA_STRING(up->node_id)) == UA_STATUSCODE_GOOD) {
                 up->ns = parsed.namespaceIndex;
@@ -1757,6 +1905,11 @@ static int read_point(tdot_connector_t *self, tdot_device_t *dev,
     ua_device_t *ua = dev->proto;
     ua_point_t *up = pt->proto;
 
+    if (up && up->is_method) {
+        /* Never offered by the runtime; an explicitly named CLI read. */
+        tdot_sample_bad(out, "point %s is a method", pt->id);
+        return 0;
+    }
     if (!ua->client) {
         tdot_sample_bad(out, "device not connected");
         return -1;
@@ -1922,6 +2075,300 @@ static int write_point(tdot_connector_t *self, tdot_device_t *dev,
         return -1;
     }
     return 0;
+}
+
+/* ---- method calls (openspec change opcua-method-calls) ------------------ */
+
+/* Largest integer a JSON number carries exactly (2^53 - 1). */
+#define UA_MAX_SAFE_INT 9007199254740991.0
+
+/* Convert method argument `k` (1-based) to its declared input type, into
+ * `out`. Strings are borrowed from `arg`. Integers must be whole and in range;
+ * int64/uint64 also take a decimal string, for values past 2^53. */
+static int argument_variant(tdot_datatype_t dt, const cJSON *arg, size_t k,
+                            UA_Variant *out, void *slot, char *err, size_t errlen) {
+    UA_Variant_init(out);
+    bool ok = false;
+    double num = cJSON_IsNumber(arg) ? arg->valuedouble : 0;
+    bool whole = cJSON_IsNumber(arg) && isfinite(num) && num == floor(num);
+#define UA_ARG_INT(ctype, uatype, lo, hi)                                              \
+    if (whole && num >= (lo) && num <= (hi)) {                                         \
+        *(ctype *)slot = (ctype)num;                                                   \
+        UA_Variant_setScalar(out, slot, &UA_TYPES[uatype]);                            \
+        ok = true;                                                                     \
+    }
+    switch (dt) {
+    case TDOT_DT_BOOL:
+        if (cJSON_IsBool(arg)) {
+            *(UA_Boolean *)slot = cJSON_IsTrue(arg);
+            UA_Variant_setScalar(out, slot, &UA_TYPES[UA_TYPES_BOOLEAN]);
+            ok = true;
+        }
+        break;
+    case TDOT_DT_INT8:
+        UA_ARG_INT(UA_SByte, UA_TYPES_SBYTE, -128, 127)
+        break;
+    case TDOT_DT_UINT8:
+        UA_ARG_INT(UA_Byte, UA_TYPES_BYTE, 0, 255)
+        break;
+    case TDOT_DT_INT16:
+        UA_ARG_INT(UA_Int16, UA_TYPES_INT16, -32768, 32767)
+        break;
+    case TDOT_DT_UINT16:
+        UA_ARG_INT(UA_UInt16, UA_TYPES_UINT16, 0, 65535)
+        break;
+    case TDOT_DT_INT32:
+        UA_ARG_INT(UA_Int32, UA_TYPES_INT32, -2147483648.0, 2147483647.0)
+        break;
+    case TDOT_DT_UINT32:
+        UA_ARG_INT(UA_UInt32, UA_TYPES_UINT32, 0, 4294967295.0)
+        break;
+    case TDOT_DT_INT64:
+    case TDOT_DT_UINT64: {
+        bool is_signed = dt == TDOT_DT_INT64;
+        const UA_DataType *type = &UA_TYPES[is_signed ? UA_TYPES_INT64 : UA_TYPES_UINT64];
+        if (cJSON_IsString(arg) && arg->valuestring[0]) {
+            const char *text = arg->valuestring;
+            char *end = NULL;
+            errno = 0;
+            if (is_signed) {
+                long long v = strtoll(text, &end, 10);
+                ok = !errno && !*end && !isspace((unsigned char)text[0]);
+                *(UA_Int64 *)slot = v;
+            } else {
+                unsigned long long v = strtoull(text, &end, 10);
+                ok = !errno && !*end && isdigit((unsigned char)text[0]);
+                *(UA_UInt64 *)slot = v;
+            }
+        } else if (whole && fabs(num) <= UA_MAX_SAFE_INT && (is_signed || num >= 0)) {
+            if (is_signed)
+                *(UA_Int64 *)slot = (UA_Int64)num;
+            else
+                *(UA_UInt64 *)slot = (UA_UInt64)num;
+            ok = true;
+        }
+        if (ok)
+            UA_Variant_setScalar(out, slot, type);
+        break;
+    }
+    case TDOT_DT_FLOAT32:
+        if (cJSON_IsNumber(arg)) {
+            *(UA_Float *)slot = (UA_Float)num;
+            UA_Variant_setScalar(out, slot, &UA_TYPES[UA_TYPES_FLOAT]);
+            ok = true;
+        }
+        break;
+    case TDOT_DT_FLOAT64:
+        if (cJSON_IsNumber(arg)) {
+            *(UA_Double *)slot = num;
+            UA_Variant_setScalar(out, slot, &UA_TYPES[UA_TYPES_DOUBLE]);
+            ok = true;
+        }
+        break;
+    case TDOT_DT_STRING:
+        if (cJSON_IsString(arg)) {
+            *(UA_String *)slot = UA_STRING(arg->valuestring);
+            UA_Variant_setScalar(out, slot, &UA_TYPES[UA_TYPES_STRING]);
+            ok = true;
+        }
+        break;
+    default:
+        break;
+    }
+#undef UA_ARG_INT
+    if (!ok) {
+        char *text = cJSON_PrintUnformatted(arg);
+        snprintf(err, errlen, "argument %zu: %s is not a valid %s", k,
+                 text ? text : "?", tdot_datatype_str(dt));
+        free(text);
+    }
+    return ok ? 0 : -1;
+}
+
+/* One element of an output argument as JSON, the way a sample renders the
+ * same value; NULL for a type samples do not decode. */
+static cJSON *output_scalar(const UA_DataType *type, const void *p) {
+    if (type == &UA_TYPES[UA_TYPES_BOOLEAN])
+        return cJSON_CreateBool(*(const UA_Boolean *)p);
+    if (type == &UA_TYPES[UA_TYPES_SBYTE])
+        return cJSON_CreateNumber(*(const UA_SByte *)p);
+    if (type == &UA_TYPES[UA_TYPES_BYTE])
+        return cJSON_CreateNumber(*(const UA_Byte *)p);
+    if (type == &UA_TYPES[UA_TYPES_INT16])
+        return cJSON_CreateNumber(*(const UA_Int16 *)p);
+    if (type == &UA_TYPES[UA_TYPES_UINT16])
+        return cJSON_CreateNumber(*(const UA_UInt16 *)p);
+    if (type == &UA_TYPES[UA_TYPES_INT32])
+        return cJSON_CreateNumber(*(const UA_Int32 *)p);
+    if (type == &UA_TYPES[UA_TYPES_UINT32])
+        return cJSON_CreateNumber(*(const UA_UInt32 *)p);
+    char text[32];
+    if (type == &UA_TYPES[UA_TYPES_INT64]) {
+        UA_Int64 x = *(const UA_Int64 *)p;
+        if (x >= -(UA_Int64)UA_MAX_SAFE_INT && x <= (UA_Int64)UA_MAX_SAFE_INT)
+            return cJSON_CreateNumber((double)x);
+        snprintf(text, sizeof text, "%lld", (long long)x);
+        return cJSON_CreateString(text);
+    }
+    if (type == &UA_TYPES[UA_TYPES_UINT64]) {
+        UA_UInt64 x = *(const UA_UInt64 *)p;
+        if (x <= (UA_UInt64)UA_MAX_SAFE_INT)
+            return cJSON_CreateNumber((double)x);
+        snprintf(text, sizeof text, "%llu", (unsigned long long)x);
+        return cJSON_CreateString(text);
+    }
+    double d = type == &UA_TYPES[UA_TYPES_FLOAT]    ? (double)*(const UA_Float *)p
+               : type == &UA_TYPES[UA_TYPES_DOUBLE] ? *(const UA_Double *)p
+                                                    : NAN;
+    if (type == &UA_TYPES[UA_TYPES_FLOAT] || type == &UA_TYPES[UA_TYPES_DOUBLE])
+        return isfinite(d) ? cJSON_CreateNumber(d) : cJSON_CreateNull();
+    if (type == &UA_TYPES[UA_TYPES_STRING]) {
+        const UA_String *str = p;
+        char *copy = malloc(str->length + 1);
+        if (!copy)
+            return NULL;
+        memcpy(copy, str->data, str->length);
+        copy[str->length] = '\0';
+        cJSON *out = cJSON_CreateString(copy);
+        free(copy);
+        return out;
+    }
+    return NULL;
+}
+
+/* An output argument as JSON (design D8): a scalar as in a sample, a
+ * one-dimensional array of them as a JSON array, anything else null -- the
+ * method has run, so an output that cannot be rendered never fails the call. */
+static cJSON *output_json(const UA_Variant *v) {
+    if (!v->type)
+        return cJSON_CreateNull();
+    if (UA_Variant_isScalar(v)) {
+        cJSON *out = output_scalar(v->type, v->data);
+        return out ? out : cJSON_CreateNull();
+    }
+    if (v->arrayDimensionsSize > 1)
+        return cJSON_CreateNull();
+    cJSON *array = cJSON_CreateArray();
+    for (size_t i = 0; i < v->arrayLength; i++) {
+        cJSON *item = output_scalar(v->type, (const char *)v->data + i * v->type->memSize);
+        if (!item) {
+            cJSON_Delete(array);
+            return cJSON_CreateNull();
+        }
+        cJSON_AddItemToArray(array, item);
+    }
+    return array;
+}
+
+static int call_method(tdot_connector_t *self, tdot_device_t *dev, tdot_point_t *pt,
+                       const cJSON *arguments, cJSON **outputs, char *err, size_t errlen) {
+    (void)self;
+    ua_device_t *ua = dev->proto;
+    ua_point_t *up = pt->proto;
+    *outputs = NULL;
+    if (!up || !up->is_method) {
+        snprintf(err, errlen, "point %s is not a method", pt->id);
+        return -1;
+    }
+    if (!ua->client) {
+        snprintf(err, errlen, "device %s is not connected", dev->name);
+        return -1;
+    }
+
+    /* Both ids through the namespace table, retrying a translation that
+     * failed, as a read does. */
+    const char *reason = NULL;
+    char *method_text = point_node(up, &reason);
+    if (!method_text) {
+        translate_device(dev, true);
+        method_text = point_node(up, &reason);
+    }
+    if (!method_text) {
+        snprintf(err, errlen, "%s", reason);
+        return -1;
+    }
+    const char *object_text = up->table ? up->object_resolved : up->object_id;
+
+    size_t given = (size_t)cJSON_GetArraySize(arguments);
+    if (given != up->ninputs) {
+        snprintf(err, errlen, "expected %zu arguments, got %zu", up->ninputs, given);
+        return -1;
+    }
+    /* Each argument's value lives in its own slot; strings stay borrowed. */
+    union {
+        UA_Boolean b;
+        UA_Int64 i;
+        UA_UInt64 u;
+        UA_Double d;
+        UA_Float f;
+        UA_String s;
+    } *slots = calloc(up->ninputs ? up->ninputs : 1, sizeof *slots);
+    UA_Variant *input = calloc(up->ninputs ? up->ninputs : 1, sizeof *input);
+    if (!slots || !input) {
+        free(slots);
+        free(input);
+        snprintf(err, errlen, "out of memory");
+        return -1;
+    }
+    int rc = 0;
+    for (size_t k = 0; k < up->ninputs && rc == 0; k++)
+        rc = argument_variant(up->inputs[k], cJSON_GetArrayItem(arguments, (int)k), k + 1,
+                              &input[k], &slots[k], err, errlen);
+
+    UA_NodeId object = UA_NODEID_NULL, method = UA_NODEID_NULL;
+    if (rc == 0 && (UA_NodeId_parse(&object, UA_STRING((char *)object_text)) !=
+                        UA_STATUSCODE_GOOD ||
+                    UA_NodeId_parse(&method, UA_STRING(method_text)) != UA_STATUSCODE_GOOD)) {
+        snprintf(err, errlen, "invalid node id: %s", up->node_id);
+        rc = -1;
+    }
+    if (rc == 0) {
+        UA_CallMethodRequest item;
+        UA_CallMethodRequest_init(&item);
+        item.objectId = object;
+        item.methodId = method;
+        item.inputArgumentsSize = up->ninputs;
+        item.inputArguments = up->ninputs ? input : NULL;
+        UA_CallRequest request;
+        UA_CallRequest_init(&request);
+        request.methodsToCall = &item;
+        request.methodsToCallSize = 1;
+        /* Bounded by the client's timeout, which is request_timeout_s; a
+         * timeout arrives as the service result (BadTimeout). */
+        UA_CallResponse response = UA_Client_Service_call(ua->client, request);
+        UA_StatusCode service = response.responseHeader.serviceResult;
+        if (service == UA_STATUSCODE_GOOD && response.resultsSize != 1)
+            service = UA_STATUSCODE_BADUNEXPECTEDERROR;
+        if (service != UA_STATUSCODE_GOOD) {
+            snprintf(err, errlen, "call failed: %s", UA_StatusCode_name(service));
+            rc = -1;
+        } else {
+            const UA_CallMethodResult *result = &response.results[0];
+            size_t bad_arg = 0;
+            for (size_t k = 0; k < result->inputArgumentResultsSize && !bad_arg; k++)
+                if (result->inputArgumentResults[k] != UA_STATUSCODE_GOOD)
+                    bad_arg = k + 1;
+            if (bad_arg) {
+                snprintf(err, errlen, "call rejected: argument %zu: %s", bad_arg,
+                         UA_StatusCode_name(result->inputArgumentResults[bad_arg - 1]));
+                rc = -1;
+            } else if (UA_StatusCode_isBad(result->statusCode)) {
+                snprintf(err, errlen, "call rejected: %s",
+                         UA_StatusCode_name(result->statusCode));
+                rc = -1;
+            } else {
+                *outputs = cJSON_CreateArray();
+                for (size_t k = 0; k < result->outputArgumentsSize; k++)
+                    cJSON_AddItemToArray(*outputs, output_json(&result->outputArguments[k]));
+            }
+        }
+        UA_CallResponse_clear(&response);
+    }
+    UA_NodeId_clear(&object);
+    UA_NodeId_clear(&method);
+    free(slots);
+    free(input);
+    return rc;
 }
 
 /* ---- push delivery (monitored items) -------------------------------------
@@ -2387,6 +2834,7 @@ tdot_connector_t *tdot_connector_opcua_new(void) {
     c->connect_device = connect_device;
     c->read_point = read_point;
     c->write_point = write_point;
+    c->call_method = call_method;
     c->subscribe_device = subscribe_device;
     c->drain_subscriptions = drain_subscriptions;
     c->disconnect_device = disconnect_device;

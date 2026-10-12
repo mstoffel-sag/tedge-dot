@@ -11,6 +11,12 @@ Exposes a handful of nodes with stable string NodeIds under namespace index 2
 
 Reading ns=2;s=DoesNotExist yields a Bad status, exercising bad-quality handling.
 
+Methods on the ns=2;s=Machine object (openspec change opcua-method-calls):
+
+    ns=2;s=Machine.Multiply  (Int32, Int32) -> Int32   the product
+    ns=2;s=Machine.Ping      () -> String              "pong"
+    ns=2;s=Machine.Fail      () -> ()                  always fails with BadInvalidState
+
 The endpoint host is taken from OPCUA_ENDPOINT_HOST so the advertised endpoint URL
 matches the docker service name (avoids OPC-UA hostname-rewrite connection failures).
 
@@ -60,7 +66,7 @@ import os
 import uuid
 from datetime import datetime, timezone
 
-from asyncua import Server, ua
+from asyncua import Server, ua, uamethod
 from asyncua.common.structures104 import new_enum, new_struct, new_struct_field
 from asyncua.crypto import uacrypto
 from asyncua.server.user_managers import UserManager
@@ -170,7 +176,37 @@ async def build_server(port, policies, user_manager=None, cert=None, key=None):
             ua.Variant(0, ua.VariantType.UInt32),
         )
     nodes.update(await add_structures(server, plc, idx))
+    await add_methods(server, idx)
     return server, nodes
+
+
+@uamethod
+def multiply(parent, a, b):
+    return ua.Variant(a * b, ua.VariantType.Int32)
+
+
+@uamethod
+def ping(parent):
+    return "pong"
+
+
+def fail(parent):
+    # Returned, not raised: asyncua answers any exception from a method with BadUnexpectedError,
+    # but passes a returned StatusCode through as the call's status. Hence no @uamethod either.
+    return ua.StatusCode(ua.StatusCodes.BadInvalidState)
+
+
+async def add_methods(server, idx):
+    """The Machine object and the methods the call-method e2e cases call."""
+    machine = await server.nodes.objects.add_object(
+        ua.NodeId("Machine", idx), ua.QualifiedName("Machine", idx)
+    )
+    method = lambda name: (ua.NodeId(f"Machine.{name}", idx), ua.QualifiedName(name, idx))
+    await machine.add_method(
+        *method("Multiply"), multiply, [ua.VariantType.Int32, ua.VariantType.Int32], [ua.VariantType.Int32]
+    )
+    await machine.add_method(*method("Ping"), ping, [], [ua.VariantType.String])
+    await machine.add_method(*method("Fail"), fail, [], [])
 
 
 # The structured values read by the `opc3` device of connector.toml (openspec change

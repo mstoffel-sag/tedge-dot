@@ -106,7 +106,8 @@ char *tdot_envelope_sample_at(const tdot_config_t *cfg, const tdot_device_t *dev
         cJSON_AddStringToObject(obj, "unit", pt->unit);
     /* Declared access, so flows can tell writable points (parameters) apart. */
     cJSON_AddStringToObject(obj, "access",
-                            (pt->access & TDOT_ACCESS_WRITE)
+                            (pt->access & TDOT_ACCESS_CALL) ? "call_method"
+                            : (pt->access & TDOT_ACCESS_WRITE)
                                 ? ((pt->access & TDOT_ACCESS_READ) ? "read_write"
                                                                    : "write")
                                 : "read");
