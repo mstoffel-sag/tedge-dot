@@ -6,7 +6,7 @@ cmake_minimum_required(VERSION 3.16)
 # release-please bumps it together with impl/rust/Cargo.toml (release-please-config.json);
 # `just check-release-versions` fails CI when they drift. The conformance suite compares
 # protocol/modes/datatypes/verbs/features/subscribe, not the version string.
-project(tedge-dot VERSION 0.0.14 LANGUAGES C) # x-release-please-version
+project(tedge-dot VERSION 0.0.15 LANGUAGES C) # x-release-please-version
 
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)

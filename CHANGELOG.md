@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.0.15](https://github.com/thin-edge/tedge-dot/compare/0.0.14...0.0.15) (2026-10-12)
+
+
+### Features
+
+* **opcua:** call OPC UA methods (opcua-method-calls) ([#71](https://github.com/thin-edge/tedge-dot/issues/71)) ([39c205f](https://github.com/thin-edge/tedge-dot/commit/39c205ff6c8fbc80e9a48c684d4e7d70f34a77a1))
+* **opcua:** namespace tables for numeric node ids (opcua-namespace-table) ([#69](https://github.com/thin-edge/tedge-dot/issues/69)) ([fed70e7](https://github.com/thin-edge/tedge-dot/commit/fed70e71f5f1c4ca3b8409e8bbcfff98aae77f8d))
+
 ## [0.0.14](https://github.com/thin-edge/tedge-dot/compare/0.0.13...0.0.14) (2026-10-09)
 
 
