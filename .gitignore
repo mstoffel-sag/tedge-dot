@@ -25,4 +25,4 @@ __pycache__/
 # async-opcua's default PKI directory (./pki), created by anything that builds a client
 # without an explicit pki_dir
 pki/
-
+.zig-cache/
