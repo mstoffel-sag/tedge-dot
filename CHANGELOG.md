@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.0.16](https://github.com/thin-edge/tedge-dot/compare/0.0.15...0.0.16) (2026-10-12)
+
+
+### Bug Fixes
+
+* ignore local .zig-cache ([#72](https://github.com/thin-edge/tedge-dot/issues/72)) ([6b265be](https://github.com/thin-edge/tedge-dot/commit/6b265beb03fffb126e5d3f21124994e32a18eed5))
+
 ## [0.0.15](https://github.com/thin-edge/tedge-dot/compare/0.0.14...0.0.15) (2026-10-12)
 
 
