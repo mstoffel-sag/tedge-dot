@@ -252,7 +252,7 @@ async fn subscribed_points_use_the_translation_and_untranslated_ones_report_why(
         .expect("an untranslated point must not fail the subscription");
 
     nm.set_value(
-        &handle.subscriptions(),
+        handle.subscriptions(),
         &NodeId::new(ns, "Temperature"),
         None,
         opcua::types::DataValue::new_now(42.0f64),
