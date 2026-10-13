@@ -38,6 +38,27 @@
       each session translates through it. The interop suite now uses one instead of resolving the
       index at startup (`resolve-ns.py` is gone).
 
+* [ ] **OPC UA feature gaps** (survey 2026-10-13, against the spec and the Cumulocity OPC UA
+      gateway; method calls are on `feat/opcua-method-calls`, PR #71). In priority order:
+      1. **Address-space browsing.** Nothing browses today (`resolve.rs` only walks inverse
+         references for datatypes), and the spec sends users to UaExpert for node ids. A
+         `tedge-dot browse`/`inspect` CLI command that prints `[[device.point]]` blocks would
+         remove the hand-written node-id step and feed device types.
+      2. **Events and Alarms & Conditions.** `point_kinds` is `["variable"]` only: no
+         EventFilter monitored items, no `ConditionRefresh`, no Acknowledge/Confirm. Native PLC
+         alarms are lost; alarms come only from value thresholds in flows.
+      3. **Server-side DataChangeFilter** (absolute/percent deadband, trigger) on monitored
+         items. Deadband is SDK-side only (§3.5/§3.8), so jitter still crosses the wire.
+         Cheap win for large subscriptions.
+      4. **HistoryRead**: backfill after a connection loss and an on-demand history operation.
+      5. Smaller: browse-path addressing (`TranslateBrowsePathsToNodeIds`, portable point
+         libraries); attributes other than `Value` (EngineeringUnits, EURange, Description);
+         structure arguments/outputs for method calls (outputs render `null` today); FileType
+         transfer.
+      6. Out of scope per spec §1 but worth revisiting: reverse connect (PLCs behind NAT), GDS,
+         ECC policies, HSM/TPM keys; not mentioned at all: PubSub, server redundancy/failover.
+      Structured-value gaps are tracked in the next item.
+
 * [ ] **OPC UA structured values follow-ups** (openspec change `opcua-custom-datatypes`, Rust
       only; thin-edge/tedge-dot#57):
       - **C port.** The C build lists `opcua-structures` as missing (parity table in
