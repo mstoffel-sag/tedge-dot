@@ -157,9 +157,7 @@ jobs:
           # distro package is found, so it is deliberately not installed here.
       - name: Load vcan kernel module (SocketCAN suites)
         if: matrix.protocol == 'canbus' || matrix.protocol == 'canopen'
-        run: |
-          sudo apt-get install -y linux-modules-extra-$(uname -r)
-          sudo modprobe vcan
+        run: ./ci/load-vcan.sh
       - name: Build
         run: |
           cmake -B impl/c/build -S impl/c -G Ninja
@@ -250,10 +248,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
       - name: Load vcan kernel module (SocketCAN suites)
         if: matrix.protocol == 'canbus' || matrix.protocol == 'canopen'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y linux-modules-extra-$(uname -r)
-          sudo modprobe vcan
+        run: ./ci/load-vcan.sh
       - uses: extractions/setup-just@v2
       - name: Run e2e suite
         run: just test-e2e ${{ matrix.protocol }}
@@ -292,10 +287,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
       - name: Load vcan kernel module (SocketCAN suites)
         if: matrix.protocol == 'canbus' || matrix.protocol == 'canopen'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y linux-modules-extra-$(uname -r)
-          sudo modprobe vcan
+        run: ./ci/load-vcan.sh
       - uses: extractions/setup-just@v2
       - name: Run e2e suite against the C connector
         run: just test-e2e-c ${{ matrix.protocol }}
