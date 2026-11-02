@@ -91,5 +91,5 @@ points = 1000
 sampling_interval = "200ms"
 ts_jitter = "50ms"
 publish_interval = "100ms"
-group_by = ["time", "frame:100ms", "sample:1s"]
+group_by = ["time", "frame:100ms", "frame:500ms", "sample:1s", "sample:1s:mean,min,max"]
 rates = [100000]

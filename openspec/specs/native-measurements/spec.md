@@ -35,6 +35,12 @@ SHALL become 1 or 0 unless `measurement.include_boolean = false`. A point with
 `meta.measurement = false`, a string, a 64-bit integer carried as a string, and a raw-mode
 point SHALL NOT become a series.
 
+When a point's `aggregate` is a list, each aggregate SHALL be published as the series
+`<series>_<aggregate>`. Each of these series SHALL carry the point's unit in the units metadata.
+When `aggregate` is a single string, the series SHALL keep its resolved name. A configuration
+SHALL be refused when a series of an aggregated point has the same name as another series of
+the device in the same group, with a message naming both points and the series.
+
 #### Scenario: Default naming
 - **WHEN** an OPC UA point `flow` on device `plc1` reads 118.6 with good quality
 - **THEN** a measurement on `te/device/plc1///m/opcua` contains `"opcua": {"flow": 118.6}`
@@ -46,6 +52,14 @@ point SHALL NOT become a series.
 #### Scenario: Bad reading not measured
 - **WHEN** a reading has quality `bad`
 - **THEN** no series is published for it, and the link status and any sample are published as today
+
+#### Scenario: Several aggregates
+- **WHEN** a point `temp` with unit `°C` sets `batch = { group_by = "sample", every = "1s", aggregate = ["mean", "max"] }`
+- **THEN** each sample holds `temp_mean` and `temp_max`, and the units metadata gives both the unit `°C`
+
+#### Scenario: Aggregate name clash
+- **WHEN** a point `temp` publishes `temp_max` and another point of the device in the same group is named `temp_max`
+- **THEN** the configuration is refused, naming both points and `temp_max`
 
 ### Requirement: Batched per device and group
 The runtime SHALL put every series that shares a device, a group and a message time (see

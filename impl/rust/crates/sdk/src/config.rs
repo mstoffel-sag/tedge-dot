@@ -296,9 +296,9 @@ impl ConnectorConfig {
     /// The merged `batch` table of one point (§5.5), merged like [`ConnectorConfig::report_table`].
     pub fn batch_table(&self, device: &DeviceConfig, point: &PointConfig) -> serde_json::Map<String, serde_json::Value> {
         let mut table = serde_json::Map::new();
-        crate::report::merge_into(&mut table, self.connector.batch.as_ref());
-        crate::report::merge_into(&mut table, device.batch.as_ref());
-        crate::report::merge_into(&mut table, point.batch.as_ref());
+        crate::measure::merge_batch_level(&mut table, self.connector.batch.as_ref());
+        crate::measure::merge_batch_level(&mut table, device.batch.as_ref());
+        crate::measure::merge_batch_level(&mut table, point.batch.as_ref());
         table
     }
 

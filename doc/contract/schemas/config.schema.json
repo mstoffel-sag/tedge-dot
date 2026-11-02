@@ -205,7 +205,7 @@
             "sample"
           ],
           "default": "time",
-          "description": "time: readings sharing a millisecond timestamp share a message (lossless, no time moved). frame: readings within `window` share a message stamped with the first reading's time (lossless, a time moves by less than the window). sample: every `every`, one series per point holding a good value, stamped with the sample time (lossy by design)."
+          "description": "time: readings sharing a millisecond timestamp share a message (lossless, no time moved). frame: readings within `window` are published as layers when the window ends, each stamped with its first reading's time (lossless, a time moves by less than the window). sample: every `every`, one series per point holding a good value, stamped with the sample time (lossy by design). A table that sets `aggregate` without `group_by` chooses sample."
         },
         "window": {
           "$ref": "#/$defs/duration",
@@ -214,6 +214,18 @@
         "every": {
           "$ref": "#/$defs/duration",
           "description": "The sample period, 100ms to 1h; required with group_by = \"sample\"."
+        },
+        "aggregate": {
+          "description": "With group_by = \"sample\": what each period publishes, over the point's good time on the device clock. mean is time-weighted; min and max include the value held at the start of the period; last is the value held at the sample time. A string keeps the series name; a list publishes `<series>_<aggregate>` for each. Refused with a report policy.",
+          "oneOf": [
+            { "$ref": "#/$defs/aggregate" },
+            {
+              "type": "array",
+              "minItems": 1,
+              "uniqueItems": true,
+              "items": { "$ref": "#/$defs/aggregate" }
+            }
+          ]
         }
       },
       "examples": [
@@ -224,7 +236,22 @@
         {
           "group_by": "sample",
           "every": "1s"
+        },
+        {
+          "aggregate": [
+            "mean",
+            "max"
+          ],
+          "every": "1s"
         }
+      ]
+    },
+    "aggregate": {
+      "enum": [
+        "mean",
+        "min",
+        "max",
+        "last"
       ]
     },
     "disabled_device": {

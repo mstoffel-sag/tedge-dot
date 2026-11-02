@@ -172,7 +172,7 @@ static void run_case(const cJSON *c) {
             tdot_batcher_due(b, now_ns, wall0 + (double)at, collect, &out);
         } else if ((r = cJSON_GetObjectItem(step, "stale"))) {
             tdot_batcher_set_stale(b, device_index(cfg, cJSON_GetObjectItem(r, "device")->valuestring),
-                                   cJSON_IsTrue(cJSON_GetObjectItem(r, "stale")));
+                                   cJSON_IsTrue(cJSON_GetObjectItem(r, "stale")), now_ns);
         } else {
             CHECK(0, "%s: unknown step", name);
         }
@@ -216,6 +216,72 @@ static void run_case(const cJSON *c) {
     tdot_config_free(cfg);
 }
 
+/* The parts of a split frame layer share its time, and the next layer is
+ * ordered after that time, not after each part (the vectors' `split` form does
+ * not carry times). As split_frame_layer_parts_share_its_time in measure.rs. */
+static void split_frame_layer_parts_share_its_time(void) {
+    cJSON *c = cJSON_Parse(
+        "{\"config\":\"[connector]\\nprotocol = \\\"opcua\\\"\\noutput = \\\"measurements\\\"\\n\\n"
+        "[[device]]\\nname = \\\"plc1\\\"\\nprotocol_address = {}\\n"
+        "batch = { group_by = \\\"frame\\\", window = \\\"100ms\\\" }\\n\","
+        "\"generate\":{\"count\":300,\"datatype\":\"float64\",\"id\":"
+        "\"a_long_point_name_that_makes_each_series_take_about_a_hundred_bytes_of_the_message_{i:04}\"}}");
+    char err[512];
+    tdot_config_t *cfg = c ? config_of(c, err, sizeof err) : NULL;
+    CHECK(cfg, "split frame layer: config: %s", c ? err : "not JSON");
+    if (!cfg) {
+        cJSON_Delete(c);
+        return;
+    }
+    tdot_batcher_t *b = tdot_batcher_new(cfg, 0, NULL);
+    collect_t out = {.messages = cJSON_CreateArray()};
+    cJSON *r = cJSON_Parse("{\"value\":1,\"ts\":\"2026-01-01T00:00:00.040Z\"}");
+    for (size_t k = 0; k < cfg->devices[0].npoints; k++)
+        offer(b, cfg, 0, k, r, 0, &out);
+    cJSON_ReplaceItemInObject(r, "ts", cJSON_CreateString("2026-01-01T00:00:00.030Z"));
+    offer(b, cfg, 0, 0, r, 10 * 1000000LL, &out);
+    tdot_batcher_due(b, 100 * 1000000LL, parse_ms("2026-01-01T00:00:00.100Z"), collect, &out);
+    int n = 0, parts = 0;
+    const cJSON *m;
+    const char *last = NULL;
+    cJSON_ArrayForEach(m, out.messages) {
+        if (cJSON_IsTrue(cJSON_GetObjectItem(m, "retain")))
+            continue;
+        const char *t = cJSON_GetObjectItem(cJSON_GetObjectItem(m, "payload"), "time")->valuestring;
+        if (last)
+            parts += strcmp(last, "2026-01-01T00:00:00.040Z") == 0;
+        last = t;
+        n++;
+    }
+    CHECK(n >= 3 && parts == n - 1, "split frame layer: %d messages, %d parts at .040", n, parts);
+    CHECK(last && strcmp(last, "2026-01-01T00:00:00.041Z") == 0, "split frame layer: last at %s",
+          last ? last : "(none)");
+    cJSON_Delete(r);
+    cJSON_Delete(out.messages);
+    tdot_batcher_free(b);
+    tdot_config_free(cfg);
+    cJSON_Delete(c);
+}
+
+/* The significant digits of a number's text, without sign, point, exponent,
+ * leading or trailing zeros. */
+static void digits_of(const char *text, char *out, size_t len) {
+    size_t n = 0;
+    for (const char *p = text; *p && *p != 'e' && n + 1 < len; p++)
+        if (*p >= '0' && *p <= '9' && (n > 0 || *p != '0'))
+            out[n++] = *p;
+    while (n > 1 && out[n - 1] == '0')
+        n--;
+    out[n] = '\0';
+}
+
+static bool same_digits(const char *a, const char *b) {
+    char x[40], y[40];
+    digits_of(a, x, sizeof x);
+    digits_of(b, y, sizeof y);
+    return strcmp(x, y) == 0;
+}
+
 /* Numbers as the Rust build prints them (ryu), so the size estimate agrees. */
 static void numbers(void) {
     static const struct {
@@ -232,6 +298,40 @@ static void numbers(void) {
         tdot_format_number(cases[i].n, buf, sizeof buf);
         CHECK(strcmp(buf, cases[i].text) == 0, "number %.17g: %s, want %s", cases[i].n, buf,
               cases[i].text);
+    }
+    /* The search for the shortest precision gives the digits a linear search
+     * gives: random doubles across the exponent range, means of the kind an
+     * aggregate publishes, and powers of two. */
+    unsigned long long x = 0x9e3779b97f4a7c15ULL;
+    int differ = 0;
+    for (int i = 0; i < 200000 && differ < 5; i++) {
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
+        double d;
+        if (i % 3 == 0) {
+            memcpy(&d, &x, sizeof d);
+            if (!isfinite(d))
+                continue;
+        } else if (i % 3 == 1) {
+            d = (double)(x % 1000000) / 7.0 * (i % 2 ? 1e-3 : 1e3);
+        } else {
+            d = ldexp(1.0, (int)(x % 2000) - 1000) * (x & 1 ? -1 : 1);
+        }
+        char want[40];
+        for (int prec = 0; prec <= 16; prec++) {
+            snprintf(want, sizeof want, "%.*e", prec, d);
+            if (strtod(want, NULL) == d)
+                break;
+        }
+        /* The formatter's significant digits are the linear search's. */
+        char got[64];
+        tdot_format_number(d, got, sizeof got);
+        if (!same_digits(got, want) || strtod(got, NULL) != d) {
+            printf("FAIL number %.17g: %s, linear search %s\n", d, got, want);
+            differ++;
+            failures++;
+        }
     }
 }
 
@@ -253,6 +353,7 @@ int main(int argc, char **argv) {
         n++;
     }
     numbers();
+    split_frame_layer_parts_share_its_time();
     cJSON_Delete(doc);
     free(text);
     printf("%d measurement vectors, %d failure(s)\n", n, failures);

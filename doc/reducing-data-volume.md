@@ -13,6 +13,11 @@ knows the device is alive. This is often called *report by exception*.
 The normative rules are in [contract §5.3](contract/ot-connector-contract.md#53-reporting-policy-report-by-exception).
 This guide explains how to use them.
 
+A policy drops readings, and what it drops never reaches the cloud. When you would rather keep
+the trend between published values, a connector in measurement output can publish the
+time-weighted mean, minimum and maximum of each period instead: see
+[aggregating](measurement-output.md#aggregating-the-mean-minimum-and-maximum-of-each-period).
+
 ## What it does
 
 `report` is applied by the **SDK runtime**, in front of the sample topic, the same way for every

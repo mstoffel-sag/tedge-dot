@@ -98,7 +98,8 @@ reported separately and SHALL NOT be included in the connector, broker or mapper
 `native-flows` and `native-push-jitter`, each with its connector setup, whether the `ot-*` flows
 are installed in the mapper's flows directory, rates and window. A scenario MAY set
 `output = "measurements"`, a list of `group_by` policies (`"time"`, `"frame:<window>"`,
-`"sample:<every>"`, one run each) and an `alarm_share` of points that declare an alarm. Every
+`"sample:<every>"` or `"sample:<every>:<aggregate>,..."` for a `batch.aggregate` list, one run
+each) and an `alarm_share` of points that declare an alarm. Every
 baseline scenario SHALL run with `IMPL=rust` and `IMPL=c` from the same generated
 configuration, unless the scenario restricts its implementations with `impls`, which the
 baseline SHALL list with its reason. `just bench <scenario>` SHALL run one scenario, for both
@@ -127,6 +128,10 @@ message, and SHALL report as missing the values that did not reach Cumulocity.
 #### Scenario: Measurement output counted
 - **WHEN** `native-polled` runs at 100,000 readings/s
 - **THEN** the result line counts the readings from the measurement values, reports values per message, and reports as missing any value the mapper did not publish to Cumulocity
+
+#### Scenario: Aggregated sample run
+- **WHEN** a scenario's `group_by` lists `"sample:1s:mean,min,max"`
+- **THEN** that run's connector configuration sets `batch = { group_by = "sample", every = "1s", aggregate = ["mean", "min", "max"] }`
 
 ### Requirement: Standalone OPC UA simulator
 `ot-conformance serve opcua --points N` SHALL run the embedded OPC UA simulator with N `Double`

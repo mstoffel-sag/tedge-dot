@@ -856,7 +856,7 @@
    ]
   },
   {
-   "name": "group by frame: a repeated point starts a new message in the same window, so nothing is overwritten",
+   "name": "group by frame: each value of a repeated point goes into the next layer, and the layers publish in order at the end of the window",
    "config": "[connector]\nprotocol = \"opcua\"\noutput = \"measurements\"\n\n[[device]]\nname = \"plc1\"\nprotocol_address = {}\nbatch = { group_by = \"frame\", window = \"100ms\" }\n[[device.point]]\nid = \"a\"\ndatatype = \"float64\"\naddress = {}\n",
    "steps": [
     {
@@ -999,6 +999,1831 @@
    ]
   },
   {
+   "name": "group by frame: a repeat goes into the next layer while layer 0 keeps filling",
+   "config": "[connector]\nprotocol = \"opcua\"\noutput = \"measurements\"\n\n[[device]]\nname = \"plc1\"\nprotocol_address = {}\nbatch = { group_by = \"frame\", window = \"100ms\" }\n[[device.point]]\nid = \"a\"\ndatatype = \"float64\"\naddress = {}\n[[device.point]]\nid = \"b\"\ndatatype = \"float64\"\naddress = {}\n[[device.point]]\nid = \"c\"\ndatatype = \"float64\"\naddress = {}\n",
+   "steps": [
+    {
+     "at": 0,
+     "read": {
+      "device": "plc1",
+      "point": "a",
+      "value": 1,
+      "ts": "2026-01-01T00:00:00.000Z"
+     }
+    },
+    {
+     "at": 10,
+     "read": {
+      "device": "plc1",
+      "point": "b",
+      "value": 2,
+      "ts": "2026-01-01T00:00:00.010Z"
+     }
+    },
+    {
+     "at": 20,
+     "read": {
+      "device": "plc1",
+      "point": "a",
+      "value": 3,
+      "ts": "2026-01-01T00:00:00.020Z"
+     }
+    },
+    {
+     "at": 30,
+     "read": {
+      "device": "plc1",
+      "point": "c",
+      "value": 4,
+      "ts": "2026-01-01T00:00:00.030Z"
+     }
+    },
+    {
+     "at": 99,
+     "due": true
+    },
+    {
+     "at": 100,
+     "due": true
+    }
+   ],
+   "messages": [
+    {
+     "topic": "te/device/plc1///m/opcua",
+     "retain": false,
+     "payload": {
+      "time": "2026-01-01T00:00:00.000Z",
+      "opcua": {
+       "a": 1,
+       "b": 2,
+       "c": 4
+      }
+     }
+    },
+    {
+     "topic": "te/device/plc1///m/opcua",
+     "retain": false,
+     "payload": {
+      "time": "2026-01-01T00:00:00.020Z",
+      "opcua": {
+       "a": 3
+      }
+     }
+    }
+   ],
+   "routing": [
+    {
+     "sample": false,
+     "measured": true
+    },
+    {
+     "sample": false,
+     "measured": true
+    },
+    {
+     "sample": false,
+     "measured": true
+    },
+    {
+     "sample": false,
+     "measured": true
+    }
+   ]
+  },
+  {
+   "name": "group by frame: polled passes in one frame each form a layer with their own read time",
+   "config": "[connector]\nprotocol = \"opcua\"\noutput = \"measurements\"\n\n[[device]]\nname = \"plc1\"\nprotocol_address = {}\nbatch = { group_by = \"frame\", window = \"500ms\" }\n[[device.point]]\nid = \"a\"\ndatatype = \"float64\"\naddress = {}\n[[device.point]]\nid = \"b\"\ndatatype = \"float64\"\naddress = {}\n",
+   "steps": [
+    {
+     "at": 0,
+     "read_all": {
+      "device": "plc1",
+      "value": 1,
+      "ts": "2026-01-01T00:00:00.000Z"
+     }
+    },
+    {
+     "at": 0,
+     "pass": true
+    },
+    {
+     "at": 200,
+     "read_all": {
+      "device": "plc1",
+      "value": 2,
+      "ts": "2026-01-01T00:00:00.200Z"
+     }
+    },
+    {
+     "at": 200,
+     "pass": true
+    },
+    {
+     "at": 400,
+     "read_all": {
+      "device": "plc1",
+      "value": 3,
+      "ts": "2026-01-01T00:00:00.400Z"
+     }
+    },
+    {
+     "at": 400,
+     "pass": true
+    },
+    {
+     "at": 500,
+     "due": true
+    }
+   ],
+   "messages": [
+    {
+     "topic": "te/device/plc1///m/opcua",
+     "retain": false,
+     "payload": {
+      "time": "2026-01-01T00:00:00.000Z",
+      "opcua": {
+       "a": 1,
+       "b": 1
+      }
+     }
+    },
+    {
+     "topic": "te/device/plc1///m/opcua",
+     "retain": false,
+     "payload": {
+      "time": "2026-01-01T00:00:00.200Z",
+      "opcua": {
+       "a": 2,
+       "b": 2
+      }
+     }
+    },
+    {
+     "topic": "te/device/plc1///m/opcua",
+     "retain": false,
+     "payload": {
+      "time": "2026-01-01T00:00:00.400Z",
+      "opcua": {
+       "a": 3,
+       "b": 3
+      }
+     }
+    }
+   ],
+   "routing": []
+  },
+  {
+   "name": "group by frame: a layer stamped no later than the layer before it moves to 1 ms after it",
+   "config": "[connector]\nprotocol = \"opcua\"\noutput = \"measurements\"\n\n[[device]]\nname = \"plc1\"\nprotocol_address = {}\nbatch = { group_by = \"frame\", window = \"100ms\" }\n[[device.point]]\nid = \"a\"\ndatatype = \"float64\"\naddress = {}\n[[device.point]]\nid = \"b\"\ndatatype = \"float64\"\naddress = {}\n",
+   "steps": [
+    {
+     "at": 0,
+     "read": {
+      "device": "plc1",
+      "point": "a",
+      "value": 1,
+      "ts": "2026-01-01T00:00:00.040Z"
+     }
+    },
+    {
+     "at": 10,
+     "read": {
+      "device": "plc1",
+      "point": "a",
+      "value": 2,
+      "ts": "2026-01-01T00:00:00.025Z"
+     }
+    },
+    {
+     "at": 20,
+     "read": {
+      "device": "plc1",
+      "point": "b",
+      "value": 3,
+      "ts": "2026-01-01T00:00:00.010Z"
+     }
+    },
+    {
+     "at": 100,
+     "due": true
+    }
+   ],
+   "messages": [
+    {
+     "topic": "te/device/plc1///m/opcua",
+     "retain": false,
+     "payload": {
+      "time": "2026-01-01T00:00:00.040Z",
+      "opcua": {
+       "a": 1,
+       "b": 3
+      }
+     }
+    },
+    {
+     "topic": "te/device/plc1///m/opcua",
+     "retain": false,
+     "payload": {
+      "time": "2026-01-01T00:00:00.041Z",
+      "opcua": {
+       "a": 2
+      }
+     }
+    }
+   ],
+   "routing": [
+    {
+     "sample": false,
+     "measured": true
+    },
+    {
+     "sample": false,
+     "measured": true
+    },
+    {
+     "sample": false,
+     "measured": true
+    }
+   ]
+  },
+  {
+   "name": "group by frame: the order holds across frames: a frame whose first time is earlier moves after the last one",
+   "config": "[connector]\nprotocol = \"opcua\"\noutput = \"measurements\"\n\n[[device]]\nname = \"plc1\"\nprotocol_address = {}\nbatch = { group_by = \"frame\", window = \"100ms\" }\n[[device.point]]\nid = \"a\"\ndatatype = \"float64\"\naddress = {}\n[[device.point]]\nid = \"b\"\ndatatype = \"float64\"\naddress = {}\n",
+   "steps": [
+    {
+     "at": 0,
+     "read": {
+      "device": "plc1",
+      "point": "a",
+      "value": 1,
+      "ts": "2026-01-01T00:00:00.040Z"
+     }
+    },
+    {
+     "at": 100,
+     "due": true
+    },
+    {
+     "at": 120,
+     "read": {
+      "device": "plc1",
+      "point": "b",
+      "value": 2,
+      "ts": "2026-01-01T00:00:00.030Z"
+     }
+    },
+    {
+     "at": 220,
+     "due": true
+    }
+   ],
+   "messages": [
+    {
+     "topic": "te/device/plc1///m/opcua",
+     "retain": false,
+     "payload": {
+      "time": "2026-01-01T00:00:00.040Z",
+      "opcua": {
+       "a": 1
+      }
+     }
+    },
+    {
+     "topic": "te/device/plc1///m/opcua",
+     "retain": false,
+     "payload": {
+      "time": "2026-01-01T00:00:00.041Z",
+      "opcua": {
+       "b": 2
+      }
+     }
+    }
+   ],
+   "routing": [
+    {
+     "sample": false,
+     "measured": true
+    },
+    {
+     "sample": false,
+     "measured": true
+    }
+   ]
+  },
+  {
+   "name": "group by frame: a reading that would open a 65th layer publishes the 64 layers and starts a new frame in the same window",
+   "config": "[connector]\nprotocol = \"opcua\"\noutput = \"measurements\"\n\n[[device]]\nname = \"plc1\"\nprotocol_address = {}\nbatch = { group_by = \"frame\", window = \"100ms\" }\n[[device.point]]\nid = \"a\"\ndatatype = \"float64\"\naddress = {}\n",
+   "steps": [
+    {
+     "at": 0,
+     "read": {
+      "device": "plc1",
+      "point": "a",
+      "value": 0,
+      "ts": "2026-01-01T00:00:00.000Z"
+     }
+    },
+    {
+     "at": 1,
+     "read": {
+      "device": "plc1",
+      "point": "a",
+      "value": 1,
+      "ts": "2026-01-01T00:00:00.001Z"
+     }
+    },
+    {
+     "at": 2,
+     "read": {
+      "device": "plc1",
+      "point": "a",
+      "value": 2,
+      "ts": "2026-01-01T00:00:00.002Z"
+     }
+    },
+    {
+     "at": 3,
+     "read": {
+      "device": "plc1",
+      "point": "a",
+      "value": 3,
+      "ts": "2026-01-01T00:00:00.003Z"
+     }
+    },
+    {
+     "at": 4,
+     "read": {
+      "device": "plc1",
+      "point": "a",
+      "value": 4,
+      "ts": "2026-01-01T00:00:00.004Z"
+     }
+    },
+    {
+     "at": 5,
+     "read": {
+      "device": "plc1",
+      "point": "a",
+      "value": 5,
+      "ts": "2026-01-01T00:00:00.005Z"
+     }
+    },
+    {
+     "at": 6,
+     "read": {
+      "device": "plc1",
+      "point": "a",
+      "value": 6,
+      "ts": "2026-01-01T00:00:00.006Z"
+     }
+    },
+    {
+     "at": 7,
+     "read": {
+      "device": "plc1",
+      "point": "a",
+      "value": 7,
+      "ts": "2026-01-01T00:00:00.007Z"
+     }
+    },
+    {
+     "at": 8,
+     "read": {
+      "device": "plc1",
+      "point": "a",
+      "value": 8,
+      "ts": "2026-01-01T00:00:00.008Z"
+     }
+    },
+    {
+     "at": 9,
+     "read": {
+      "device": "plc1",
+      "point": "a",
+      "value": 9,
+      "ts": "2026-01-01T00:00:00.009Z"
+     }
+    },
+    {
+     "at": 10,
+     "read": {
+      "device": "plc1",
+      "point": "a",
+      "value": 10,
+      "ts": "2026-01-01T00:00:00.010Z"
+     }
+    },
+    {
+     "at": 11,
+     "read": {
+      "device": "plc1",
+      "point": "a",
+      "value": 11,
+      "ts": "2026-01-01T00:00:00.011Z"
+     }
+    },
+    {
+     "at": 12,
+     "read": {
+      "device": "plc1",
+      "point": "a",
+      "value": 12,
+      "ts": "2026-01-01T00:00:00.012Z"
+     }
+    },
+    {
+     "at": 13,
+     "read": {
+      "device": "plc1",
+      "point": "a",
+      "value": 13,
+      "ts": "2026-01-01T00:00:00.013Z"
+     }
+    },
+    {
+     "at": 14,
+     "read": {
+      "device": "plc1",
+      "point": "a",
+      "value": 14,
+      "ts": "2026-01-01T00:00:00.014Z"
+     }
+    },
+    {
+     "at": 15,
+     "read": {
+      "device": "plc1",
+      "point": "a",
+      "value": 15,
+      "ts": "2026-01-01T00:00:00.015Z"
+     }
+    },
+    {
+     "at": 16,
+     "read": {
+      "device": "plc1",
+      "point": "a",
+      "value": 16,
+      "ts": "2026-01-01T00:00:00.016Z"
+     }
+    },
+    {
+     "at": 17,
+     "read": {
+      "device": "plc1",
+      "point": "a",
+      "value": 17,
+      "ts": "2026-01-01T00:00:00.017Z"
+     }
+    },
+    {
+     "at": 18,
+     "read": {
+      "device": "plc1",
+      "point": "a",
+      "value": 18,
+      "ts": "2026-01-01T00:00:00.018Z"
+     }
+    },
+    {
+     "at": 19,
+     "read": {
+      "device": "plc1",
+      "point": "a",
+      "value": 19,
+      "ts": "2026-01-01T00:00:00.019Z"
+     }
+    },
+    {
+     "at": 20,
+     "read": {
+      "device": "plc1",
+      "point": "a",
+      "value": 20,
+      "ts": "2026-01-01T00:00:00.020Z"
+     }
+    },
+    {
+     "at": 21,
+     "read": {
+      "device": "plc1",
+      "point": "a",
+      "value": 21,
+      "ts": "2026-01-01T00:00:00.021Z"
+     }
+    },
+    {
+     "at": 22,
+     "read": {
+      "device": "plc1",
+      "point": "a",
+      "value": 22,
+      "ts": "2026-01-01T00:00:00.022Z"
+     }
+    },
+    {
+     "at": 23,
+     "read": {
+      "device": "plc1",
+      "point": "a",
+      "value": 23,
+      "ts": "2026-01-01T00:00:00.023Z"
+     }
+    },
+    {
+     "at": 24,
+     "read": {
+      "device": "plc1",
+      "point": "a",
+      "value": 24,
+      "ts": "2026-01-01T00:00:00.024Z"
+     }
+    },
+    {
+     "at": 25,
+     "read": {
+      "device": "plc1",
+      "point": "a",
+      "value": 25,
+      "ts": "2026-01-01T00:00:00.025Z"
+     }
+    },
+    {
+     "at": 26,
+     "read": {
+      "device": "plc1",
+      "point": "a",
+      "value": 26,
+      "ts": "2026-01-01T00:00:00.026Z"
+     }
+    },
+    {
+     "at": 27,
+     "read": {
+      "device": "plc1",
+      "point": "a",
+      "value": 27,
+      "ts": "2026-01-01T00:00:00.027Z"
+     }
+    },
+    {
+     "at": 28,
+     "read": {
+      "device": "plc1",
+      "point": "a",
+      "value": 28,
+      "ts": "2026-01-01T00:00:00.028Z"
+     }
+    },
+    {
+     "at": 29,
+     "read": {
+      "device": "plc1",
+      "point": "a",
+      "value": 29,
+      "ts": "2026-01-01T00:00:00.029Z"
+     }
+    },
+    {
+     "at": 30,
+     "read": {
+      "device": "plc1",
+      "point": "a",
+      "value": 30,
+      "ts": "2026-01-01T00:00:00.030Z"
+     }
+    },
+    {
+     "at": 31,
+     "read": {
+      "device": "plc1",
+      "point": "a",
+      "value": 31,
+      "ts": "2026-01-01T00:00:00.031Z"
+     }
+    },
+    {
+     "at": 32,
+     "read": {
+      "device": "plc1",
+      "point": "a",
+      "value": 32,
+      "ts": "2026-01-01T00:00:00.032Z"
+     }
+    },
+    {
+     "at": 33,
+     "read": {
+      "device": "plc1",
+      "point": "a",
+      "value": 33,
+      "ts": "2026-01-01T00:00:00.033Z"
+     }
+    },
+    {
+     "at": 34,
+     "read": {
+      "device": "plc1",
+      "point": "a",
+      "value": 34,
+      "ts": "2026-01-01T00:00:00.034Z"
+     }
+    },
+    {
+     "at": 35,
+     "read": {
+      "device": "plc1",
+      "point": "a",
+      "value": 35,
+      "ts": "2026-01-01T00:00:00.035Z"
+     }
+    },
+    {
+     "at": 36,
+     "read": {
+      "device": "plc1",
+      "point": "a",
+      "value": 36,
+      "ts": "2026-01-01T00:00:00.036Z"
+     }
+    },
+    {
+     "at": 37,
+     "read": {
+      "device": "plc1",
+      "point": "a",
+      "value": 37,
+      "ts": "2026-01-01T00:00:00.037Z"
+     }
+    },
+    {
+     "at": 38,
+     "read": {
+      "device": "plc1",
+      "point": "a",
+      "value": 38,
+      "ts": "2026-01-01T00:00:00.038Z"
+     }
+    },
+    {
+     "at": 39,
+     "read": {
+      "device": "plc1",
+      "point": "a",
+      "value": 39,
+      "ts": "2026-01-01T00:00:00.039Z"
+     }
+    },
+    {
+     "at": 40,
+     "read": {
+      "device": "plc1",
+      "point": "a",
+      "value": 40,
+      "ts": "2026-01-01T00:00:00.040Z"
+     }
+    },
+    {
+     "at": 41,
+     "read": {
+      "device": "plc1",
+      "point": "a",
+      "value": 41,
+      "ts": "2026-01-01T00:00:00.041Z"
+     }
+    },
+    {
+     "at": 42,
+     "read": {
+      "device": "plc1",
+      "point": "a",
+      "value": 42,
+      "ts": "2026-01-01T00:00:00.042Z"
+     }
+    },
+    {
+     "at": 43,
+     "read": {
+      "device": "plc1",
+      "point": "a",
+      "value": 43,
+      "ts": "2026-01-01T00:00:00.043Z"
+     }
+    },
+    {
+     "at": 44,
+     "read": {
+      "device": "plc1",
+      "point": "a",
+      "value": 44,
+      "ts": "2026-01-01T00:00:00.044Z"
+     }
+    },
+    {
+     "at": 45,
+     "read": {
+      "device": "plc1",
+      "point": "a",
+      "value": 45,
+      "ts": "2026-01-01T00:00:00.045Z"
+     }
+    },
+    {
+     "at": 46,
+     "read": {
+      "device": "plc1",
+      "point": "a",
+      "value": 46,
+      "ts": "2026-01-01T00:00:00.046Z"
+     }
+    },
+    {
+     "at": 47,
+     "read": {
+      "device": "plc1",
+      "point": "a",
+      "value": 47,
+      "ts": "2026-01-01T00:00:00.047Z"
+     }
+    },
+    {
+     "at": 48,
+     "read": {
+      "device": "plc1",
+      "point": "a",
+      "value": 48,
+      "ts": "2026-01-01T00:00:00.048Z"
+     }
+    },
+    {
+     "at": 49,
+     "read": {
+      "device": "plc1",
+      "point": "a",
+      "value": 49,
+      "ts": "2026-01-01T00:00:00.049Z"
+     }
+    },
+    {
+     "at": 50,
+     "read": {
+      "device": "plc1",
+      "point": "a",
+      "value": 50,
+      "ts": "2026-01-01T00:00:00.050Z"
+     }
+    },
+    {
+     "at": 51,
+     "read": {
+      "device": "plc1",
+      "point": "a",
+      "value": 51,
+      "ts": "2026-01-01T00:00:00.051Z"
+     }
+    },
+    {
+     "at": 52,
+     "read": {
+      "device": "plc1",
+      "point": "a",
+      "value": 52,
+      "ts": "2026-01-01T00:00:00.052Z"
+     }
+    },
+    {
+     "at": 53,
+     "read": {
+      "device": "plc1",
+      "point": "a",
+      "value": 53,
+      "ts": "2026-01-01T00:00:00.053Z"
+     }
+    },
+    {
+     "at": 54,
+     "read": {
+      "device": "plc1",
+      "point": "a",
+      "value": 54,
+      "ts": "2026-01-01T00:00:00.054Z"
+     }
+    },
+    {
+     "at": 55,
+     "read": {
+      "device": "plc1",
+      "point": "a",
+      "value": 55,
+      "ts": "2026-01-01T00:00:00.055Z"
+     }
+    },
+    {
+     "at": 56,
+     "read": {
+      "device": "plc1",
+      "point": "a",
+      "value": 56,
+      "ts": "2026-01-01T00:00:00.056Z"
+     }
+    },
+    {
+     "at": 57,
+     "read": {
+      "device": "plc1",
+      "point": "a",
+      "value": 57,
+      "ts": "2026-01-01T00:00:00.057Z"
+     }
+    },
+    {
+     "at": 58,
+     "read": {
+      "device": "plc1",
+      "point": "a",
+      "value": 58,
+      "ts": "2026-01-01T00:00:00.058Z"
+     }
+    },
+    {
+     "at": 59,
+     "read": {
+      "device": "plc1",
+      "point": "a",
+      "value": 59,
+      "ts": "2026-01-01T00:00:00.059Z"
+     }
+    },
+    {
+     "at": 60,
+     "read": {
+      "device": "plc1",
+      "point": "a",
+      "value": 60,
+      "ts": "2026-01-01T00:00:00.060Z"
+     }
+    },
+    {
+     "at": 61,
+     "read": {
+      "device": "plc1",
+      "point": "a",
+      "value": 61,
+      "ts": "2026-01-01T00:00:00.061Z"
+     }
+    },
+    {
+     "at": 62,
+     "read": {
+      "device": "plc1",
+      "point": "a",
+      "value": 62,
+      "ts": "2026-01-01T00:00:00.062Z"
+     }
+    },
+    {
+     "at": 63,
+     "read": {
+      "device": "plc1",
+      "point": "a",
+      "value": 63,
+      "ts": "2026-01-01T00:00:00.063Z"
+     }
+    },
+    {
+     "at": 64,
+     "read": {
+      "device": "plc1",
+      "point": "a",
+      "value": 64,
+      "ts": "2026-01-01T00:00:00.064Z"
+     }
+    },
+    {
+     "at": 99,
+     "due": true
+    },
+    {
+     "at": 100,
+     "due": true
+    }
+   ],
+   "messages": [
+    {
+     "topic": "te/device/plc1///m/opcua",
+     "retain": false,
+     "payload": {
+      "time": "2026-01-01T00:00:00.000Z",
+      "opcua": {
+       "a": 0
+      }
+     }
+    },
+    {
+     "topic": "te/device/plc1///m/opcua",
+     "retain": false,
+     "payload": {
+      "time": "2026-01-01T00:00:00.001Z",
+      "opcua": {
+       "a": 1
+      }
+     }
+    },
+    {
+     "topic": "te/device/plc1///m/opcua",
+     "retain": false,
+     "payload": {
+      "time": "2026-01-01T00:00:00.002Z",
+      "opcua": {
+       "a": 2
+      }
+     }
+    },
+    {
+     "topic": "te/device/plc1///m/opcua",
+     "retain": false,
+     "payload": {
+      "time": "2026-01-01T00:00:00.003Z",
+      "opcua": {
+       "a": 3
+      }
+     }
+    },
+    {
+     "topic": "te/device/plc1///m/opcua",
+     "retain": false,
+     "payload": {
+      "time": "2026-01-01T00:00:00.004Z",
+      "opcua": {
+       "a": 4
+      }
+     }
+    },
+    {
+     "topic": "te/device/plc1///m/opcua",
+     "retain": false,
+     "payload": {
+      "time": "2026-01-01T00:00:00.005Z",
+      "opcua": {
+       "a": 5
+      }
+     }
+    },
+    {
+     "topic": "te/device/plc1///m/opcua",
+     "retain": false,
+     "payload": {
+      "time": "2026-01-01T00:00:00.006Z",
+      "opcua": {
+       "a": 6
+      }
+     }
+    },
+    {
+     "topic": "te/device/plc1///m/opcua",
+     "retain": false,
+     "payload": {
+      "time": "2026-01-01T00:00:00.007Z",
+      "opcua": {
+       "a": 7
+      }
+     }
+    },
+    {
+     "topic": "te/device/plc1///m/opcua",
+     "retain": false,
+     "payload": {
+      "time": "2026-01-01T00:00:00.008Z",
+      "opcua": {
+       "a": 8
+      }
+     }
+    },
+    {
+     "topic": "te/device/plc1///m/opcua",
+     "retain": false,
+     "payload": {
+      "time": "2026-01-01T00:00:00.009Z",
+      "opcua": {
+       "a": 9
+      }
+     }
+    },
+    {
+     "topic": "te/device/plc1///m/opcua",
+     "retain": false,
+     "payload": {
+      "time": "2026-01-01T00:00:00.010Z",
+      "opcua": {
+       "a": 10
+      }
+     }
+    },
+    {
+     "topic": "te/device/plc1///m/opcua",
+     "retain": false,
+     "payload": {
+      "time": "2026-01-01T00:00:00.011Z",
+      "opcua": {
+       "a": 11
+      }
+     }
+    },
+    {
+     "topic": "te/device/plc1///m/opcua",
+     "retain": false,
+     "payload": {
+      "time": "2026-01-01T00:00:00.012Z",
+      "opcua": {
+       "a": 12
+      }
+     }
+    },
+    {
+     "topic": "te/device/plc1///m/opcua",
+     "retain": false,
+     "payload": {
+      "time": "2026-01-01T00:00:00.013Z",
+      "opcua": {
+       "a": 13
+      }
+     }
+    },
+    {
+     "topic": "te/device/plc1///m/opcua",
+     "retain": false,
+     "payload": {
+      "time": "2026-01-01T00:00:00.014Z",
+      "opcua": {
+       "a": 14
+      }
+     }
+    },
+    {
+     "topic": "te/device/plc1///m/opcua",
+     "retain": false,
+     "payload": {
+      "time": "2026-01-01T00:00:00.015Z",
+      "opcua": {
+       "a": 15
+      }
+     }
+    },
+    {
+     "topic": "te/device/plc1///m/opcua",
+     "retain": false,
+     "payload": {
+      "time": "2026-01-01T00:00:00.016Z",
+      "opcua": {
+       "a": 16
+      }
+     }
+    },
+    {
+     "topic": "te/device/plc1///m/opcua",
+     "retain": false,
+     "payload": {
+      "time": "2026-01-01T00:00:00.017Z",
+      "opcua": {
+       "a": 17
+      }
+     }
+    },
+    {
+     "topic": "te/device/plc1///m/opcua",
+     "retain": false,
+     "payload": {
+      "time": "2026-01-01T00:00:00.018Z",
+      "opcua": {
+       "a": 18
+      }
+     }
+    },
+    {
+     "topic": "te/device/plc1///m/opcua",
+     "retain": false,
+     "payload": {
+      "time": "2026-01-01T00:00:00.019Z",
+      "opcua": {
+       "a": 19
+      }
+     }
+    },
+    {
+     "topic": "te/device/plc1///m/opcua",
+     "retain": false,
+     "payload": {
+      "time": "2026-01-01T00:00:00.020Z",
+      "opcua": {
+       "a": 20
+      }
+     }
+    },
+    {
+     "topic": "te/device/plc1///m/opcua",
+     "retain": false,
+     "payload": {
+      "time": "2026-01-01T00:00:00.021Z",
+      "opcua": {
+       "a": 21
+      }
+     }
+    },
+    {
+     "topic": "te/device/plc1///m/opcua",
+     "retain": false,
+     "payload": {
+      "time": "2026-01-01T00:00:00.022Z",
+      "opcua": {
+       "a": 22
+      }
+     }
+    },
+    {
+     "topic": "te/device/plc1///m/opcua",
+     "retain": false,
+     "payload": {
+      "time": "2026-01-01T00:00:00.023Z",
+      "opcua": {
+       "a": 23
+      }
+     }
+    },
+    {
+     "topic": "te/device/plc1///m/opcua",
+     "retain": false,
+     "payload": {
+      "time": "2026-01-01T00:00:00.024Z",
+      "opcua": {
+       "a": 24
+      }
+     }
+    },
+    {
+     "topic": "te/device/plc1///m/opcua",
+     "retain": false,
+     "payload": {
+      "time": "2026-01-01T00:00:00.025Z",
+      "opcua": {
+       "a": 25
+      }
+     }
+    },
+    {
+     "topic": "te/device/plc1///m/opcua",
+     "retain": false,
+     "payload": {
+      "time": "2026-01-01T00:00:00.026Z",
+      "opcua": {
+       "a": 26
+      }
+     }
+    },
+    {
+     "topic": "te/device/plc1///m/opcua",
+     "retain": false,
+     "payload": {
+      "time": "2026-01-01T00:00:00.027Z",
+      "opcua": {
+       "a": 27
+      }
+     }
+    },
+    {
+     "topic": "te/device/plc1///m/opcua",
+     "retain": false,
+     "payload": {
+      "time": "2026-01-01T00:00:00.028Z",
+      "opcua": {
+       "a": 28
+      }
+     }
+    },
+    {
+     "topic": "te/device/plc1///m/opcua",
+     "retain": false,
+     "payload": {
+      "time": "2026-01-01T00:00:00.029Z",
+      "opcua": {
+       "a": 29
+      }
+     }
+    },
+    {
+     "topic": "te/device/plc1///m/opcua",
+     "retain": false,
+     "payload": {
+      "time": "2026-01-01T00:00:00.030Z",
+      "opcua": {
+       "a": 30
+      }
+     }
+    },
+    {
+     "topic": "te/device/plc1///m/opcua",
+     "retain": false,
+     "payload": {
+      "time": "2026-01-01T00:00:00.031Z",
+      "opcua": {
+       "a": 31
+      }
+     }
+    },
+    {
+     "topic": "te/device/plc1///m/opcua",
+     "retain": false,
+     "payload": {
+      "time": "2026-01-01T00:00:00.032Z",
+      "opcua": {
+       "a": 32
+      }
+     }
+    },
+    {
+     "topic": "te/device/plc1///m/opcua",
+     "retain": false,
+     "payload": {
+      "time": "2026-01-01T00:00:00.033Z",
+      "opcua": {
+       "a": 33
+      }
+     }
+    },
+    {
+     "topic": "te/device/plc1///m/opcua",
+     "retain": false,
+     "payload": {
+      "time": "2026-01-01T00:00:00.034Z",
+      "opcua": {
+       "a": 34
+      }
+     }
+    },
+    {
+     "topic": "te/device/plc1///m/opcua",
+     "retain": false,
+     "payload": {
+      "time": "2026-01-01T00:00:00.035Z",
+      "opcua": {
+       "a": 35
+      }
+     }
+    },
+    {
+     "topic": "te/device/plc1///m/opcua",
+     "retain": false,
+     "payload": {
+      "time": "2026-01-01T00:00:00.036Z",
+      "opcua": {
+       "a": 36
+      }
+     }
+    },
+    {
+     "topic": "te/device/plc1///m/opcua",
+     "retain": false,
+     "payload": {
+      "time": "2026-01-01T00:00:00.037Z",
+      "opcua": {
+       "a": 37
+      }
+     }
+    },
+    {
+     "topic": "te/device/plc1///m/opcua",
+     "retain": false,
+     "payload": {
+      "time": "2026-01-01T00:00:00.038Z",
+      "opcua": {
+       "a": 38
+      }
+     }
+    },
+    {
+     "topic": "te/device/plc1///m/opcua",
+     "retain": false,
+     "payload": {
+      "time": "2026-01-01T00:00:00.039Z",
+      "opcua": {
+       "a": 39
+      }
+     }
+    },
+    {
+     "topic": "te/device/plc1///m/opcua",
+     "retain": false,
+     "payload": {
+      "time": "2026-01-01T00:00:00.040Z",
+      "opcua": {
+       "a": 40
+      }
+     }
+    },
+    {
+     "topic": "te/device/plc1///m/opcua",
+     "retain": false,
+     "payload": {
+      "time": "2026-01-01T00:00:00.041Z",
+      "opcua": {
+       "a": 41
+      }
+     }
+    },
+    {
+     "topic": "te/device/plc1///m/opcua",
+     "retain": false,
+     "payload": {
+      "time": "2026-01-01T00:00:00.042Z",
+      "opcua": {
+       "a": 42
+      }
+     }
+    },
+    {
+     "topic": "te/device/plc1///m/opcua",
+     "retain": false,
+     "payload": {
+      "time": "2026-01-01T00:00:00.043Z",
+      "opcua": {
+       "a": 43
+      }
+     }
+    },
+    {
+     "topic": "te/device/plc1///m/opcua",
+     "retain": false,
+     "payload": {
+      "time": "2026-01-01T00:00:00.044Z",
+      "opcua": {
+       "a": 44
+      }
+     }
+    },
+    {
+     "topic": "te/device/plc1///m/opcua",
+     "retain": false,
+     "payload": {
+      "time": "2026-01-01T00:00:00.045Z",
+      "opcua": {
+       "a": 45
+      }
+     }
+    },
+    {
+     "topic": "te/device/plc1///m/opcua",
+     "retain": false,
+     "payload": {
+      "time": "2026-01-01T00:00:00.046Z",
+      "opcua": {
+       "a": 46
+      }
+     }
+    },
+    {
+     "topic": "te/device/plc1///m/opcua",
+     "retain": false,
+     "payload": {
+      "time": "2026-01-01T00:00:00.047Z",
+      "opcua": {
+       "a": 47
+      }
+     }
+    },
+    {
+     "topic": "te/device/plc1///m/opcua",
+     "retain": false,
+     "payload": {
+      "time": "2026-01-01T00:00:00.048Z",
+      "opcua": {
+       "a": 48
+      }
+     }
+    },
+    {
+     "topic": "te/device/plc1///m/opcua",
+     "retain": false,
+     "payload": {
+      "time": "2026-01-01T00:00:00.049Z",
+      "opcua": {
+       "a": 49
+      }
+     }
+    },
+    {
+     "topic": "te/device/plc1///m/opcua",
+     "retain": false,
+     "payload": {
+      "time": "2026-01-01T00:00:00.050Z",
+      "opcua": {
+       "a": 50
+      }
+     }
+    },
+    {
+     "topic": "te/device/plc1///m/opcua",
+     "retain": false,
+     "payload": {
+      "time": "2026-01-01T00:00:00.051Z",
+      "opcua": {
+       "a": 51
+      }
+     }
+    },
+    {
+     "topic": "te/device/plc1///m/opcua",
+     "retain": false,
+     "payload": {
+      "time": "2026-01-01T00:00:00.052Z",
+      "opcua": {
+       "a": 52
+      }
+     }
+    },
+    {
+     "topic": "te/device/plc1///m/opcua",
+     "retain": false,
+     "payload": {
+      "time": "2026-01-01T00:00:00.053Z",
+      "opcua": {
+       "a": 53
+      }
+     }
+    },
+    {
+     "topic": "te/device/plc1///m/opcua",
+     "retain": false,
+     "payload": {
+      "time": "2026-01-01T00:00:00.054Z",
+      "opcua": {
+       "a": 54
+      }
+     }
+    },
+    {
+     "topic": "te/device/plc1///m/opcua",
+     "retain": false,
+     "payload": {
+      "time": "2026-01-01T00:00:00.055Z",
+      "opcua": {
+       "a": 55
+      }
+     }
+    },
+    {
+     "topic": "te/device/plc1///m/opcua",
+     "retain": false,
+     "payload": {
+      "time": "2026-01-01T00:00:00.056Z",
+      "opcua": {
+       "a": 56
+      }
+     }
+    },
+    {
+     "topic": "te/device/plc1///m/opcua",
+     "retain": false,
+     "payload": {
+      "time": "2026-01-01T00:00:00.057Z",
+      "opcua": {
+       "a": 57
+      }
+     }
+    },
+    {
+     "topic": "te/device/plc1///m/opcua",
+     "retain": false,
+     "payload": {
+      "time": "2026-01-01T00:00:00.058Z",
+      "opcua": {
+       "a": 58
+      }
+     }
+    },
+    {
+     "topic": "te/device/plc1///m/opcua",
+     "retain": false,
+     "payload": {
+      "time": "2026-01-01T00:00:00.059Z",
+      "opcua": {
+       "a": 59
+      }
+     }
+    },
+    {
+     "topic": "te/device/plc1///m/opcua",
+     "retain": false,
+     "payload": {
+      "time": "2026-01-01T00:00:00.060Z",
+      "opcua": {
+       "a": 60
+      }
+     }
+    },
+    {
+     "topic": "te/device/plc1///m/opcua",
+     "retain": false,
+     "payload": {
+      "time": "2026-01-01T00:00:00.061Z",
+      "opcua": {
+       "a": 61
+      }
+     }
+    },
+    {
+     "topic": "te/device/plc1///m/opcua",
+     "retain": false,
+     "payload": {
+      "time": "2026-01-01T00:00:00.062Z",
+      "opcua": {
+       "a": 62
+      }
+     }
+    },
+    {
+     "topic": "te/device/plc1///m/opcua",
+     "retain": false,
+     "payload": {
+      "time": "2026-01-01T00:00:00.063Z",
+      "opcua": {
+       "a": 63
+      }
+     }
+    },
+    {
+     "topic": "te/device/plc1///m/opcua",
+     "retain": false,
+     "payload": {
+      "time": "2026-01-01T00:00:00.064Z",
+      "opcua": {
+       "a": 64
+      }
+     }
+    }
+   ],
+   "routing": [
+    {
+     "sample": false,
+     "measured": true
+    },
+    {
+     "sample": false,
+     "measured": true
+    },
+    {
+     "sample": false,
+     "measured": true
+    },
+    {
+     "sample": false,
+     "measured": true
+    },
+    {
+     "sample": false,
+     "measured": true
+    },
+    {
+     "sample": false,
+     "measured": true
+    },
+    {
+     "sample": false,
+     "measured": true
+    },
+    {
+     "sample": false,
+     "measured": true
+    },
+    {
+     "sample": false,
+     "measured": true
+    },
+    {
+     "sample": false,
+     "measured": true
+    },
+    {
+     "sample": false,
+     "measured": true
+    },
+    {
+     "sample": false,
+     "measured": true
+    },
+    {
+     "sample": false,
+     "measured": true
+    },
+    {
+     "sample": false,
+     "measured": true
+    },
+    {
+     "sample": false,
+     "measured": true
+    },
+    {
+     "sample": false,
+     "measured": true
+    },
+    {
+     "sample": false,
+     "measured": true
+    },
+    {
+     "sample": false,
+     "measured": true
+    },
+    {
+     "sample": false,
+     "measured": true
+    },
+    {
+     "sample": false,
+     "measured": true
+    },
+    {
+     "sample": false,
+     "measured": true
+    },
+    {
+     "sample": false,
+     "measured": true
+    },
+    {
+     "sample": false,
+     "measured": true
+    },
+    {
+     "sample": false,
+     "measured": true
+    },
+    {
+     "sample": false,
+     "measured": true
+    },
+    {
+     "sample": false,
+     "measured": true
+    },
+    {
+     "sample": false,
+     "measured": true
+    },
+    {
+     "sample": false,
+     "measured": true
+    },
+    {
+     "sample": false,
+     "measured": true
+    },
+    {
+     "sample": false,
+     "measured": true
+    },
+    {
+     "sample": false,
+     "measured": true
+    },
+    {
+     "sample": false,
+     "measured": true
+    },
+    {
+     "sample": false,
+     "measured": true
+    },
+    {
+     "sample": false,
+     "measured": true
+    },
+    {
+     "sample": false,
+     "measured": true
+    },
+    {
+     "sample": false,
+     "measured": true
+    },
+    {
+     "sample": false,
+     "measured": true
+    },
+    {
+     "sample": false,
+     "measured": true
+    },
+    {
+     "sample": false,
+     "measured": true
+    },
+    {
+     "sample": false,
+     "measured": true
+    },
+    {
+     "sample": false,
+     "measured": true
+    },
+    {
+     "sample": false,
+     "measured": true
+    },
+    {
+     "sample": false,
+     "measured": true
+    },
+    {
+     "sample": false,
+     "measured": true
+    },
+    {
+     "sample": false,
+     "measured": true
+    },
+    {
+     "sample": false,
+     "measured": true
+    },
+    {
+     "sample": false,
+     "measured": true
+    },
+    {
+     "sample": false,
+     "measured": true
+    },
+    {
+     "sample": false,
+     "measured": true
+    },
+    {
+     "sample": false,
+     "measured": true
+    },
+    {
+     "sample": false,
+     "measured": true
+    },
+    {
+     "sample": false,
+     "measured": true
+    },
+    {
+     "sample": false,
+     "measured": true
+    },
+    {
+     "sample": false,
+     "measured": true
+    },
+    {
+     "sample": false,
+     "measured": true
+    },
+    {
+     "sample": false,
+     "measured": true
+    },
+    {
+     "sample": false,
+     "measured": true
+    },
+    {
+     "sample": false,
+     "measured": true
+    },
+    {
+     "sample": false,
+     "measured": true
+    },
+    {
+     "sample": false,
+     "measured": true
+    },
+    {
+     "sample": false,
+     "measured": true
+    },
+    {
+     "sample": false,
+     "measured": true
+    },
+    {
+     "sample": false,
+     "measured": true
+    },
+    {
+     "sample": false,
+     "measured": true
+    },
+    {
+     "sample": false,
+     "measured": true
+    }
+   ]
+  },
+  {
    "name": "a point's own batch wins over its device's",
    "config": "[connector]\nprotocol = \"opcua\"\noutput = \"measurements\"\n\n[[device]]\nname = \"plc1\"\nprotocol_address = {}\nbatch = { group_by = \"frame\", window = \"100ms\" }\n[[device.point]]\nid = \"a\"\ndatatype = \"float64\"\naddress = {}\n[[device.point]]\nid = \"exact\"\ndatatype = \"float64\"\nbatch = { group_by = \"time\" }\naddress = {}\n",
    "steps": [
@@ -1043,9 +2868,9 @@
      "topic": "te/device/plc1///m/opcua",
      "retain": false,
      "payload": {
-      "time": "2026-01-01T00:00:00.000Z",
+      "time": "2026-01-01T00:00:00.005Z",
       "opcua": {
-       "a": 1
+       "exact": 2
       }
      }
     },
@@ -1053,9 +2878,9 @@
      "topic": "te/device/plc1///m/opcua",
      "retain": false,
      "payload": {
-      "time": "2026-01-01T00:00:00.005Z",
+      "time": "2026-01-01T00:00:00.000Z",
       "opcua": {
-       "exact": 2
+       "a": 1
       }
      }
     },
@@ -1342,6 +3167,515 @@
     },
     {
      "sample": true,
+     "measured": true
+    },
+    {
+     "sample": false,
+     "measured": true
+    }
+   ]
+  },
+  {
+   "name": "aggregate: the time-weighted mean of change-only data; aggregate without group_by means sample",
+   "config": "[connector]\nprotocol = \"opcua\"\noutput = \"measurements\"\n\n[[device]]\nname = \"plc1\"\nprotocol_address = {}\nbatch = { aggregate = \"mean\", every = \"1s\" }\n[[device.point]]\nid = \"a\"\ndatatype = \"float64\"\naddress = {}\n",
+   "steps": [
+    {
+     "at": 0,
+     "read": {
+      "device": "plc1",
+      "point": "a",
+      "value": 10,
+      "ts": "2026-01-01T00:00:00.000Z"
+     }
+    },
+    {
+     "at": 900,
+     "read": {
+      "device": "plc1",
+      "point": "a",
+      "value": 20,
+      "ts": "2026-01-01T00:00:00.900Z"
+     }
+    },
+    {
+     "at": 1000,
+     "due": true
+    },
+    {
+     "at": 2000,
+     "due": true
+    }
+   ],
+   "messages": [
+    {
+     "topic": "te/device/plc1///m/opcua",
+     "retain": false,
+     "payload": {
+      "time": "2026-01-01T00:00:01.000Z",
+      "opcua": {
+       "a": 11
+      }
+     }
+    },
+    {
+     "topic": "te/device/plc1///m/opcua",
+     "retain": false,
+     "payload": {
+      "time": "2026-01-01T00:00:02.000Z",
+      "opcua": {
+       "a": 20
+      }
+     }
+    }
+   ],
+   "routing": [
+    {
+     "sample": false,
+     "measured": true
+    },
+    {
+     "sample": false,
+     "measured": true
+    }
+   ]
+  },
+  {
+   "name": "aggregate: the mean of evenly polled readings",
+   "config": "[connector]\nprotocol = \"opcua\"\noutput = \"measurements\"\n\n[[device]]\nname = \"plc1\"\nprotocol_address = {}\nbatch = { group_by = \"sample\", every = \"1s\", aggregate = \"mean\" }\n[[device.point]]\nid = \"a\"\ndatatype = \"float64\"\naddress = {}\n",
+   "steps": [
+    {
+     "at": 0,
+     "read": {
+      "device": "plc1",
+      "point": "a",
+      "value": 1,
+      "ts": "2026-01-01T00:00:00.000Z"
+     }
+    },
+    {
+     "at": 100,
+     "read": {
+      "device": "plc1",
+      "point": "a",
+      "value": 2,
+      "ts": "2026-01-01T00:00:00.100Z"
+     }
+    },
+    {
+     "at": 200,
+     "read": {
+      "device": "plc1",
+      "point": "a",
+      "value": 3,
+      "ts": "2026-01-01T00:00:00.200Z"
+     }
+    },
+    {
+     "at": 300,
+     "read": {
+      "device": "plc1",
+      "point": "a",
+      "value": 4,
+      "ts": "2026-01-01T00:00:00.300Z"
+     }
+    },
+    {
+     "at": 400,
+     "read": {
+      "device": "plc1",
+      "point": "a",
+      "value": 5,
+      "ts": "2026-01-01T00:00:00.400Z"
+     }
+    },
+    {
+     "at": 500,
+     "read": {
+      "device": "plc1",
+      "point": "a",
+      "value": 6,
+      "ts": "2026-01-01T00:00:00.500Z"
+     }
+    },
+    {
+     "at": 600,
+     "read": {
+      "device": "plc1",
+      "point": "a",
+      "value": 7,
+      "ts": "2026-01-01T00:00:00.600Z"
+     }
+    },
+    {
+     "at": 700,
+     "read": {
+      "device": "plc1",
+      "point": "a",
+      "value": 8,
+      "ts": "2026-01-01T00:00:00.700Z"
+     }
+    },
+    {
+     "at": 800,
+     "read": {
+      "device": "plc1",
+      "point": "a",
+      "value": 9,
+      "ts": "2026-01-01T00:00:00.800Z"
+     }
+    },
+    {
+     "at": 900,
+     "read": {
+      "device": "plc1",
+      "point": "a",
+      "value": 10,
+      "ts": "2026-01-01T00:00:00.900Z"
+     }
+    },
+    {
+     "at": 1000,
+     "due": true
+    }
+   ],
+   "messages": [
+    {
+     "topic": "te/device/plc1///m/opcua",
+     "retain": false,
+     "payload": {
+      "time": "2026-01-01T00:00:01.000Z",
+      "opcua": {
+       "a": 5.5
+      }
+     }
+    }
+   ],
+   "routing": [
+    {
+     "sample": false,
+     "measured": true
+    },
+    {
+     "sample": false,
+     "measured": true
+    },
+    {
+     "sample": false,
+     "measured": true
+    },
+    {
+     "sample": false,
+     "measured": true
+    },
+    {
+     "sample": false,
+     "measured": true
+    },
+    {
+     "sample": false,
+     "measured": true
+    },
+    {
+     "sample": false,
+     "measured": true
+    },
+    {
+     "sample": false,
+     "measured": true
+    },
+    {
+     "sample": false,
+     "measured": true
+    },
+    {
+     "sample": false,
+     "measured": true
+    }
+   ]
+  },
+  {
+   "name": "aggregate: a list publishes <series>_<aggregate> with the unit; min and max include the value held at the start",
+   "config": "[connector]\nprotocol = \"opcua\"\noutput = \"measurements\"\n\n[[device]]\nname = \"plc1\"\nprotocol_address = {}\nbatch = { group_by = \"sample\", every = \"1s\", aggregate = [\"min\", \"max\", \"last\"] }\n[[device.point]]\nid = \"a\"\ndatatype = \"float64\"\nunit = \"°C\"\naddress = {}\n",
+   "steps": [
+    {
+     "at": 0,
+     "read": {
+      "device": "plc1",
+      "point": "a",
+      "value": 5,
+      "ts": "2026-01-01T00:00:00.000Z"
+     }
+    },
+    {
+     "at": 1000,
+     "due": true
+    },
+    {
+     "at": 1200,
+     "read": {
+      "device": "plc1",
+      "point": "a",
+      "value": 7,
+      "ts": "2026-01-01T00:00:01.200Z"
+     }
+    },
+    {
+     "at": 1500,
+     "read": {
+      "device": "plc1",
+      "point": "a",
+      "value": 6,
+      "ts": "2026-01-01T00:00:01.500Z"
+     }
+    },
+    {
+     "at": 2000,
+     "due": true
+    }
+   ],
+   "messages": [
+    {
+     "topic": "te/device/plc1///m/opcua/meta",
+     "retain": true,
+     "payload": {
+      "opcua.a_last": {
+       "unit": "°C"
+      },
+      "opcua.a_max": {
+       "unit": "°C"
+      },
+      "opcua.a_min": {
+       "unit": "°C"
+      }
+     }
+    },
+    {
+     "topic": "te/device/plc1///m/opcua",
+     "retain": false,
+     "payload": {
+      "time": "2026-01-01T00:00:01.000Z",
+      "opcua": {
+       "a_min": 5,
+       "a_max": 5,
+       "a_last": 5
+      }
+     }
+    },
+    {
+     "topic": "te/device/plc1///m/opcua",
+     "retain": false,
+     "payload": {
+      "time": "2026-01-01T00:00:02.000Z",
+      "opcua": {
+       "a_min": 5,
+       "a_max": 7,
+       "a_last": 6
+      }
+     }
+    }
+   ],
+   "routing": [
+    {
+     "sample": false,
+     "measured": true
+    },
+    {
+     "sample": false,
+     "measured": true
+    },
+    {
+     "sample": false,
+     "measured": true
+    }
+   ]
+  },
+  {
+   "name": "aggregate: the mean of a boolean is the fraction of the period it was true",
+   "config": "[connector]\nprotocol = \"opcua\"\noutput = \"measurements\"\n\n[[device]]\nname = \"plc1\"\nprotocol_address = {}\nbatch = { aggregate = \"mean\", every = \"1s\" }\n[[device.point]]\nid = \"a\"\ndatatype = \"bool\"\naddress = {}\n",
+   "steps": [
+    {
+     "at": 0,
+     "read": {
+      "device": "plc1",
+      "point": "a",
+      "value": false,
+      "ts": "2026-01-01T00:00:00.000Z"
+     }
+    },
+    {
+     "at": 500,
+     "read": {
+      "device": "plc1",
+      "point": "a",
+      "value": true,
+      "ts": "2026-01-01T00:00:00.500Z"
+     }
+    },
+    {
+     "at": 750,
+     "read": {
+      "device": "plc1",
+      "point": "a",
+      "value": false,
+      "ts": "2026-01-01T00:00:00.750Z"
+     }
+    },
+    {
+     "at": 1000,
+     "due": true
+    }
+   ],
+   "messages": [
+    {
+     "topic": "te/device/plc1///m/opcua",
+     "retain": false,
+     "payload": {
+      "time": "2026-01-01T00:00:01.000Z",
+      "opcua": {
+       "a": 0.25
+      }
+     }
+    }
+   ],
+   "routing": [
+    {
+     "sample": false,
+     "measured": true
+    },
+    {
+     "sample": false,
+     "measured": true
+    },
+    {
+     "sample": false,
+     "measured": true
+    }
+   ]
+  },
+  {
+   "name": "aggregate: stale time does not count; a period without good time leaves the point out",
+   "config": "[connector]\nprotocol = \"opcua\"\noutput = \"measurements\"\n\n[[device]]\nname = \"plc1\"\nprotocol_address = {}\nbatch = { aggregate = \"mean\", every = \"1s\" }\n[[device.point]]\nid = \"a\"\ndatatype = \"float64\"\naddress = {}\n",
+   "steps": [
+    {
+     "at": 0,
+     "read": {
+      "device": "plc1",
+      "point": "a",
+      "value": 10,
+      "ts": "2026-01-01T00:00:00.000Z"
+     }
+    },
+    {
+     "at": 500,
+     "stale": {
+      "device": "plc1",
+      "stale": true
+     }
+    },
+    {
+     "at": 1000,
+     "due": true
+    },
+    {
+     "at": 2000,
+     "due": true
+    },
+    {
+     "at": 2100,
+     "stale": {
+      "device": "plc1",
+      "stale": false
+     }
+    },
+    {
+     "at": 2500,
+     "read": {
+      "device": "plc1",
+      "point": "a",
+      "value": 30,
+      "ts": "2026-01-01T00:00:02.500Z"
+     }
+    },
+    {
+     "at": 3000,
+     "due": true
+    }
+   ],
+   "messages": [
+    {
+     "topic": "te/device/plc1///m/opcua",
+     "retain": false,
+     "payload": {
+      "time": "2026-01-01T00:00:01.000Z",
+      "opcua": {
+       "a": 10
+      }
+     }
+    },
+    {
+     "topic": "te/device/plc1///m/opcua",
+     "retain": false,
+     "payload": {
+      "time": "2026-01-01T00:00:03.000Z",
+      "opcua": {
+       "a": 30
+      }
+     }
+    }
+   ],
+   "routing": [
+    {
+     "sample": false,
+     "measured": true
+    },
+    {
+     "sample": false,
+     "measured": true
+    }
+   ]
+  },
+  {
+   "name": "aggregate: a mean that is not exactly representable prints as the shortest round-trip form",
+   "config": "[connector]\nprotocol = \"opcua\"\noutput = \"measurements\"\n\n[[device]]\nname = \"plc1\"\nprotocol_address = {}\nbatch = { aggregate = \"mean\", every = \"1s\" }\n[[device.point]]\nid = \"a\"\ndatatype = \"float64\"\naddress = {}\n",
+   "steps": [
+    {
+     "at": 0,
+     "read": {
+      "device": "plc1",
+      "point": "a",
+      "value": 0.1,
+      "ts": "2026-01-01T00:00:00.000Z"
+     }
+    },
+    {
+     "at": 297,
+     "read": {
+      "device": "plc1",
+      "point": "a",
+      "value": 0.7,
+      "ts": "2026-01-01T00:00:00.297Z"
+     }
+    },
+    {
+     "at": 1000,
+     "due": true
+    }
+   ],
+   "messages": [
+    {
+     "topic": "te/device/plc1///m/opcua",
+     "retain": false,
+     "payload": {
+      "time": "2026-01-01T00:00:01.000Z",
+      "opcua": {
+       "a": 0.5217999999999999
+      }
+     }
+    }
+   ],
+   "routing": [
+    {
+     "sample": false,
      "measured": true
     },
     {

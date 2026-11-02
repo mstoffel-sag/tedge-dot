@@ -430,7 +430,7 @@ fn check_resolved_batches(config: &crate::config::ConnectorConfig) -> Result<(),
                 .map_err(|e| format!("device '{}': point '{}': {e}", device.name, point.id))?;
         }
     }
-    Ok(())
+    crate::measure::check_resolved(config)
 }
 
 /// Drop the resolved points switched off with `enabled = false` (§3.3) from a device's point

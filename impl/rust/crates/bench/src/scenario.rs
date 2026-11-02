@@ -54,8 +54,9 @@ pub struct Scenario {
     pub instances: Option<OneOrMany<usize>>,
     /// `"measurements"` for the runtime's measurement output (contract §5.5); samples otherwise.
     pub output: Option<String>,
-    /// Grouping policies to run, one run each: `"time"`, `"frame:<window>"` or
-    /// `"sample:<every>"`. Measurement output only.
+    /// Grouping policies to run, one run each: `"time"`, `"frame:<window>"`,
+    /// `"sample:<every>"` or `"sample:<every>:<aggregate>,..."` (`batch.aggregate` as a list).
+    /// Measurement output only.
     pub group_by: Option<OneOrMany<String>>,
     /// Share of each device's points that declare an alarm (`meta.alarm`), so they still
     /// publish samples in measurement output.
@@ -282,8 +283,16 @@ fn batch_table(policy: &str) -> Result<String, String> {
     match policy.split_once(':') {
         None if policy == "time" => Ok("{ group_by = \"time\" }".into()),
         Some(("frame", w)) => Ok(format!("{{ group_by = \"frame\", window = \"{w}\" }}")),
-        Some(("sample", e)) => Ok(format!("{{ group_by = \"sample\", every = \"{e}\" }}")),
-        _ => Err(format!("group_by '{policy}': use \"time\", \"frame:<window>\" or \"sample:<every>\"")),
+        Some(("sample", rest)) => match rest.split_once(':') {
+            None => Ok(format!("{{ group_by = \"sample\", every = \"{rest}\" }}")),
+            Some((e, aggregates)) => {
+                let list: Vec<String> = aggregates.split(',').map(|a| format!("\"{a}\"")).collect();
+                Ok(format!("{{ group_by = \"sample\", every = \"{e}\", aggregate = [{}] }}", list.join(", ")))
+            }
+        },
+        _ => Err(format!(
+            "group_by '{policy}': use \"time\", \"frame:<window>\", \"sample:<every>\" or \"sample:<every>:<aggregate>,...\""
+        )),
     }
 }
 
@@ -375,6 +384,18 @@ mod tests {
     }
 
     const NONE: Overrides = Overrides { rate: None, window: None, implementation: None };
+
+    #[test]
+    fn group_by_values_become_batch_tables() {
+        assert_eq!(batch_table("time").unwrap(), "{ group_by = \"time\" }");
+        assert_eq!(batch_table("frame:500ms").unwrap(), "{ group_by = \"frame\", window = \"500ms\" }");
+        assert_eq!(batch_table("sample:1s").unwrap(), "{ group_by = \"sample\", every = \"1s\" }");
+        assert_eq!(
+            batch_table("sample:1s:mean,min,max").unwrap(),
+            "{ group_by = \"sample\", every = \"1s\", aggregate = [\"mean\", \"min\", \"max\"] }"
+        );
+        assert!(batch_table("bucket:1s").is_err());
+    }
 
     #[test]
     fn polled_points_follow_the_rate() {

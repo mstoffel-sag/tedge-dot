@@ -8,6 +8,14 @@
 #                                                 ot-alarm raises the alarm from
 #   count        polled, named by its meta     -> the series Plant.Count on m/Plant
 #   stamped      pushed, sample = true         -> keeps the server's source time (§5.4)
+#
+# The `opcf` device frames the load-simulator's Burst node (written five times in a row every
+# second) in 500 ms windows, read twice as `burst` and `burst2` (openspec change frame-layers):
+# each value of a window goes into its own layer, holding both points, and layer times strictly
+# increase even when the writes share a millisecond.
+#
+# The `opca` device polls Ticks (incremented every second) every 200 ms and publishes its
+# time-weighted mean and its maximum every 2 s (openspec change sample-aggregate).
 
 [connector]
 protocol      = "opcua"
@@ -57,3 +65,34 @@ default_mode     = "typed"
   datatype  = "float64"
   sample    = true
   address   = { node_id = "ns=2;s=Stamped" }
+
+[[device]]
+name              = "opcf"
+protocol_address  = { endpoint = "opc.tcp://load-simulator:4840/" }
+default_mode      = "typed"
+sampling_interval = "1s"
+batch             = { group_by = "frame", window = "500ms" }
+
+  [[device.point]]
+  id       = "burst"
+  datatype = "uint32"
+  address  = { node_id = "ns=2;s=Burst" }
+
+  [[device.point]]
+  id       = "burst2"
+  datatype = "uint32"
+  address  = { node_id = "ns=2;s=Burst" }
+
+[[device]]
+name             = "opca"
+protocol_address = { endpoint = "opc.tcp://simulator:4840/", security_policy = "None", security_mode = "none" }
+default_mode     = "typed"
+poll_interval    = "200ms"
+batch            = { aggregate = ["mean", "max"], every = "2s" }
+
+  [[device.point]]
+  id        = "ticks"
+  subscribe = false
+  datatype  = "uint32"
+  unit      = "s"
+  address   = { node_id = "ns=2;s=Ticks" }

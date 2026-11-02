@@ -160,7 +160,13 @@
                 "properties": {
                   "group_by": { "enum": ["time", "frame", "sample"] },
                   "window": { "type": "string" },
-                  "every": { "type": "string" }
+                  "every": { "type": "string" },
+                  "aggregate": {
+                    "oneOf": [
+                      { "enum": ["mean", "min", "max", "last"] },
+                      { "type": "array", "items": { "enum": ["mean", "min", "max", "last"] } }
+                    ]
+                  }
                 }
               }
             }

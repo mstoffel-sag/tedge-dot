@@ -310,7 +310,7 @@ static void publish_link(rt_t *rt, tdot_device_t *dev, tdot_link_t status) {
     /* A device that is not connected leaves the samples of measurement output
      * (its slots are stale) until it is again. */
     tdot_batcher_set_stale(rt->batcher, (size_t)(dev - rt->cfg->devices),
-                           status != TDOT_LINK_CONNECTED);
+                           status != TDOT_LINK_CONNECTED, mono_ns());
     if (dev->link == status)
         return;
     dev->link = status;

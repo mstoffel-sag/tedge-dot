@@ -82,7 +82,7 @@ Which time a reading has, and how readings are grouped, is the point's `batch` p
 | `group_by` | Message time | Loss | Use it for |
 | --- | --- | --- | --- |
 | `"time"` (default) | The reading's own time | None, and no time is moved | Polled points. A polled pass shares one read time, so it is one message per device and group. |
-| `"frame"`, `window = "100ms"` | The first reading's time in the window | None. A time moves by less than `window` | Pushed points whose source times differ by a few milliseconds |
+| `"frame"`, `window = "500ms"` | Each layer's first reading's time in the window | None. A time moves by less than `window` | Pushed points whose source times differ by a few milliseconds |
 | `"sample"`, `every = "1s"` | The sample time | Readings superseded between two samples | A fixed rate per point, whatever the source sends |
 
 ### `time`: exact times
@@ -98,13 +98,28 @@ changed.
 ```toml
 [[device]]
 name  = "line1"
-batch = { group_by = "frame", window = "100ms" }
+batch = { group_by = "frame", window = "500ms" }
 ```
 
-Readings that arrive within `window` share a message stamped with the first reading's time. A
-point that changes twice within a window starts a new message, so both values reach the cloud.
+Readings that arrive within `window` share a message stamped with the first reading's time, and
+the messages are published when the window ends. A point that changes twice within a window
+does not end the message: its second value goes into a second message of the same window (a
+**layer**), its third into a third, and so on. Every value reaches the cloud, and a window of
+1,000 changing points usually needs only a few messages.
+
 The price is the time: a reading can be published with a time up to `window` earlier than its
-own. Choose a window shorter than the time resolution you care about.
+own, and a repeated point's earlier value waits for the end of the window. Choose a window
+shorter than the time resolution you care about. 500 ms suits most pushed telemetry. With a
+shorter window each device publishes at least one message per window: ten per second at 100 ms
+against two at 500 ms, whatever the batching. The mapper's cost is per message.
+
+Each layer is stamped with its first reading's time. When source times jitter, that time can be
+earlier than the previous layer's; the layer is then stamped 1 ms after the previous one, so a
+point's values always reach the cloud in the order they were read and the latest value in
+Cumulocity is the latest reading.
+
+A point with `report = { min_interval = ... }` of at least the window never changes twice
+within one window, so its frame is always a single message.
 
 ### `sample`: sample and hold
 
@@ -120,12 +135,52 @@ A point is left out while its value cannot be trusted: its device link is not `c
 subscription failed its check, or its last reading was not `good`. Points that raise an event
 for every reading (`meta.event.every`) are still published one by one, with their own times.
 
+### Aggregating: the mean, minimum and maximum of each period
+
+Sample-and-hold publishes one reading per period and drops the rest, so a spike between two
+samples never reaches the cloud. `aggregate` publishes a value that accounts for every reading
+of the period instead:
+
+```toml
+[[device]]
+name  = "line1"
+batch = { aggregate = ["mean", "min", "max"], every = "1s" }
+```
+
+`aggregate` implies `group_by = "sample"`, so the `every` is all it needs. Each second the
+connector then publishes, for every point of `line1`:
+
+| Series | Value |
+| --- | --- |
+| `<series>_mean` | The **time-weighted mean**: each value counts for as long as it held during the second. A value of 10 that changes to 20 at 900 ms gives 11, not 15. For evenly polled points this is the plain average. |
+| `<series>_min`, `<series>_max` | The smallest and largest value the point held during the second, including the one it held when the second started. |
+| `<series>_last` | The value held at the sample time, as sample-and-hold publishes it. |
+
+- A single name, such as `aggregate = "mean"`, publishes the mean under the point's own series
+  name, so dashboards and alarms on that series keep working.
+- A list publishes each aggregate with the suffix `_<aggregate>`, and the units message gives each
+  of them the point's unit. A suffixed name that is already another series of the device's group
+  is refused when the configuration loads.
+- A boolean counts as 1 or 0, so its mean is the fraction of the period it was true: a duty
+  cycle.
+- Time while the point is stale (its device link is down, its subscription failed its check, or
+  its last reading was not `good`) does not count. The mean of a period with a 10 for half of it
+  and an outage for the rest is 10. A period with no good time leaves the point out.
+- Periods start when the configuration is loaded, not on the wall clock's whole seconds.
+
+An aggregate uses every reading, so it cannot be combined with `report`: a point whose policy has
+both is refused when the configuration loads. To publish less often, use a longer `every`.
+
+Each aggregate in a list is a series of its own: three aggregates publish three times the series,
+and so about three times the messages and mapper work of sample-and-hold. A single aggregate
+costs the same as sample-and-hold.
+
 ### Combining with `report`
 
 The reporting policy (`report`, see [reducing data volume](reducing-data-volume.md)) runs first.
 A reading it withholds never reaches the measurements. Under `"sample"` the last reported value
 is sampled again, so `report` and `"sample"` together give a fixed rate of values that changed
-meaningfully.
+meaningfully. A point with an `aggregate` cannot have a `report` policy (see above).
 
 ## Samples and the flows
 
@@ -170,7 +225,7 @@ device's output and grouping policy:
 
 ```json
 "outputs": [
-  { "device": "line1", "output": "measurements", "batch": { "group_by": "frame", "window": "100ms" } }
+  { "device": "line1", "output": "measurements", "batch": { "group_by": "frame", "window": "500ms" } }
 ]
 ```
 

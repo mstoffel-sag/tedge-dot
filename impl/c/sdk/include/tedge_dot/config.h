@@ -64,6 +64,19 @@ typedef struct {
     long long ms; /* the frame's window or the sample period; 0 for time */
 } tdot_group_by_t;
 
+/* What a `"sample"` point publishes for each period (`batch.aggregate`). */
+typedef enum {
+    TDOT_AGG_MEAN = 0,
+    TDOT_AGG_MIN,
+    TDOT_AGG_MAX,
+    TDOT_AGG_LAST,
+} tdot_aggregate_t;
+
+#define TDOT_MAX_AGGREGATES 4
+
+/* "mean", "min", "max" or "last". */
+const char *tdot_aggregate_name(tdot_aggregate_t a);
+
 typedef struct tdot_point {
     char *id;
     tdot_datatype_t datatype;
@@ -126,6 +139,12 @@ typedef struct tdot_point {
     /* Effective grouping policy in measurement output: [connector] batch, then
      * the device's, then the point's (tdot_config_batch_table). */
     tdot_group_by_t group_by;
+    /* Under group_by = "sample": the aggregates of `batch.aggregate`, in order
+     * (naggregates 0 without one), and whether a list named them, so their
+     * series are suffixed `_<aggregate>`. */
+    tdot_aggregate_t aggregates[TDOT_MAX_AGGREGATES];
+    size_t naggregates;
+    bool aggregate_suffixed;
     /* `sample` (§5.5): 1 true, 0 false, -1 unset (the runtime decides). */
     int sample;
 

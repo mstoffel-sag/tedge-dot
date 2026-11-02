@@ -1845,7 +1845,7 @@ impl Publisher {
     /// healthy again: its slots leave the samples while it is stale.
     fn set_stale(&mut self, device: &str, stale: bool) {
         if let Some(batcher) = self.batcher.as_mut() {
-            batcher.set_stale(device, stale);
+            batcher.set_stale(device, stale, Instant::now());
         }
     }
 

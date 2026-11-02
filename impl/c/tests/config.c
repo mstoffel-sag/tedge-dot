@@ -2262,6 +2262,17 @@ static void check_measurement_settings_are_validated(void) {
         {"", "batch = { windw = \"1s\" }",
          "unknown key 'windw' in the batch of point 'p' (did you mean 'window'?)"},
         {"", "sample = \"yes\"", "point 'p': sample must be true or false"},
+        {"", "batch = { group_by = \"frame\", window = \"100ms\", aggregate = \"mean\" }",
+         "point 'p': batch.aggregate does not apply to group_by = \"frame\""},
+        {"", "batch = { aggregate = \"median\", every = \"1s\" }", "point 'p': batch.aggregate must be \"mean\", \"min\", \"max\" or \"last\", or a list of them without repeats"},
+        {"", "batch = { aggregate = [\"mean\", \"mean\"], every = \"1s\" }",
+         "point 'p': batch.aggregate must be \"mean\", \"min\", \"max\" or \"last\", or a list of them without repeats"},
+        {"", "batch = { aggregate = [], every = \"1s\" }", "point 'p': batch.aggregate must be \"mean\", \"min\", \"max\" or \"last\", or a list of them without repeats"},
+        {"", "batch = { aggregate = \"mean\" }",
+         "device 'plc': point 'p': batch.every is required with group_by = \"sample\""},
+        {"", "batch = { aggregate = \"mean\", every = \"1s\" }\n  report = { deadband = 0.5 }",
+         "device 'plc': point 'p': batch.aggregate cannot be combined with report: an aggregate "
+         "uses every reading"},
     };
     char body[1024], err[1024];
     for (size_t i = 0; i < sizeof cases / sizeof *cases; i++) {
@@ -2276,6 +2287,29 @@ static void check_measurement_settings_are_validated(void) {
             tdot_config_load(scratch_path(&s, "etc/opcua.toml"), err, sizeof err);
         CHECK(!cfg && ends_with(err, cases[i].message), "case %zu: expected \"...%s\", got: %s",
               i, cases[i].message, cfg ? "<loaded>" : err);
+        tdot_config_free(cfg);
+    }
+
+    /* A suffixed series may not take another point's name (the same case as
+     * measure.rs the_loader_names_the_place); samples output publishes none. */
+    for (int measurements = 1; measurements >= 0; measurements--) {
+        snprintf(body, sizeof body,
+                 "[connector]\nprotocol = \"opcua\"\n%s\n[[device]]\nname = \"plc\"\n"
+                 "protocol_address = {}\n"
+                 "  [[device.point]]\n  id = \"p\"\n  datatype = \"float64\"\n  address = {}\n"
+                 "  batch = { aggregate = [\"mean\", \"max\"], every = \"1s\" }\n"
+                 "  [[device.point]]\n  id = \"p_max\"\n  datatype = \"float64\"\n  address = {}\n",
+                 measurements ? "output = \"measurements\"" : "");
+        write_file(&s, "etc/opcua.toml", body);
+        err[0] = '\0';
+        tdot_config_t *cfg =
+            tdot_config_load(scratch_path(&s, "etc/opcua.toml"), err, sizeof err);
+        if (measurements)
+            CHECK(!cfg && ends_with(err, "device 'plc': points 'p' and 'p_max' both publish the "
+                                         "series 'p_max' in the group 'opcua'"),
+                  "series clash: got %s", cfg ? "<loaded>" : err);
+        else
+            CHECK(cfg != NULL, "series clash in samples output: %s", err);
         tdot_config_free(cfg);
     }
 
@@ -2300,6 +2334,38 @@ static void check_measurement_settings_are_validated(void) {
         cJSON *want = cJSON_Parse("[{\"device\":\"plc\",\"output\":\"measurements\","
                                   "\"batch\":{\"group_by\":\"frame\",\"window\":\"100ms\"}}]");
         CHECK(cJSON_Compare(outputs, want, true), "outputs");
+        cJSON_Delete(outputs);
+        cJSON_Delete(want);
+        tdot_config_free(cfg);
+    }
+    /* `aggregate` without `group_by` chooses "sample": a point under a frame
+     * device opts into it, and the descriptor shows the device's choice. */
+    write_file(&s, "etc/opcua.toml",
+               "[connector]\nprotocol = \"opcua\"\noutput = \"measurements\"\n"
+               "[[device]]\nname = \"plc\"\nprotocol_address = {}\n"
+               "batch = { aggregate = [\"mean\", \"max\"], every = \"1s\" }\n"
+               "  [[device.point]]\n  id = \"p\"\n  datatype = \"float64\"\n  address = {}\n"
+               "[[device]]\nname = \"line\"\nprotocol_address = {}\n"
+               "batch = { group_by = \"frame\", window = \"500ms\" }\n"
+               "  [[device.point]]\n  id = \"q\"\n  datatype = \"float64\"\n  address = {}\n"
+               "  batch = { aggregate = \"mean\", every = \"1s\" }\n");
+    cfg = tdot_config_load(scratch_path(&s, "etc/opcua.toml"), err, sizeof err);
+    CHECK(cfg != NULL, "aggregate implies sample: %s", err);
+    if (cfg) {
+        const tdot_point_t *p = &cfg->devices[0].points[0], *q = &cfg->devices[1].points[0];
+        CHECK(p->group_by.kind == TDOT_GROUP_SAMPLE && p->naggregates == 2 &&
+                  p->aggregate_suffixed && p->aggregates[1] == TDOT_AGG_MAX,
+              "p: sample, mean and max, suffixed");
+        CHECK(q->group_by.kind == TDOT_GROUP_SAMPLE && q->group_by.ms == 1000 &&
+                  q->naggregates == 1 && !q->aggregate_suffixed,
+              "q: sample under a frame device");
+        cJSON *outputs = tdot_config_outputs(cfg);
+        cJSON *want = cJSON_Parse(
+            "[{\"device\":\"plc\",\"output\":\"measurements\",\"batch\":{\"group_by\":"
+            "\"sample\",\"every\":\"1s\",\"aggregate\":[\"mean\",\"max\"]}},"
+            "{\"device\":\"line\",\"output\":\"measurements\",\"batch\":{\"group_by\":"
+            "\"frame\",\"window\":\"500ms\"}}]");
+        CHECK(cJSON_Compare(outputs, want, true), "outputs with aggregate");
         cJSON_Delete(outputs);
         cJSON_Delete(want);
         tdot_config_free(cfg);

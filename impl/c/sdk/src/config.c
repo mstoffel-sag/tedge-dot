@@ -14,6 +14,7 @@
 
 #include "cjson/cJSON.h"
 #include "tedge_dot/map.h"
+#include "tedge_dot/measure.h"
 #include "tedge_dot/schedule.h"
 
 /* ---- known keys (contract §3.3) -------------------------------------------
@@ -42,7 +43,20 @@ static const char *const POINT_KEYS[] = {
     "transform", "meta", "subscribe", "enabled", "report", "map", "batch", "sample", NULL};
 static const char *const MAP_KEYS[] = {"cases", "default", "as", NULL};
 /* Measurement output (contract §5.5), as measure.rs lists them. */
-static const char *const BATCH_KEYS[] = {"group_by", "window", "every", NULL};
+static const char *const BATCH_KEYS[] = {"group_by", "window", "every", "aggregate", NULL};
+static const char *const AGGREGATES[] = {"mean", "min", "max", "last"};
+
+const char *tdot_aggregate_name(tdot_aggregate_t a) {
+    return (unsigned)a < 4 ? AGGREGATES[a] : "";
+}
+
+/* The aggregate named `s`, or -1. */
+static int aggregate_of(const char *s) {
+    for (int i = 0; i < 4; i++)
+        if (strcmp(s, AGGREGATES[i]) == 0)
+            return i;
+    return -1;
+}
 static const char *const MEASUREMENT_KEYS[] = {"group", "series", "point_separator",
                                                "include_boolean", NULL};
 static const char *const OUTPUTS[] = {"samples", "measurements", NULL};
@@ -505,8 +519,18 @@ static cJSON *report_to_json(toml_table_t *t) {
         } else if ((d = toml_double_in(t, key)).ok) {
             format_float(d.u.d, num, sizeof num);
             cJSON_AddItemToObject(obj, key, cJSON_CreateRaw(num));
+        } else if (toml_array_in(t, key)) {
+            /* batch.aggregate's list of names (check_batch_values). */
+            toml_array_t *list = toml_array_in(t, key);
+            cJSON *arr = cJSON_CreateArray();
+            for (int j = 0; j < toml_array_nelem(list); j++)
+                if ((d = toml_string_at(list, j)).ok) {
+                    cJSON_AddItemToArray(arr, cJSON_CreateString(d.u.s));
+                    free(d.u.s);
+                }
+            cJSON_AddItemToObject(obj, key, arr);
         }
-        /* Nothing else survives check_report_values. */
+        /* Nothing else survives check_report_values and check_batch_values. */
     }
     return obj;
 }
@@ -525,6 +549,18 @@ static void merge_report_json(cJSON **base, const cJSON *over) {
             cJSON_ReplaceItemInObjectCaseSensitive(*base, x->string, cJSON_Duplicate(x, 1));
         else
             cJSON_AddItemToObject(*base, x->string, cJSON_Duplicate(x, 1));
+    }
+}
+
+/* Merge one level's `batch` table over `base`. A table that sets `aggregate`
+ * without `group_by` chooses "sample" (§5.5), at its own level. As
+ * measure.rs merge_batch_level. */
+static void merge_batch_json(cJSON **base, const cJSON *level) {
+    merge_report_json(base, level);
+    if (level && cJSON_GetObjectItemCaseSensitive(level, "aggregate") &&
+        !cJSON_GetObjectItemCaseSensitive(level, "group_by")) {
+        cJSON_DeleteItemFromObjectCaseSensitive(*base, "group_by");
+        cJSON_AddStringToObject(*base, "group_by", "sample");
     }
 }
 
@@ -759,8 +795,9 @@ static int check_batch_values(toml_table_t *owner, char *err, size_t errlen) {
             snprintf(err, errlen, "batch.group_by must be \"time\", \"frame\" or \"sample\"");
             return -1;
         }
-        static const char *const OWN[][2] = {{"window", "frame"}, {"every", "sample"}};
-        for (size_t i = 0; i < 2; i++)
+        static const char *const OWN[][2] = {
+            {"window", "frame"}, {"every", "sample"}, {"aggregate", "sample"}};
+        for (size_t i = 0; i < 3; i++)
             if (key_present(batch, OWN[i][0]) && strcmp(group_by, OWN[i][1]) != 0) {
                 snprintf(err, errlen, "batch.%s does not apply to group_by = \"%s\"",
                          OWN[i][0], group_by);
@@ -770,6 +807,33 @@ static int check_batch_values(toml_table_t *owner, char *err, size_t errlen) {
     if (batch_duration(batch, "window", 1, 60000, "1ms to 60s", err, errlen) ||
         batch_duration(batch, "every", 100, 3600000, "100ms to 1h", err, errlen))
         return -1;
+    if (key_present(batch, "aggregate")) {
+        bool ok = false;
+        toml_datum_t one = toml_string_in(batch, "aggregate");
+        toml_array_t *list = one.ok ? NULL : toml_array_in(batch, "aggregate");
+        if (one.ok) {
+            ok = aggregate_of(one.u.s) >= 0;
+            free(one.u.s);
+        } else if (list && toml_array_nelem(list) > 0 && toml_array_nelem(list) <= 4) {
+            int seen[4] = {0};
+            ok = true;
+            for (int i = 0; ok && i < toml_array_nelem(list); i++) {
+                toml_datum_t d = toml_string_at(list, i);
+                int a = d.ok ? aggregate_of(d.u.s) : -1;
+                ok = a >= 0 && !seen[a];
+                if (a >= 0)
+                    seen[a] = 1;
+                if (d.ok)
+                    free(d.u.s);
+            }
+        }
+        if (!ok) {
+            snprintf(err, errlen,
+                     "batch.aggregate must be \"mean\", \"min\", \"max\" or \"last\", or a list "
+                     "of them without repeats");
+            return -1;
+        }
+    }
     return 0;
 }
 
@@ -1873,9 +1937,33 @@ static int resolve_point_batches(const tdot_config_t *cfg, tdot_device_t *dev, c
         cJSON *merged = tdot_config_batch_table(cfg, dev, pt);
         char why[256];
         int rc = group_by_of(merged, &pt->group_by, why, sizeof why);
+        pt->naggregates = 0;
+        pt->aggregate_suffixed = false;
+        const cJSON *agg = cJSON_GetObjectItemCaseSensitive(merged, "aggregate");
+        if (rc == 0 && agg && pt->group_by.kind == TDOT_GROUP_SAMPLE &&
+            !raises_event_per_reading(pt)) {
+            const cJSON *x;
+            if (cJSON_IsString(agg)) {
+                pt->aggregates[pt->naggregates++] = (tdot_aggregate_t)aggregate_of(agg->valuestring);
+            } else {
+                pt->aggregate_suffixed = true;
+                cJSON_ArrayForEach(x, agg) if (cJSON_IsString(x) &&
+                                               pt->naggregates < TDOT_MAX_AGGREGATES &&
+                                               aggregate_of(x->valuestring) >= 0)
+                    pt->aggregates[pt->naggregates++] =
+                        (tdot_aggregate_t)aggregate_of(x->valuestring);
+            }
+        }
         cJSON_Delete(merged);
         if (rc != 0) {
             snprintf(err, errlen, "device '%s': point '%s': %s", dev->name, pt->id, why);
+            return -1;
+        }
+        if (pt->naggregates > 0 && !tdot_report_is_passthrough(&pt->report)) {
+            snprintf(err, errlen,
+                     "device '%s': point '%s': batch.aggregate cannot be combined with report: "
+                     "an aggregate uses every reading",
+                     dev->name, pt->id);
             return -1;
         }
     }
@@ -2194,7 +2282,8 @@ tdot_config_t *tdot_config_load(const char *path, char *err, size_t errlen) {
         toml_table_t *dev_batch = toml_table_in(dt, "batch");
         if (dev_batch)
             dev->batch_table = report_to_json(dev_batch);
-        if (resolve_point_batches(cfg, dev, why, sizeof why) != 0) {
+        if (resolve_point_batches(cfg, dev, why, sizeof why) != 0 ||
+            (cfg->output_measurements && tdot_measure_check_series(cfg, dev, why, sizeof why) != 0)) {
             snprintf(err, errlen, "%s: %s", path, why);
             goto fail;
         }
@@ -2325,9 +2414,9 @@ cJSON *tdot_config_report_table(const tdot_config_t *cfg, const tdot_device_t *d
 cJSON *tdot_config_batch_table(const tdot_config_t *cfg, const tdot_device_t *dev,
                                const tdot_point_t *pt) {
     cJSON *table = cJSON_CreateObject();
-    merge_report_json(&table, cfg ? cfg->batch_table : NULL);
-    merge_report_json(&table, dev ? dev->batch_table : NULL);
-    merge_report_json(&table, pt ? pt->batch_table : NULL);
+    merge_batch_json(&table, cfg ? cfg->batch_table : NULL);
+    merge_batch_json(&table, dev ? dev->batch_table : NULL);
+    merge_batch_json(&table, pt ? pt->batch_table : NULL);
     return table;
 }
 
@@ -2341,8 +2430,8 @@ cJSON *tdot_config_outputs(const tdot_config_t *cfg) {
     for (size_t i = 0; i < cfg->ndevices; i++) {
         const tdot_device_t *dev = &cfg->devices[i];
         cJSON *batch = NULL;
-        merge_report_json(&batch, cfg->batch_table);
-        merge_report_json(&batch, dev->batch_table);
+        merge_batch_json(&batch, cfg->batch_table);
+        merge_batch_json(&batch, dev->batch_table);
         if (!batch)
             batch = cJSON_CreateObject();
         /* The default first, so the two builds print the same order. */
