@@ -1,0 +1,19 @@
+[package]
+name = "connector-bench"
+version.workspace = true
+edition.workspace = true
+description = "Synthetic connector module for the performance harness; never packaged"
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+tedge-dot-sdk = { path = "../sdk" }
+async-trait = "0.1"
+serde_json = "1"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "time", "sync"] }
+time = { version = "0.3", features = ["std"] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["full"] }
+toml = "0.8"

@@ -7,7 +7,7 @@ license.workspace = true
 repository.workspace = true
 
 [workspace]
-members = ["crates/sdk", "crates/connector-modbus", "crates/connector-opcua", "crates/connector-canbus", "crates/connector-canopen", "crates/connector-profibus", "crates/connector-snmp", "crates/ot-conformance"]
+members = ["crates/sdk", "crates/connector-modbus", "crates/connector-opcua", "crates/connector-canbus", "crates/connector-canopen", "crates/connector-profibus", "crates/connector-snmp", "crates/connector-bench", "crates/bench", "crates/ot-conformance"]
 # The fuzz crates build with cargo-fuzz (nightly, libFuzzer) and stay out of normal builds;
 # vendor/ holds patched copies of upstream crates (see the TEDGE-DOT-PATCH.md inside each).
 exclude = ["crates/sdk/fuzz", "crates/connector-snmp/fuzz", "crates/connector-opcua/fuzz", "vendor/async-opcua-crypto", "vendor/snmp2"]
@@ -32,6 +32,9 @@ canbus-fd = ["canbus", "dep:connector-canbus", "connector-canbus/canbus-fd"]
 canopen = ["dep:connector-canopen"]
 profibus = ["dep:connector-profibus"]
 snmp = ["dep:connector-snmp"]
+# Synthetic module for the performance harness (bench/). Never in `default` or a release
+# feature list: ci/check-release-features.sh fails the lint if one names it.
+bench = ["dep:connector-bench"]
 
 [dependencies]
 tedge-dot-sdk = { path = "crates/sdk" }
@@ -41,6 +44,7 @@ connector-canbus = { path = "crates/connector-canbus", optional = true }
 connector-canopen = { path = "crates/connector-canopen", optional = true }
 connector-profibus = { path = "crates/connector-profibus", optional = true }
 connector-snmp = { path = "crates/connector-snmp", optional = true }
+connector-bench = { path = "crates/connector-bench", optional = true }
 clap = { version = "4", features = ["derive"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal"] }
 toml = "0.8"

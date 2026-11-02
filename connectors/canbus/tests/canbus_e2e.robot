@@ -33,6 +33,9 @@ ${HEALTH_TOPIC}         te/device/main/service/${SERVICE}/status/health
 # Use a generous startup timeout and a short per-sample timeout.
 ${READY_TIMEOUT}        90
 ${SAMPLE_TIMEOUT}       5
+# Measurement output (connector-measure.toml, openspec native-batched-output): the `canm` device.
+${MEASURE_TOPIC}            te/device/canm///m/${PROTOCOL}
+${MEASURE_SAMPLE_PREFIX}    te/device/canm/ot/${PROTOCOL}/sample
 
 
 *** Test Cases ***
@@ -120,6 +123,37 @@ B9 Capability Honesty — No Undeclared Datatypes
 B10 Topic Discipline — No Stray Measurement Topics
     [Documentation]    The connector must not publish to te/.../m/ topics.
     No Messages On Topic    te/device/${DEVICE}/m/#    timeout=3
+
+
+Measurement Output Puts The Signals Of A Frame In One Measurement
+    [Documentation]    In measurement output the connector publishes the thin-edge measurement
+    ...                itself. The signals of one frame are one push delivery, so they share a
+    ...                time and a message (contract §5.4, §5.5); a boolean becomes 1.
+    ${payload}=    Wait For Message Containing    ${MEASURE_TOPIC}    "rpm"    timeout=${READY_TIMEOUT}
+    ${rpm}=    Get Json Field    ${payload}    canbus.rpm
+    Should Be Equal As Numbers    ${rpm}    2500
+    ${brake}=    Get Json Field    ${payload}    canbus.brake_active
+    Should Be Equal As Numbers    ${brake}    1
+
+Measurement Output Names Series As The Measurement Flow Does
+    [Documentation]    A point's meta.measurement names its group and series.
+    ${payload}=    Wait For Message Containing    te/device/canm///m/Engine    "Coolant"    timeout=${READY_TIMEOUT}
+    ${coolant}=    Get Json Field    ${payload}    Engine.Coolant
+    Should Be Equal As Numbers    ${coolant}    85
+
+Measurement Output Publishes The Units Metadata
+    [Documentation]    The connector publishes the units of a measurement topic, retained, on
+    ...                <topic>/meta: only the series with a unit.
+    # Read from the broker: a retained message is delivered once per subscription.
+    Wait For Message Containing    ${MEASURE_TOPIC}    "time"    timeout=${READY_TIMEOUT}
+    ${payload}=    Fetch Retained    ${MEASURE_TOPIC}/meta    timeout=10
+    # The keys hold a dot ("<group>.<series>"), so they are matched as text.
+    Should Contain    ${payload}    "canbus.rpm":{"unit":"rpm"}
+
+Measurement Output Publishes No Sample For A Plain Point
+    [Documentation]    A point no flow reads publishes no sample in measurement output.
+    Wait For Message Containing    ${MEASURE_TOPIC}    "time"    timeout=${READY_TIMEOUT}
+    No New Messages On Topic    ${MEASURE_SAMPLE_PREFIX}/rpm    timeout=5
 
 
 *** Keywords ***

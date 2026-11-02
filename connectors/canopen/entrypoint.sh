@@ -18,4 +18,11 @@ done
 echo "Broker is ready"
 
 # Start the connector.
+# The measurement-output device (connector-measure.toml) is a connector instance of its own, in
+# a second process, so the main instance keeps running from its one file as PID 1.
+if [ -f /etc/connector-measure.toml ]; then
+    echo "starting tedge-dot (measurement output)"
+    tedge-dot /etc/connector-measure.toml &
+fi
+
 exec tedge-dot run /etc/connector.toml

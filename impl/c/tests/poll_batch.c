@@ -27,6 +27,9 @@ static int failures = 0;
     } while (0)
 
 #define POINTS 1200
+/* The point whose module sets a source time, and the time (contract §5). */
+#define SOURCE_TIMED 5
+#define SOURCE_TS_MS 1767225600913.0
 
 /* The fake module's behaviour, set before each run: the point whose read
  * takes the link down and the one with nothing to read (-1: none). */
@@ -61,6 +64,8 @@ static int fake_read(tdot_connector_t *self, tdot_device_t *dev, tdot_point_t *p
     }
     out->value.kind = TDOT_VAL_NUM;
     out->value.num = i;
+    if (i == SOURCE_TIMED)
+        out->source_ts_ms = SOURCE_TS_MS;
     return 0;
 }
 
@@ -98,6 +103,8 @@ typedef struct {
     int bad;
     int max_index;            /* the highest point index published */
     bool seen[POINTS];
+    double ts_ms[POINTS];     /* each point's published ts_ms */
+    char source_ts[40];       /* the published ts of SOURCE_TIMED */
     size_t sizes[16];         /* read_points call sizes, in order */
     size_t ncalls;
 } run_t;
@@ -172,6 +179,11 @@ static void run(bool batched, run_t *r) {
             if (i >= 0 && i < POINTS) {
                 CHECK(!r->seen[i], "point %d published twice in one pass", i);
                 r->seen[i] = true;
+                const cJSON *ts_ms = cJSON_GetObjectItem(sample, "ts_ms");
+                r->ts_ms[i] = cJSON_IsNumber(ts_ms) ? ts_ms->valuedouble : -1;
+                const cJSON *ts = cJSON_GetObjectItem(sample, "ts");
+                if (i == SOURCE_TIMED && cJSON_IsString(ts))
+                    snprintf(r->source_ts, sizeof r->source_ts, "%s", ts->valuestring);
             }
             if (i > r->max_index)
                 r->max_index = i;
@@ -206,6 +218,30 @@ static void check_batches(void) {
     CHECK(r.samples == POINTS && r.good == POINTS,
           "every point is published good with its own value: %d sample(s), %d good", r.samples,
           r.good);
+    /* One read time per call (contract §5), unless the module gave a source time. */
+    for (int i = 0; i < POINTS; i++) {
+        int first = i / TDOT_READ_POINTS_MAX * TDOT_READ_POINTS_MAX;
+        if (first == SOURCE_TIMED)
+            first++;
+        if (i == SOURCE_TIMED)
+            CHECK(r.ts_ms[i] == SOURCE_TS_MS, "p%d keeps its source time: %.3f", i, r.ts_ms[i]);
+        else
+            CHECK(r.ts_ms[i] == r.ts_ms[first], "p%d shares its call's read time: %.3f vs %.3f",
+                  i, r.ts_ms[i], r.ts_ms[first]);
+    }
+    CHECK(strcmp(r.source_ts, "2026-01-01T00:00:00.913Z") == 0, "source ts: %s", r.source_ts);
+}
+
+/* Without read_points the pass over the device is the read call: one time. */
+static void check_point_by_point_pass_time(void) {
+    run_t r;
+    lose_at = no_data_at = -1;
+    run(false, &r);
+    int first = SOURCE_TIMED == 0 ? 1 : 0;
+    for (int i = 0; i < POINTS; i++)
+        if (i != SOURCE_TIMED)
+            CHECK(r.ts_ms[i] == r.ts_ms[first], "p%d shares the pass's read time: %.3f vs %.3f", i,
+                  r.ts_ms[i], r.ts_ms[first]);
 }
 
 /* A lost link in the middle of a call: the points before it and the one that
@@ -244,6 +280,7 @@ static void check_no_data(void) {
 
 int main(void) {
     check_batches();
+    check_point_by_point_pass_time();
     check_lost_link();
     check_no_data();
     if (failures) {

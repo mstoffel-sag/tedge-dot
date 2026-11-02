@@ -1,0 +1,43 @@
+# The `canm` device of the CAN bus e2e harness, in measurement output (contract §5.5, openspec
+# change native-batched-output): the connector publishes the thin-edge measurements itself,
+# batched. `output` is a connector setting, so the device is a connector instance of its own,
+# which entrypoint.sh starts next to the main one. SocketCAN hands every frame to every reader,
+# so it decodes the same ENGINE_STATUS frames as the main instance.
+#
+#   rpm           2500, a unit               -> a series of m/canbus, and the units metadata
+#   brake_active  true                       -> the series 1
+#   coolant_temp  85, meta.measurement       -> the series Engine.Coolant on m/Engine
+#
+# The signals of one frame are one push delivery, so they share a time and a message.
+
+[connector]
+protocol     = "canbus"
+service_name = "tedge-dot-measure"
+log_level    = "info"
+output       = "measurements"
+
+[mqtt]
+host = "localhost"
+port = 13883
+
+[[device]]
+name             = "canm"
+protocol_address = { interface = "vcan0", dbc_file = "/test.dbc" }
+default_mode     = "typed"
+
+  [[device.point]]
+  id       = "rpm"
+  datatype = "uint16"
+  unit     = "rpm"
+  address  = { message_name = "ENGINE_STATUS", signal_name = "RPM" }
+
+  [[device.point]]
+  id       = "brake_active"
+  datatype = "bool"
+  address  = { message_name = "ENGINE_STATUS", signal_name = "BRAKE_ACTIVE" }
+
+  [[device.point]]
+  id       = "coolant_temp"
+  datatype = "int8"
+  address  = { message_name = "ENGINE_STATUS", signal_name = "COOLANT_TEMP" }
+  meta     = { measurement = { group = "Engine", series = "Coolant" } }

@@ -136,6 +136,11 @@ typedef struct {
      * transform: set by the runtime on mapped points only, never by a module.
      * NONE otherwise, which keeps `source_value` out of the envelope. */
     tdot_value_t source;
+    /* The time the protocol gives the value, in Unix milliseconds, when it
+     * gives one (an OPC UA source timestamp); 0 -- what tdot_sample_init sets
+     * -- for none. The runtime makes it the sample's `ts` (contract §5); a
+     * sample without one carries the completion time of its read call. */
+    double source_ts_ms;
 } tdot_sample_t;
 
 void tdot_sample_init(tdot_sample_t *s);

@@ -30,7 +30,7 @@ connector-canopen = { path = "../connector-canopen", optional = true }
 connector-profibus = { path = "../connector-profibus", optional = true }
 connector-snmp = { path = "../connector-snmp", optional = true }
 clap = { version = "4", features = ["derive"] }
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "time", "sync", "io-util", "process"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "time", "sync", "io-util", "process", "signal"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 toml = "0.8"

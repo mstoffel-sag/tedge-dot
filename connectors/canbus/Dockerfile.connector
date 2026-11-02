@@ -26,6 +26,7 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=build /usr/local/bin/tedge-dot /usr/bin/tedge-dot
 COPY connectors/canbus/connector.toml /etc/connector.toml
+COPY connectors/canbus/connector-measure.toml /etc/connector-measure.toml
 COPY connectors/canbus/sim/test.dbc /test.dbc
 COPY connectors/canbus/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh

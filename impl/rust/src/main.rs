@@ -1523,6 +1523,8 @@ fn build_connector(protocol: &str) -> Result<Box<dyn Connector>, String> {
         "profibus" => Ok(connector_profibus::factory()),
         #[cfg(feature = "snmp")]
         "snmp" => Ok(connector_snmp::factory()),
+        #[cfg(feature = "bench")]
+        "bench" => Ok(connector_bench::factory()),
         other => Err(format!(
             "protocol '{other}' is not compiled in (enable its cargo feature)"
         )),

@@ -6,7 +6,7 @@
 | Protocol id | `snmp` |
 | Crate | `connector-snmp` (feature `snmp`) · C module `impl/c/connectors/snmp/` (option `TDOT_SNMP`) |
 | Builds on | Rust: [`snmp2`](https://github.com/roboplc/snmp2) (MIT/Apache-2.0). C: [net-snmp](https://github.com/net-snmp/net-snmp) `libnetsnmp` (BSD-style), built from source as a minimal static library. [Connector SDK](../sdk/connector-sdk.md) |
-| Implements | [OT Connector Contract](../contract/ot-connector-contract.md) v0.1.0 |
+| Implements | [OT Connector Contract](../contract/ot-connector-contract.md) v0.2.0 |
 | Golden vectors | [connectors/snmp/conformance/trap-vectors.json](../../connectors/snmp/conformance/trap-vectors.json) |
 
 ## 1. Scope

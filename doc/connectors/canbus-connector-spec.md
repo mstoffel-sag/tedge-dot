@@ -6,7 +6,7 @@
 | Protocol id | `canbus` |
 | Crate | `connector-canbus` (feature `canbus`) |
 | Builds on | [`socketcan`](https://crates.io/crates/socketcan) v3 (Linux SocketCAN), [`can-dbc`](https://crates.io/crates/can-dbc) v4, [Connector SDK](../sdk/connector-sdk.md) |
-| Implements | [OT Connector Contract](../contract/ot-connector-contract.md) v0.1.0 |
+| Implements | [OT Connector Contract](../contract/ot-connector-contract.md) v0.2.0 |
 
 This spec is written to be precise enough for a developer or AI agent to implement from this
 document plus the SDK spec, and verify correctness against the [acceptance vectors](#9-acceptance-test-vectors)

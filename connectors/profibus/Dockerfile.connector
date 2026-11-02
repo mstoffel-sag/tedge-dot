@@ -29,6 +29,7 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=build /usr/local/bin/tedge-dot /usr/bin/tedge-dot
 COPY connectors/profibus/connector.toml /etc/connector.toml
+COPY connectors/profibus/connector-measure.toml /etc/connector-measure.toml
 COPY connectors/profibus/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 ENV RUST_LOG=info

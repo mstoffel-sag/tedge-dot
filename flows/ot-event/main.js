@@ -2,7 +2,6 @@
 //
 // Direction: OT protocol format / thin-edge.io data model -> thin-edge.io data model.
 //   in:  te/device/<device>/ot/<protocol>/sample/<point>  (samples: events declared per point)
-//        te/device/<device>///m/<group>                   (measurements: the `series` param)
 //   out: te/device/<device>///e/<event_type>              (thin-edge event)
 //
 // Per-signal events (from samples): the connector echoes the point's free-form `meta` table in
@@ -29,14 +28,12 @@
 // raising on every restart would report changes that never happened. A change made while the
 // mapper was down is therefore not reported.
 //
-// Measurement events (from measurements): the flow params watch ONE series and raise an event on
-// every change of it, its first value included — the original mode, kept for existing
-// deployments. It is off while `series` is empty, which is what lets the flow ship active:
-// without params it only acts on declarations.
+// The measurement-series event (one series, an event on every change, set in params) is the
+// separate flow ot-event-series: subscribing to the measurements here would wake this flow on
+// every batch a connector publishes in measurement output (contract §5.5).
 //
 // State (context.script):
 //   "event:<device>:<point>:<type>"  -> { value } last value, or { holds } with `when`
-//   "<event topic>:last"             -> last value of the measurement series
 
 const decoder = new TextDecoder();
 
@@ -160,43 +157,6 @@ function onSample(parts, sample, context) {
   return out;
 }
 
-function onMeasurement(message, payload, context) {
-  const cfg = context.config || {};
-  // Off unless a series is configured: the flow ships active, and only declarations drive it then.
-  const series = cfg.series || "";
-  if (!series) return [];
-
-  // Group defaults to the m/<group> segment of the source topic, so this flow follows whatever
-  // protocol produced the measurement.
-  const group = cfg.group || message.topic.split("/")[6] || "value";
-  const eventType = cfg.event_type || "ot_event";
-  const text = cfg.text || "OT value changed";
-
-  // Extract the series value, tolerating both { series: v } and { series: { value: v } }.
-  const node = payload?.[group]?.[series];
-  const value = typeof node === "object" && node !== null ? node.value : node;
-  if (value === undefined || value === null) return [];
-
-  // Event topic derived from the device prefix of the incoming measurement topic.
-  // e.g. "te/device/plc1///m/modbus" -> "te/device/plc1///e/<event_type>"
-  const devicePrefix = message.topic.split("/").slice(0, 5).join("/");
-  const eventTopic = `${devicePrefix}/e/${eventType}`;
-
-  // Emit only when the value changed since the last seen one (per device+type).
-  const key = `${eventTopic}:last`;
-  const last = context.script.get(key);
-  if (last !== undefined && last !== null && last === value) return [];
-  context.script.set(key, value);
-
-  return [{
-    topic: eventTopic,
-    payload: JSON.stringify({
-      text,
-      time: payload.time,
-    }),
-  }];
-}
-
 export function onMessage(message, context) {
   let payload;
   try {
@@ -207,6 +167,5 @@ export function onMessage(message, context) {
   if (!payload || typeof payload !== "object") return [];
   const parts = message.topic.split("/");
   if (parts[3] === "ot" && parts[5] === "sample") return onSample(parts, payload, context);
-  if (parts[5] === "m") return onMeasurement(message, payload, context);
   return [];
 }

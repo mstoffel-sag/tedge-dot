@@ -144,6 +144,28 @@
             }
           }
         },
+        "outputs": {
+          "type": "array",
+          "description": "Measurement output (§5.5): each device's output and its merged batch table ([connector], then the device), group_by filled in. Absent for a connector in samples output that sets no batch.",
+          "items": {
+            "type": "object",
+            "required": ["device", "output", "batch"],
+            "additionalProperties": false,
+            "properties": {
+              "device": { "type": "string" },
+              "output": { "enum": ["samples", "measurements"] },
+              "batch": {
+                "type": "object",
+                "required": ["group_by"],
+                "properties": {
+                  "group_by": { "enum": ["time", "frame", "sample"] },
+                  "window": { "type": "string" },
+                  "every": { "type": "string" }
+                }
+              }
+            }
+          }
+        },
         "reports": {
           "type": "object",
           "description": "The reporting policies (§5.3). `default` is [connector] report; `devices` lists each device declaring a report; `points` lists the effective (merged) policy of each point whose policy differs from its device's. A point's policy is its `points` entry if present, else its device's entry merged over `default`. Absent when no report is configured.",

@@ -32,6 +32,9 @@ ${HEALTH_TOPIC}         te/device/main/service/${SERVICE}/status/health
 
 ${READY_TIMEOUT}        120
 ${SAMPLE_TIMEOUT}       30
+# Measurement output (connector-measure.toml, openspec native-batched-output): the `pbm` device.
+${MEASURE_TOPIC}            te/device/pbm///m/${PROTOCOL}
+${MEASURE_SAMPLE_PREFIX}    te/device/pbm/ot/${PROTOCOL}/sample
 
 
 *** Test Cases ***
@@ -92,6 +95,40 @@ Writes Digital Output And Reads It Back
     ...    "status":"successful"    timeout=${SAMPLE_TIMEOUT}
     ${point}=    Get Json Field    ${result}    point
     Should Be Equal    ${point}    do_byte0
+
+
+Measurement Output Batches A Polled Pass Into One Measurement
+    [Documentation]    In measurement output the connector publishes the thin-edge measurement
+    ...                itself: the device's polled points of one group share one read time, so
+    ...                they arrive in one message (contract §5.4, §5.5). A boolean becomes 1; a
+    ...                raw point becomes no series.
+    ${payload}=    Wait For Message Containing    ${MEASURE_TOPIC}    "ai0_raw"    timeout=${READY_TIMEOUT}
+    ${ai0}=    Get Json Field    ${payload}    profibus.ai0_raw
+    Should Be Equal As Numbers    ${ai0}    4660
+    ${bit}=    Get Json Field    ${payload}    profibus.di_bit3
+    Should Be Equal As Numbers    ${bit}    1
+    Should Not Contain    ${payload}    di_raw
+
+Measurement Output Names Series As The Measurement Flow Does
+    [Documentation]    A point's meta.measurement names its group and series.
+    ${payload}=    Wait For Message Containing    te/device/pbm///m/Analog    "In1"    timeout=${READY_TIMEOUT}
+    ${in1}=    Get Json Field    ${payload}    Analog.In1
+    Should Be Equal As Numbers    ${in1}    100
+
+Measurement Output Publishes The Units Metadata
+    [Documentation]    The connector publishes the units of a measurement topic, retained, on
+    ...                <topic>/meta: only the series with a unit.
+    # Read from the broker: a retained message is delivered once per subscription.
+    Wait For Message Containing    ${MEASURE_TOPIC}    "time"    timeout=${READY_TIMEOUT}
+    ${payload}=    Fetch Retained    ${MEASURE_TOPIC}/meta    timeout=${SAMPLE_TIMEOUT}
+    # The keys hold a dot ("<group>.<series>"), so they are matched as text.
+    Should Contain    ${payload}    "profibus.ai0_raw":{"unit":"counts"}
+    Should Not Contain    ${payload}    di_bit3
+
+Measurement Output Publishes No Sample For A Plain Point
+    [Documentation]    A point no flow reads publishes no sample in measurement output.
+    Wait For Message Containing    ${MEASURE_TOPIC}    "time"    timeout=${READY_TIMEOUT}
+    No New Messages On Topic    ${MEASURE_SAMPLE_PREFIX}/ai0_raw    timeout=5
 
 
 *** Keywords ***

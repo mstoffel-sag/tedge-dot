@@ -2235,6 +2235,85 @@ static void check_report_merges_through_libraries_and_levels(void) {
     scratch_free(&s);
 }
 
+/* Measurement output settings (contract §5.5) are refused with the Rust
+ * loader's messages. Mirrors measure.rs::the_loader_names_the_place. */
+static void check_measurement_settings_are_validated(void) {
+    scratch_t s;
+    scratch_init(&s);
+    static const struct {
+        const char *connector, *point, *message;
+    } cases[] = {
+        {"output = \"both\"", "",
+         "[connector] output must be one of \"samples\", \"measurements\" (got 'both')"},
+        {"batch = { group_by = \"frame\" }", "",
+         "device 'plc': point 'p': batch.window is required with group_by = \"frame\""},
+        {"measurement = { include_boolean = \"yes\" }", "",
+         "[connector] measurement.include_boolean must be true or false"},
+        {"measurement = { grup = \"x\" }", "",
+         "unknown key 'grup' in the measurement of [connector] (did you mean 'group'?)"},
+        {"", "batch = { group_by = \"time\", window = \"100ms\" }",
+         "point 'p': batch.window does not apply to group_by = \"time\""},
+        {"", "batch = { group_by = \"frame\", window = \"2m\" }",
+         "point 'p': batch.window must be a duration from 1ms to 60s"},
+        {"", "batch = { group_by = \"sample\", every = \"50ms\" }",
+         "point 'p': batch.every must be a duration from 100ms to 1h"},
+        {"", "batch = { group_by = \"bucket\" }",
+         "point 'p': batch.group_by must be \"time\", \"frame\" or \"sample\""},
+        {"", "batch = { windw = \"1s\" }",
+         "unknown key 'windw' in the batch of point 'p' (did you mean 'window'?)"},
+        {"", "sample = \"yes\"", "point 'p': sample must be true or false"},
+    };
+    char body[1024], err[1024];
+    for (size_t i = 0; i < sizeof cases / sizeof *cases; i++) {
+        snprintf(body, sizeof body,
+                 "[connector]\nprotocol = \"opcua\"\n%s\n[[device]]\nname = \"plc\"\n"
+                 "protocol_address = {}\n  [[device.point]]\n  id = \"p\"\n"
+                 "  datatype = \"float64\"\n  address = {}\n  %s\n",
+                 cases[i].connector, cases[i].point);
+        write_file(&s, "etc/opcua.toml", body);
+        err[0] = '\0';
+        tdot_config_t *cfg =
+            tdot_config_load(scratch_path(&s, "etc/opcua.toml"), err, sizeof err);
+        CHECK(!cfg && ends_with(err, cases[i].message), "case %zu: expected \"...%s\", got: %s",
+              i, cases[i].message, cfg ? "<loaded>" : err);
+        tdot_config_free(cfg);
+    }
+
+    /* A point choosing `time` under a device that chose `frame` inherits the
+     * window, which is ignored; the descriptor lists the device's batch. */
+    write_file(&s, "etc/opcua.toml",
+               "[connector]\nprotocol = \"opcua\"\noutput = \"measurements\"\n"
+               "[[device]]\nname = \"plc\"\nprotocol_address = {}\n"
+               "batch = { group_by = \"frame\", window = \"100ms\" }\n"
+               "  [[device.point]]\n  id = \"p\"\n  datatype = \"float64\"\n  address = {}\n"
+               "  batch = { group_by = \"time\" }\n"
+               "  [[device.point]]\n  id = \"q\"\n  datatype = \"float64\"\n  address = {}\n");
+    tdot_config_t *cfg = tdot_config_load(scratch_path(&s, "etc/opcua.toml"), err, sizeof err);
+    CHECK(cfg != NULL, "a point's own group_by must load: %s", err);
+    if (cfg) {
+        CHECK(cfg->output_measurements, "output = measurements");
+        CHECK(cfg->devices[0].points[0].group_by.kind == TDOT_GROUP_TIME, "p: time");
+        CHECK(cfg->devices[0].points[1].group_by.kind == TDOT_GROUP_FRAME &&
+                  cfg->devices[0].points[1].group_by.ms == 100,
+              "q: frame 100 ms");
+        cJSON *outputs = tdot_config_outputs(cfg);
+        cJSON *want = cJSON_Parse("[{\"device\":\"plc\",\"output\":\"measurements\","
+                                  "\"batch\":{\"group_by\":\"frame\",\"window\":\"100ms\"}}]");
+        CHECK(cJSON_Compare(outputs, want, true), "outputs");
+        cJSON_Delete(outputs);
+        cJSON_Delete(want);
+        tdot_config_free(cfg);
+    }
+    write_file(&s, "etc/opcua.toml",
+               "[connector]\nprotocol = \"opcua\"\n[[device]]\nname = \"plc\"\n"
+               "protocol_address = {}\n");
+    cfg = tdot_config_load(scratch_path(&s, "etc/opcua.toml"), err, sizeof err);
+    CHECK(cfg && !cfg->output_measurements && !tdot_config_outputs(cfg),
+          "samples output without batch: no `outputs`");
+    tdot_config_free(cfg);
+    scratch_free(&s);
+}
+
 /* A `report` table is validated where it is written, with the Rust loader's
  * messages; a conflict only through inheritance is not refused but raised.
  * Mirrors library.rs::report_tables_are_validated_where_they_are. */
@@ -2609,6 +2688,7 @@ int main(void) {
     check_watchdog_period();
     check_report_merges_through_libraries_and_levels();
     check_report_tables_are_validated_where_they_are();
+    check_measurement_settings_are_validated();
     check_call_method_points();
     check_call_method_needs_connector_support();
 #ifdef TDOT_FEATURE_OPCUA

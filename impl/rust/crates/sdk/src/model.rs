@@ -205,7 +205,13 @@ impl Quality {
 /// One read result, serialized to the contract sample envelope.
 #[derive(Clone, Debug)]
 pub struct Sample {
+    /// The reading's time (contract §5): the source time when the module set one, else the
+    /// completion time of the read call or the push delivery. The runtime sets it; what a module
+    /// puts here is replaced.
     pub ts: OffsetDateTime,
+    /// The time the protocol gives the value, when it gives one (an OPC UA source timestamp).
+    /// Set by the module; the runtime makes it the sample's `ts`.
+    pub source_ts: Option<OffsetDateTime>,
     pub device: DeviceId,
     pub protocol: &'static str,
     pub point: PointId,
@@ -511,6 +517,7 @@ mod tests {
             seq: None,
             error: None,
             source_value: None,
+            source_ts: None,
         };
         let env = sample.to_envelope();
         assert_eq!(env["ts"], serde_json::json!("2017-07-14T02:40:00.123Z"));

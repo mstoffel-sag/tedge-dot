@@ -68,6 +68,12 @@ ${POLLED_BULK_PREFIX}       te/device/opc7/ot/${PROTOCOL}/sample
 ${METHOD_PREFIX}            te/device/machine/ot/${PROTOCOL}/cmd/call-method
 ${MACHINE_WRITE_PREFIX}     te/device/machine/ot/${PROTOCOL}/cmd/write
 ${MACHINE_SAMPLE_PREFIX}    te/device/machine/ot/${PROTOCOL}/sample
+# Measurement output (connector-measure.toml, openspec native-batched-output): the `opcm` device.
+${MEASURE_TOPIC}            te/device/opcm///m/${PROTOCOL}
+${MEASURE_SAMPLE_PREFIX}    te/device/opcm/ot/${PROTOCOL}/sample
+${MEASURE_CAPS_TOPIC}       te/device/main/service/tedge-dot-measure/ot/capabilities
+# Every write to ns=2;s=Stamped carries this source timestamp (sim/server.py).
+${STAMPED_SOURCE_TIME}      2026-01-01T00:00:00.913Z
 
 
 *** Test Cases ***
@@ -801,6 +807,69 @@ A thin-edge Command Calls A Method
     ${result}=    Wait For Message Containing    te/device/machine///cmd/ot_call_method/tm-1    "status":"successful"    timeout=${FLOWS_TIMEOUT}
     ${outputs}=    Get Json Field    ${result}    outputs
     Should Be Equal As Numbers    ${outputs}[0]    12
+
+Measurement Output Batches A Polled Pass Into One Measurement
+    [Documentation]    In measurement output the connector publishes the thin-edge measurement
+    ...                itself: the device's polled points of one group share the read time of
+    ...                their call, so they arrive in one message (contract §5.4, §5.5).
+    ${payload}=    Wait For Message Containing    ${MEASURE_TOPIC}    "temperature"    timeout=${READY_TIMEOUT}
+    ${temperature}=    Get Json Field    ${payload}    opcua.temperature
+    Should Be True    abs(${temperature} - 21.5) < 0.05
+    ${hot}=    Get Json Field    ${payload}    opcua.hot
+    Should Be True    abs(${hot} - 21.5) < 0.05
+    ${time}=    Get Json Field    ${payload}    time
+    Should Match Regexp    ${time}    ^\\d{4}-\\d\\d-\\d\\dT\\d\\d:\\d\\d:\\d\\d\\.\\d{3}Z$
+
+Measurement Output Names Series As The Measurement Flow Does
+    [Documentation]    A point's meta.measurement names its group and series.
+    ${payload}=    Wait For Message Containing    te/device/opcm///m/Plant    "Count"    timeout=${READY_TIMEOUT}
+    ${count}=    Get Json Field    ${payload}    Plant.Count
+    Should Be Equal As Numbers    ${count}    617001
+
+Measurement Output Publishes The Units Metadata
+    [Documentation]    The connector publishes the units of a measurement topic, retained, on
+    ...                <topic>/meta: only the series with a unit.
+    # Read from the broker: an earlier test's `Clear Messages` drops the recorded copy, and a
+    # retained message is delivered once per subscription.
+    Wait For Message Containing    ${MEASURE_TOPIC}    "time"    timeout=${READY_TIMEOUT}
+    ${payload}=    Fetch Retained    ${MEASURE_TOPIC}/meta    timeout=${SAMPLE_TIMEOUT}
+    # The keys hold a dot ("<group>.<series>"), so they are matched as text.
+    Should Contain    ${payload}    "opcua.temperature":{"unit":"°C"}
+    Should Not Contain    ${payload}    opcua.hot
+
+Measurement Output Publishes Samples Only For Points Flows Read
+    [Documentation]    The alarm point still publishes samples, marked "measured" so
+    ...                ot-measurement does not convert them again; a plain point publishes none.
+    ${payload}=    Wait For Sample    ${MEASURE_SAMPLE_PREFIX}/hot    timeout=${READY_TIMEOUT}
+    ${measured}=    Get Json Field    ${payload}    measured
+    Should Be Equal    ${measured}    ${True}
+    No New Messages On Topic    ${MEASURE_SAMPLE_PREFIX}/temperature    timeout=5
+
+Alarm Point Raises Its Alarm In Measurement Output
+    [Documentation]    ot-alarm raises the alarm declared on the point from its measured sample.
+    Wait Until Keyword Succeeds    ${FLOWS_TIMEOUT}s    2s    Fetch Retained    te/device/opcm///a/opcm_hot    timeout=2
+    ${payload}=    Fetch Retained    te/device/opcm///a/opcm_hot    timeout=2
+    ${severity}=    Get Json Field    ${payload}    severity
+    Should Be Equal    ${severity}    major
+
+Pushed Value Keeps Its Source Time
+    [Documentation]    A pushed value carries the server's source timestamp in its sample and in
+    ...                its measurement, in both builds (contract §5.4).
+    ${payload}=    Wait For Sample    ${MEASURE_SAMPLE_PREFIX}/stamped    timeout=${READY_TIMEOUT}
+    ${ts}=    Get Json Field    ${payload}    ts
+    Should Be Equal    ${ts}    ${STAMPED_SOURCE_TIME}
+    ${measurement}=    Wait For Message Containing    ${MEASURE_TOPIC}    "stamped"    timeout=${SAMPLE_TIMEOUT}
+    ${time}=    Get Json Field    ${measurement}    time
+    Should Be Equal    ${time}    ${STAMPED_SOURCE_TIME}
+
+Capability Descriptor Lists The Measurement Output
+    [Documentation]    The descriptor lists each device's output and grouping policy (§7).
+    ${payload}=    Wait For Retained    ${MEASURE_CAPS_TOPIC}    timeout=${READY_TIMEOUT}
+    ${output}=    Get Json Field    ${payload}    outputs.0.output
+    Should Be Equal    ${output}    measurements
+    ${group_by}=    Get Json Field    ${payload}    outputs.0.batch.group_by
+    Should Be Equal    ${group_by}    time
+
 
 *** Keywords ***
 Burst Values

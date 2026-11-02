@@ -2602,6 +2602,14 @@ bool tdot_ua_revised(double requested_ms, double revised_ms) {
     return revised_ms == revised_ms /* not NaN */ && (delta >= 1.0 || delta <= -1.0);
 }
 
+double tdot_ua_source_ts_ms(bool has_source, long long source, bool has_server,
+                            long long server) {
+    /* Ticks between the OPC UA epoch (1601-01-01) and the Unix epoch. */
+    const long long unix_epoch = 116444736000000000LL;
+    long long ticks = has_source && source != 0 ? source : has_server && server != 0 ? server : 0;
+    return ticks ? (double)(ticks - unix_epoch) / 10000.0 : 0;
+}
+
 static void on_data_change(UA_Client *client, UA_UInt32 sub_id,
                            void *sub_ctx, UA_UInt32 mon_id, void *mon_ctx,
                            UA_DataValue *value) {
@@ -2629,6 +2637,11 @@ static void on_data_change(UA_Client *client, UA_UInt32 sub_id,
                         UA_StatusCode_name(value->status));
     } else {
         variant_to_sample(&value->value, pt, &slot->sample);
+        /* A pushed value carries when the source saw it (contract §5), as in
+         * the Rust module; a polled one carries its read time. */
+        slot->sample.source_ts_ms = tdot_ua_source_ts_ms(
+            value->hasSourceTimestamp, value->sourceTimestamp, value->hasServerTimestamp,
+            value->serverTimestamp);
     }
     ua_ring_commit(&ua->queue);
 }

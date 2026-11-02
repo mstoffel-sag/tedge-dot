@@ -32,6 +32,9 @@ ${HEALTH_TOPIC}         te/device/main/service/${SERVICE}/status/health
 # CANopen is poll-based (1 s interval); allow a generous startup timeout.
 ${READY_TIMEOUT}        90
 ${SAMPLE_TIMEOUT}       10
+# Measurement output (connector-measure.toml, openspec native-batched-output): the `com` device.
+${MEASURE_TOPIC}            te/device/com///m/${PROTOCOL}
+${MEASURE_SAMPLE_PREFIX}    te/device/com/ot/${PROTOCOL}/sample
 
 
 *** Test Cases ***
@@ -126,6 +129,35 @@ B9 Capability Honesty — No Undeclared Datatypes
 B10 Topic Discipline — No Stray Measurement Topics
     [Documentation]    The connector must not publish to te/.../m/ topics.
     No Messages On Topic    te/device/${DEVICE}/m/#    timeout=3
+
+
+Measurement Output Batches A Polled Pass Into One Measurement
+    [Documentation]    In measurement output the connector publishes the thin-edge measurement
+    ...                itself, the device's polled points of one group in one message with one
+    ...                read time (contract §5.4, §5.5).
+    ${payload}=    Wait For Message Containing    ${MEASURE_TOPIC}    "analog_in"    timeout=${READY_TIMEOUT}
+    ${analog}=    Get Json Field    ${payload}    canopen.analog_in
+    Should Be Equal As Numbers    ${analog}    1234
+
+Measurement Output Names Series As The Measurement Flow Does
+    [Documentation]    A point's meta.measurement names its group and series.
+    ${payload}=    Wait For Message Containing    te/device/com///m/Node    "Temperature"    timeout=${READY_TIMEOUT}
+    ${temperature}=    Get Json Field    ${payload}    Node.Temperature
+    Should Be Equal As Numbers    ${temperature}    -100
+
+Measurement Output Publishes The Units Metadata
+    [Documentation]    The connector publishes the units of a measurement topic, retained, on
+    ...                <topic>/meta: only the series with a unit.
+    # Read from the broker: a retained message is delivered once per subscription.
+    Wait For Message Containing    ${MEASURE_TOPIC}    "time"    timeout=${READY_TIMEOUT}
+    ${payload}=    Fetch Retained    ${MEASURE_TOPIC}/meta    timeout=10
+    # The keys hold a dot ("<group>.<series>"), so they are matched as text.
+    Should Contain    ${payload}    "canopen.analog_in":{"unit":"counts"}
+
+Measurement Output Publishes No Sample For A Plain Point
+    [Documentation]    A point no flow reads publishes no sample in measurement output.
+    Wait For Message Containing    ${MEASURE_TOPIC}    "time"    timeout=${READY_TIMEOUT}
+    No New Messages On Topic    ${MEASURE_SAMPLE_PREFIX}/analog_in    timeout=5
 
 
 *** Keywords ***

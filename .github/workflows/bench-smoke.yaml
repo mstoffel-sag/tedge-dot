@@ -1,0 +1,80 @@
+name: Performance harness smoke
+
+# The performance harness (bench/, doc/performance.md) at a low rate, with both
+# implementations. It checks correctness only: no rejected message, no lost sample, a short
+# drain. CPU and throughput figures are printed, never compared: shared runners are too noisy
+# for that, and baselines come from `just bench-baseline` on one quiet host.
+
+on:
+  pull_request:
+    paths:
+      - impl/rust/crates/sdk/**
+      - impl/rust/crates/connector-bench/**
+      - impl/rust/crates/bench/**
+      - impl/rust/crates/ot-conformance/src/sim/bulk.rs
+      - impl/c/sdk/**
+      - impl/c/connectors/bench/**
+      - impl/c/tests/bench.c
+      - flows/**
+      - bench/**
+      - doc/contract/test-vectors/bench/**
+      - .github/workflows/bench-smoke.yaml
+  push:
+    branches: [main]
+    paths:
+      - impl/rust/crates/sdk/**
+      - impl/c/sdk/**
+      - flows/**
+      - bench/**
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    name: Bench smoke (Rust and C)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install thin-edge.io, mosquitto and the C toolchain
+        run: |
+          # The main channel: the mapper must convert measurements offline (no c8y), which the
+          # stack check was measured against with 2.0.2; 2.0.1 never converted within 60 s.
+          curl -fsSL https://thin-edge.io/install.sh | sh -s -- --channel main
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build pkg-config libudev-dev \
+            libmodbus-dev libmosquitto-dev libcjson-dev mosquitto
+          tedge --version
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: impl/rust
+      - uses: extractions/setup-just@v2
+      - name: Build both connectors with the bench module
+        run: just bench-build
+      - name: C bench module tests (shared vectors, latency, push rate)
+        run: |
+          cmake --build impl/c/build-bench --target tedge-dot-bench-module
+          ctest --test-dir impl/c/build-bench -R bench-module --output-on-failure
+      - name: Smoke
+        run: |
+          set -o pipefail
+          just bench-smoke | tee bench-smoke.jsonl
+      - name: Result lines
+        if: always()
+        run: |
+          {
+            echo '## Bench smoke'
+            echo
+            echo '| Scenario | IMPL | Readings/s | Rate shortfall % | Lost % | te/errors | drain_s | Connector µs/reading | Mapper µs/reading |'
+            echo '|---|---|---:|---:|---:|---:|---:|---:|---:|'
+            grep '^{' bench-smoke.jsonl 2>/dev/null | jq -r '"| \(.scenario) | \(.impl) | \(.achieved_rate|floor) | \(.rate_shortfall_pct*10|floor/10) | \(.missing_pct) | \(.te_errors) | \(.drain_s*10|floor/10) | \(.us_per_reading.connector*10|floor/10) | \(.us_per_reading.mapper|floor) |"'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Stack logs
+        if: failure()
+        run: tail -n 100 bench/.stack/logs/*.log bench/.stack/runs/*/*.log || true

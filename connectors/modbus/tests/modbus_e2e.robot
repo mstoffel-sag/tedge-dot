@@ -41,6 +41,9 @@ ${FLOWS_TIMEOUT}        120
 # Generous timeout: the connector waits for the simulator/broker before it starts.
 ${READY_TIMEOUT}        90
 ${SAMPLE_TIMEOUT}       15
+# Measurement output (connector-measure.toml, openspec native-batched-output): the `plcm` device.
+${MEASURE_TOPIC}            te/device/plcm///m/${PROTOCOL}
+${MEASURE_SAMPLE_PREFIX}    te/device/plcm/ot/${PROTOCOL}/sample
 
 
 *** Test Cases ***
@@ -671,6 +674,50 @@ A Device Defined With A Disabled Point Keeps It Off
     Sleep    3s
     Wait For Sample    ${plc3}/sample/count_u32    timeout=${SAMPLE_TIMEOUT}
     No New Messages On Topic    ${plc3}/sample/level_f32    timeout=5
+
+
+Measurement Output Batches A Polled Pass Into One Measurement
+    [Documentation]    In measurement output the connector publishes the thin-edge measurement
+    ...                itself: the device's polled points of one group share the read time of
+    ...                their call, so they arrive in one message (contract §5.4, §5.5).
+    ${payload}=    Wait For Message Containing    ${MEASURE_TOPIC}    "count_u32"    timeout=${READY_TIMEOUT}
+    ${count}=    Get Json Field    ${payload}    modbus.count_u32
+    Should Be Equal As Numbers    ${count}    617001
+    ${level}=    Get Json Field    ${payload}    modbus.level_f32
+    Should Be True    abs(${level} - 404.17) < 0.01
+    Should Not Contain    ${payload}    level_raw
+
+Measurement Output Names Series As The Measurement Flow Does
+    [Documentation]    A point's meta.measurement names its group and series.
+    ${payload}=    Wait For Message Containing    te/device/plcm///m/Tank    "Count"    timeout=${READY_TIMEOUT}
+    ${count}=    Get Json Field    ${payload}    Tank.Count
+    Should Be Equal As Numbers    ${count}    617001
+
+Measurement Output Publishes The Units Metadata
+    [Documentation]    The connector publishes the units of a measurement topic, retained, on
+    ...                <topic>/meta: only the series with a unit.
+    # Read from the broker: an earlier test's `Clear Messages` drops the recorded copy, and a
+    # retained message is delivered once per subscription.
+    Wait For Message Containing    ${MEASURE_TOPIC}    "time"    timeout=${READY_TIMEOUT}
+    ${payload}=    Fetch Retained    ${MEASURE_TOPIC}/meta    timeout=${SAMPLE_TIMEOUT}
+    # The keys hold a dot ("<group>.<series>"), so they are matched as text.
+    Should Contain    ${payload}    "modbus.count_u32":{"unit":"pcs"}
+    Should Not Contain    ${payload}    level_f32
+
+Measurement Output Publishes Samples Only For Points Flows Read
+    [Documentation]    The alarm point still publishes samples, marked "measured" so
+    ...                ot-measurement does not convert them again; a plain point publishes none.
+    ${payload}=    Wait For Sample    ${MEASURE_SAMPLE_PREFIX}/level_f32    timeout=${READY_TIMEOUT}
+    ${measured}=    Get Json Field    ${payload}    measured
+    Should Be Equal    ${measured}    ${True}
+    No New Messages On Topic    ${MEASURE_SAMPLE_PREFIX}/count_u32    timeout=5
+
+Alarm Point Raises Its Alarm In Measurement Output
+    [Documentation]    ot-alarm raises the alarm declared on the point from its measured sample.
+    Wait Until Keyword Succeeds    ${FLOWS_TIMEOUT}s    2s    Fetch Retained    te/device/plcm///a/plcm_level_high    timeout=2
+    ${payload}=    Fetch Retained    te/device/plcm///a/plcm_level_high    timeout=2
+    ${severity}=    Get Json Field    ${payload}    severity
+    Should Be Equal    ${severity}    major
 
 
 *** Keywords ***

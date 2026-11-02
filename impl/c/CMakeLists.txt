@@ -20,6 +20,10 @@ option(TDOT_MODBUS "Build the Modbus connector (libmodbus, LGPL-2.1+)" ON)
 option(TDOT_OPCUA "Build the OPC UA connector (open62541, MPL-2.0)" ON)
 option(TDOT_PROFIBUS "Build the PROFIBUS-DP connector (built-in DP master)" ON)
 option(TDOT_SNMP "Build the SNMP trap receiver (POSIX sockets, built-in decoder)" ON)
+# The synthetic module the performance harness drives (bench/, doc/performance.md). Never in
+# a release: cross/build.sh passes -DTDOT_BENCH=OFF explicitly, and
+# ci/check-release-features.sh fails the lint if that changes.
+option(TDOT_BENCH "Build the synthetic bench module (performance harness only)" OFF)
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   option(TDOT_CANBUS "Build the CAN bus connector (SocketCAN + DBC)" ON)
   option(TDOT_CANOPEN "Build the CANopen connector (SDO over SocketCAN)" ON)
@@ -46,6 +50,7 @@ add_library(tedge_dot_sdk STATIC
   sdk/src/envelope.c
   sdk/src/report.c
   sdk/src/map.c
+  sdk/src/measure.c
   sdk/src/runtime.c
   sdk/src/schedule.c
   sdk/src/watch.c
@@ -300,6 +305,14 @@ if(TDOT_SNMP)
   target_compile_definitions(tedge_dot_sdk PUBLIC TDOT_FEATURE_SNMP)
 endif()
 
+if(TDOT_BENCH)
+  target_sources(tedge_dot_sdk PRIVATE connectors/bench/connector_bench.c)
+  # The value streams must match the Rust build bit for bit: no fused multiply-add.
+  set_source_files_properties(connectors/bench/connector_bench.c tests/bench.c
+                              PROPERTIES COMPILE_OPTIONS "-ffp-contract=off")
+  target_compile_definitions(tedge_dot_sdk PUBLIC TDOT_FEATURE_BENCH)
+endif()
+
 # --- binary ---------------------------------------------------------------------
 add_executable(tedge-dot src/main.c)
 target_link_libraries(tedge-dot PRIVATE tedge_dot_sdk)
@@ -318,6 +331,13 @@ target_link_libraries(tedge-dot-report PRIVATE tedge_dot_sdk)
 add_test(NAME report-vectors
          COMMAND tedge-dot-report
                  ${CMAKE_CURRENT_SOURCE_DIR}/../../doc/contract/test-vectors/report/vectors.json)
+
+# Measurement output (contract §5.5): the shared vectors the Rust SDK's measure.rs runs too.
+add_executable(tedge-dot-measure tests/measure.c)
+target_link_libraries(tedge-dot-measure PRIVATE tedge_dot_sdk)
+add_test(NAME measure-vectors
+         COMMAND tedge-dot-measure
+                 ${CMAKE_CURRENT_SOURCE_DIR}/../../doc/contract/test-vectors/measurements/vectors.json)
 
 # Polling through a module's read_points: calls of at most TDOT_READ_POINTS_MAX,
 # per-point samples, and a lost link that ends the pass as read_point's does.
@@ -414,4 +434,15 @@ endif()
 # Strip in release-style builds for a honest size comparison
 if(CMAKE_BUILD_TYPE STREQUAL "MinSizeRel" AND NOT APPLE)
   target_link_options(tedge-dot PRIVATE -s)
+endif()
+
+# The bench module: the shared value vectors and config errors the Rust module runs too, the
+# read latency and the push rate.
+if(TDOT_BENCH)
+  add_executable(tedge-dot-bench-module tests/bench.c)
+  target_include_directories(tedge-dot-bench-module PRIVATE connectors/bench)
+  target_link_libraries(tedge-dot-bench-module PRIVATE tedge_dot_sdk)
+  add_test(NAME bench-module
+           COMMAND tedge-dot-bench-module
+                   ${CMAKE_CURRENT_SOURCE_DIR}/../../doc/contract/test-vectors/bench)
 endif()

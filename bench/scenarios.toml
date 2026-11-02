@@ -1,0 +1,95 @@
+# Performance harness scenarios (doc/performance.md). `tedge-dot-bench run <name>` runs one,
+# for every rate and implementation listed; `just bench <name>` builds first.
+#
+# A polled scenario fixes `poll_interval` (the points per device follow from the rate) or
+# `points` (the poll interval follows). A pushed scenario fixes `points` and spreads the rate
+# over its devices. `instances` and `ts_resolution` may be lists: each value is its own run.
+# Every scenario runs with both implementations unless `impls` restricts it.
+
+[[scenario]]
+name = "samples-flows"
+description = "Polled bench points, one sample per reading, the ot-* flows installed in the mapper"
+flows = true
+devices = 10
+poll_interval = "1s"
+rates = [1000, 2000, 4000]
+
+[[scenario]]
+name = "samples-noflows"
+description = "Polled bench points, one sample per reading, no flows: the connector and broker alone"
+devices = 100
+poll_interval = "1s"
+rates = [10000, 50000, 100000]
+
+[[scenario]]
+name = "samples-push"
+description = "Pushed bench points, spread evenly (Rust) or delivered per loop tick (C), no flows"
+push = true
+devices = 100
+points = 1000
+sampling_interval = "200ms"
+rates = [10000, 50000, 100000]
+
+[[scenario]]
+name = "samples-push-jitter"
+description = "Pushed bench points with source times up to 50 ms old, delivered every 100 ms"
+push = true
+devices = 100
+points = 1000
+sampling_interval = "200ms"
+ts_jitter = "50ms"
+publish_interval = "100ms"
+ts_resolution = ["1ms", "10ms"]
+rates = [10000, 100000]
+
+[[scenario]]
+name = "samples-latency"
+description = "Polled bench points behind a 2 ms latency per 500-point block: one connector instance against four"
+devices = 50
+poll_interval = "1s"
+latency = "2ms"
+batch = 500
+instances = [1, 4]
+rates = [50000]
+
+[[scenario]]
+name = "opcua-polled"
+description = "One OPC UA device with 20,000 polled nodes on the standalone simulator (ot-conformance serve opcua)"
+module = "opcua"
+devices = 1
+points = 20000
+rates = [20000, 100000]
+
+# Measurement output (contract §5.5): the runtime publishes batched thin-edge measurements, and
+# samples only for points that flows read. Compare with the samples-* scenarios of the same shape.
+
+[[scenario]]
+name = "native-polled"
+description = "As samples-noflows, in measurement output: one measurement per device and poll pass"
+output = "measurements"
+devices = 100
+poll_interval = "1s"
+rates = [10000, 50000, 100000]
+
+[[scenario]]
+name = "native-flows"
+description = "As native-polled at 100k, with the ot-* flows installed and 1 % of points declaring an alarm"
+output = "measurements"
+flows = true
+alarm_share = 0.01
+devices = 100
+poll_interval = "1s"
+rates = [100000]
+
+[[scenario]]
+name = "native-push-jitter"
+description = "As samples-push-jitter (1 ms), in measurement output, once per grouping policy"
+output = "measurements"
+push = true
+devices = 100
+points = 1000
+sampling_interval = "200ms"
+ts_jitter = "50ms"
+publish_interval = "100ms"
+group_by = ["time", "frame:100ms", "sample:1s"]
+rates = [100000]

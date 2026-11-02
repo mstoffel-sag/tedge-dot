@@ -1,0 +1,9 @@
+# ot-alarm-series/alarm-state: which alarms are standing, for ot-alarm-series (see alarm-state.js).
+#
+# A second flow in the directory because ot-alarm-series cannot subscribe to the alarm topics it
+# publishes: the mapper drops a flow's output to its own input topics to prevent loops. It is the
+# same as ot-alarm's, and both record into one mapper-wide store, so either one is enough.
+input.mqtt.topics = ["te/+/+/+/+/a/+"]
+
+[[steps]]
+script = "alarm-state.js"

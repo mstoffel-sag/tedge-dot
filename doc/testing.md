@@ -15,6 +15,7 @@ class of bug the others cannot.
 | Cloud e2e | `cloud/<proto>/tests/*.robot` | Cumulocity operation round-trips on a live tenant, both implementations | `just test-cloud <proto>` / `just test-cloud-c <proto>` |
 | Conformance | `connectors/<proto>/conformance{,-c}.toml` | Contract compliance (schema, decode vectors, behaviour), both implementations | `just conformance <proto>` / `just conformance-c <proto>` |
 | Describe parity | `impl/c/ci/describe-parity.sh` | The two binaries rendering different Cumulocity DTM definitions | `just c-describe-parity` |
+| Performance harness | `bench/`, `impl/rust/crates/bench/` ([performance.md](performance.md)) | Throughput and CPU regressions per stage (connector, broker, mapper), both implementations; CI runs a correctness-only smoke | `just bench <scenario>` / `just bench-smoke` |
 
 ### Parity between the two implementations
 

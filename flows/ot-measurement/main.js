@@ -166,6 +166,10 @@ export function onMessage(message, context) {
   const sample = JSON.parse(decoder.decode(message.payload));
   const cfg = context.config || {};
 
+  // A connector in measurement output (contract §5.5) published this reading as a series itself,
+  // and the sample only for the flows that read it: converting it again would double it.
+  if (sample.measured === true) return [];
+
   // Optionally restrict this flow instance to a single point id.
   const point = cfg.point || "";
   if (point && sample.point !== point) return [];

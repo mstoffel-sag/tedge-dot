@@ -15,6 +15,7 @@
 #include "cjson/cJSON.h"
 #include "mosquitto.h"
 #include "tedge_dot/health.h"
+#include "tedge_dot/measure.h"
 #include "tedge_dot/schedule.h"
 #include "tedge_dot/watch.h"
 
@@ -98,6 +99,12 @@ typedef struct {
     tdot_point_t **batch;
     tdot_sample_t *batch_out;
     int *batch_rc;
+    /* Measurement output (contract §5.5): the point tables, NULL in samples
+     * output and in stdout mode, which prints samples. */
+    tdot_batcher_t *batcher;
+    /* This pass's wait for the broker: the tick, or less when a frame or a
+     * sample is due sooner. */
+    int wait_ms;
 } rt_t;
 
 static void logmsg(const char *level, const char *fmt, ...) {
@@ -158,14 +165,61 @@ static void reset_all_reports(rt_t *rt) {
         reset_device_reports(&rt->cfg->devices[i]);
 }
 
-/* Publish one reading with the time it was taken. */
+/* A measurement or a topic's units from the batcher: measurements as samples
+ * are (QoS 0), units retained at QoS 1 as the other retained state. */
+static void publish_measurement(void *ctx, const char *topic, const char *payload,
+                                bool retain) {
+    rt_t *rt = ctx;
+    mosquitto_publish(rt->mosq, NULL, topic, (int)strlen(payload), payload, retain ? 1 : 0,
+                      retain);
+}
+
+/* The batcher for the running configuration (contract §5.5), or NULL in
+ * samples output; `previous` hands over the units already published. */
+static void rebuild_batcher(rt_t *rt) {
+    tdot_batcher_t *previous = rt->batcher;
+    rt->batcher = NULL;
+    if (rt->output == TDOT_OUTPUT_MQTT && rt->cfg->output_measurements)
+        rt->batcher = tdot_batcher_new(rt->cfg, mono_ns(), previous);
+    else
+        tdot_batcher_free(previous);
+}
+
+/* The end of a pass over a device or a drain: the measurements grouped by
+ * time go out. */
+static void end_of_pass(rt_t *rt) {
+    if (rt->batcher)
+        tdot_batcher_end_of_pass(rt->batcher, publish_measurement, rt);
+}
+
+/* Publish one reading with the time it was taken: as a sample, or in
+ * measurement output into the point table, and a sample only for the points
+ * flows read. */
 static void publish_item(rt_t *rt, tdot_device_t *dev, tdot_point_t *pt,
                          const tdot_report_item_t *item) {
+    bool measured = false;
+    if (rt->batcher) {
+        tdot_routing_t r = tdot_batcher_offer(
+            rt->batcher, (size_t)(dev - rt->cfg->devices), (size_t)(pt - dev->points), pt,
+            &item->sample, item->ts_ms, mono_ns(), publish_measurement, rt);
+        if (!r.sample)
+            return;
+        measured = r.measured;
+    }
     pt->seq++;
     char *json = tdot_envelope_sample_at(rt->cfg, dev, pt, &item->sample, item->ts,
                                          item->ts_ms);
     if (!json)
         return;
+    /* A reading that also went into the measurements: ot-measurement skips it. */
+    size_t len = strlen(json);
+    if (measured && len > 1 && json[len - 1] == '}') {
+        char *grown = realloc(json, len + 18);
+        if (grown) {
+            json = grown;
+            memcpy(json + len - 1, ",\"measured\":true}", 18);
+        }
+    }
     if (rt->output == TDOT_OUTPUT_STDOUT) {
         puts(json);
         fflush(stdout);
@@ -179,9 +233,12 @@ static void publish_item(rt_t *rt, tdot_device_t *dev, tdot_point_t *pt,
     free(json);
 }
 
+/* `read_ms` is the completion time of the read call or the push delivery (Unix
+ * milliseconds): the sample's time unless the protocol gave a source time
+ * (contract §5). */
 static void emit_sample(rt_t *rt, tdot_device_t *dev, tdot_point_t *pt,
-                        const tdot_sample_t *s) {
-    /* Stamped now, when it was read: a reading the policy holds back is
+                        const tdot_sample_t *s, double read_ms) {
+    /* Stamped with when it was read: a reading the policy holds back is
      * published later with this time, not its publish time. */
     tdot_report_item_t item;
     item.sample = *s;
@@ -190,8 +247,8 @@ static void emit_sample(rt_t *rt, tdot_device_t *dev, tdot_point_t *pt,
      * caller judges the link on the reading as the module returned it, since
      * a mapping failure is not a failed read. */
     tdot_sample_apply_map(pt, &item.sample);
-    tdot_now_rfc3339(item.ts, sizeof item.ts);
-    item.ts_ms = tdot_now_ms();
+    item.ts_ms = s->source_ts_ms > 0 ? s->source_ts_ms : read_ms;
+    tdot_format_rfc3339_ms(item.ts_ms, item.ts, sizeof item.ts);
     int64_t now = mono_ns();
     tdot_report_state_t *st = report_state(pt, now);
     if (st) {
@@ -250,6 +307,10 @@ static void publish_link_status(rt_t *rt, tdot_device_t *dev) {
 }
 
 static void publish_link(rt_t *rt, tdot_device_t *dev, tdot_link_t status) {
+    /* A device that is not connected leaves the samples of measurement output
+     * (its slots are stale) until it is again. */
+    tdot_batcher_set_stale(rt->batcher, (size_t)(dev - rt->cfg->devices),
+                           status != TDOT_LINK_CONNECTED);
     if (dev->link == status)
         return;
     dev->link = status;
@@ -874,6 +935,10 @@ static char *augmented_capabilities(const char *json, const tdot_config_t *cfg) 
     cJSON *reports = tdot_config_reports(cfg);
     if (reports)
         cJSON_AddItemToObject(caps, "reports", reports);
+    /* `outputs` (§7): each device's output and grouping policy (§5.5). */
+    cJSON *outputs = tdot_config_outputs(cfg);
+    if (outputs)
+        cJSON_AddItemToObject(caps, "outputs", outputs);
     char *out = cJSON_PrintUnformatted(caps);
     cJSON_Delete(caps);
     return out;
@@ -945,7 +1010,7 @@ static void on_connect(struct mosquitto *mosq, void *ud, int rc) {
 
 /* Drive the MQTT client for one tick, reconnecting while the broker is gone. */
 static void mqtt_service(rt_t *rt) {
-    int rc = mosquitto_loop(rt->mosq, rt->tick_ms, 1);
+    int rc = mosquitto_loop(rt->mosq, rt->wait_ms, 1);
     if (rc == MOSQ_ERR_SUCCESS)
         return;
     if (rt->mqtt_up) {
@@ -1496,7 +1561,10 @@ static int try_configure(rt_t *rt, tdot_config_t *candidate, char *reason,
  * the capability descriptor -- its point_labels follow the configuration (§7)
  * -- and connect every device with it. */
 static void commit_config(rt_t *rt, tdot_config_t *candidate) {
+    if (rt->batcher)
+        tdot_batcher_flush_all(rt->batcher, publish_measurement, rt);
     tdot_config_replace(rt->cfg, candidate);
+    rebuild_batcher(rt);
     publish_capabilities(rt);
     for (size_t i = 0; i < rt->cfg->ndevices; i++)
         connect_device(rt, &rt->cfg->devices[i]);
@@ -1655,6 +1723,7 @@ static reload_t reload_from_file(rt_t *rt, bool can_restart) {
  * the same publishing path as polled ones. */
 typedef struct {
     rt_t *rt;
+    double read_ms; /* when the drain delivered: the time of samples without one */
 } sink_ctx_t;
 
 static void log_point_change(const tdot_device_t *dev, const tdot_point_t *pt,
@@ -1705,7 +1774,7 @@ static void push_sink(void *ctx, tdot_device_t *dev, tdot_point_t *pt,
     log_point_change(dev, pt,
                      tdot_point_health(pt->bad_error, s->quality == TDOT_Q_BAD,
                                        s->error));
-    emit_sample(c->rt, dev, pt, &local);
+    emit_sample(c->rt, dev, pt, &local, c->read_ms);
 }
 
 /* How run_connector ended. */
@@ -1773,6 +1842,7 @@ static void report_pass(rt_t *rt, const run_ctl_t *ctl) {
             tdot_sample_t s;
             tdot_sample_init(&s);
             int rc = conn->read_point(conn, dev, pt, &s);
+            double read_ms = tdot_now_ms();
             beat(rt);
             if (rc == TDOT_READ_NO_DATA) {
                 /* Cannot be read on demand (a trap, a CAN frame): no heartbeat,
@@ -1783,7 +1853,7 @@ static void report_pass(rt_t *rt, const run_ctl_t *ctl) {
             if (pt->mode == TDOT_MODE_RAW)
                 s.value.kind = TDOT_VAL_NONE; /* raw: bytes only */
             hold_reading(pt, &s);
-            emit_sample(rt, dev, pt, &s);
+            emit_sample(rt, dev, pt, &s, read_ms);
             read++;
             if (s.quality == TDOT_Q_BAD)
                 bad++;
@@ -1793,6 +1863,7 @@ static void report_pass(rt_t *rt, const run_ctl_t *ctl) {
         /* Only a transport failure speaks against the device, as in Rust: a
          * heartbeat pass usually reads one point, and one unreadable node
          * must not degrade a device whose other points deliver. */
+        end_of_pass(rt);
         if (read > 0)
             judge_pass(dev, dev->reported, n, !transport_down && read > bad);
         if (transport_down)
@@ -1811,7 +1882,8 @@ typedef struct {
 /* Publish one polled reading -- read_point's or read_points' result for `pt`,
  * returning `rc` -- and count it into the pass. */
 static void take_reading(rt_t *rt, tdot_device_t *dev, tdot_point_t *pt,
-                         tdot_sample_t *s, int rc, double now, poll_pass_t *pass) {
+                         tdot_sample_t *s, int rc, double now, double read_ms,
+                         poll_pass_t *pass) {
     pt->next_due = now + pt->poll_interval_s;
     /* Nothing new to publish (a CAN frame not received again): not a reading,
      * so it says nothing about the link either. */
@@ -1820,7 +1892,7 @@ static void take_reading(rt_t *rt, tdot_device_t *dev, tdot_point_t *pt,
     if (pt->mode == TDOT_MODE_RAW)
         s->value.kind = TDOT_VAL_NONE; /* raw: bytes only */
     hold_reading(pt, s);
-    emit_sample(rt, dev, pt, s);
+    emit_sample(rt, dev, pt, s, read_ms);
     pass->polled++;
     if (s->quality == TDOT_Q_BAD)
         pass->bad++;
@@ -1867,12 +1939,15 @@ static bool poll_batched(rt_t *rt, tdot_device_t *dev, double now, poll_pass_t *
             tdot_sample_init(&rt->batch_out[j]);
         size_t got = conn->read_points(conn, dev, rt->batch, m, rt->batch_out,
                                        rt->batch_rc);
+        /* One read time per call (contract §5), so a pass batches into one
+         * measurement. */
+        double read_ms = tdot_now_ms();
         beat(rt);
         if (got > m)
             got = m;
         for (size_t j = 0; j < got && !pass->transport_down; j++)
             take_reading(rt, dev, rt->batch[j], &rt->batch_out[j], rt->batch_rc[j],
-                         now, pass);
+                         now, read_ms, pass);
     }
     return true;
 }
@@ -1886,6 +1961,7 @@ static int run_connector(tdot_connector_t *conn, tdot_config_t *cfg,
                          const tdot_run_opts_t *opts, progress_t *progress,
                          run_ctl_t *ctl) {
     rt_t rt = {.tick_ms = TICK_MS,
+               .wait_ms = TICK_MS,
                .conn = conn,
                .cfg = cfg,
                .output = opts->output,
@@ -1940,6 +2016,7 @@ static int run_connector(tdot_connector_t *conn, tdot_config_t *cfg,
 
         publish_health(&rt, "up");
         publish_capabilities(&rt);
+        rebuild_batcher(&rt);
     }
 
     /* Arm the watchdog before the first protocol call, not at the top of the
@@ -1991,6 +2068,10 @@ static int run_connector(tdot_connector_t *conn, tdot_config_t *cfg,
             /* Only the polled points (schedule.h), not every point. */
             size_t n = dev->polled ? dev->npolled : dev->npoints;
             if (!conn->read_points || !poll_batched(&rt, dev, now, &pass)) {
+                /* A module that reads one point per call: the pass over the device is
+                 * its read call (contract §5.4), timed at its first read's completion,
+                 * so the pass batches into one measurement as a read_points call does. */
+                double read_ms = 0;
                 for (size_t k = 0; k < n && !pass.transport_down; k++) {
                     tdot_point_t *pt = &dev->points[dev->polled ? dev->polled[k] : k];
                     if (!poll_due(pt, now))
@@ -1998,10 +2079,13 @@ static int run_connector(tdot_connector_t *conn, tdot_config_t *cfg,
                     tdot_sample_t s;
                     tdot_sample_init(&s);
                     int rc = conn->read_point(conn, dev, pt, &s);
+                    if (read_ms == 0)
+                        read_ms = tdot_now_ms();
                     beat(&rt);
-                    take_reading(&rt, dev, pt, &s, rc, now, &pass);
+                    take_reading(&rt, dev, pt, &s, rc, now, read_ms, &pass);
                 }
             }
+            end_of_pass(&rt);
             if (pass.polled > 0)
                 judge_pass(dev, dev->polled, n,
                            !pass.transport_down && pass.bad < pass.polled);
@@ -2024,15 +2108,29 @@ static int run_connector(tdot_connector_t *conn, tdot_config_t *cfg,
              * not drive the degraded/connected transitions above. */
             if (rt.conn->drain_subscriptions) {
                 if (dev->npushed > 0) {
-                    sink_ctx_t sink = {.rt = &rt};
-                    if (rt.conn->drain_subscriptions(rt.conn, dev, push_sink,
-                                                     &sink) != 0)
+                    sink_ctx_t sink = {.rt = &rt, .read_ms = tdot_now_ms()};
+                    int drained = rt.conn->drain_subscriptions(rt.conn, dev, push_sink, &sink);
+                    end_of_pass(&rt);
+                    if (drained != 0)
                         mark_transport_down(&rt, dev);
                 }
             }
         }
 
         report_pass(&rt, ctl);
+
+        /* Measurement output: the frames that ended and the samples due, and a
+         * wait no longer than until the next of them. */
+        rt.wait_ms = rt.tick_ms;
+        if (rt.batcher) {
+            tdot_batcher_due(rt.batcher, mono_ns(), tdot_now_ms(), publish_measurement, &rt);
+            long long next = tdot_batcher_next_deadline(rt.batcher);
+            if (next >= 0) {
+                long long ms = (next - mono_ns() + 999999) / 1000000;
+                if (ms < rt.wait_ms)
+                    rt.wait_ms = ms < 0 ? 0 : (int)ms;
+            }
+        }
 
         if (rt.output == TDOT_OUTPUT_MQTT)
             mqtt_service(&rt);
@@ -2043,6 +2141,8 @@ static int run_connector(tdot_connector_t *conn, tdot_config_t *cfg,
     }
 
     logmsg("info", "shutting down");
+    if (rt.batcher)
+        tdot_batcher_flush_all(rt.batcher, publish_measurement, &rt);
     for (size_t i = 0; i < cfg->ndevices; i++)
         conn->disconnect_device(conn, &cfg->devices[i]);
     if (rt.output == TDOT_OUTPUT_MQTT) {
@@ -2054,6 +2154,7 @@ static int run_connector(tdot_connector_t *conn, tdot_config_t *cfg,
     free(rt.batch);
     free(rt.batch_out);
     free(rt.batch_rc);
+    tdot_batcher_free(rt.batcher);
     return result;
 }
 

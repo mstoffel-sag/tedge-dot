@@ -19,11 +19,11 @@
     "ts": {
       "type": "string",
       "format": "date-time",
-      "description": "Read completion time, RFC 3339, millisecond precision, UTC (Z)."
+      "description": "The reading's time, RFC 3339, millisecond precision, UTC (Z): the source time when the protocol gives one, else the completion time of the read call (§5.4)."
     },
     "ts_ms": {
       "type": "number",
-      "description": "Read completion time as Unix epoch milliseconds (float; the numeric companion to 'ts' for consumers doing time arithmetic)."
+      "description": "The same instant as 'ts', as Unix epoch milliseconds (float; the numeric companion to 'ts' for consumers doing time arithmetic)."
     },
     "device": {
       "type": "string",
@@ -135,6 +135,11 @@
     "meta": {
       "type": "object",
       "description": "The point's free-form 'meta' table from the connector configuration, echoed verbatim by the runtime. Flows use it for per-signal behaviour (measurement naming, alarms, events, parameters); absent when the point declares no meta."
+    },
+    "measured": {
+      "type": "boolean",
+      "const": true,
+      "description": "Set when the connector, in measurement output (§5.5), also published this reading as a series: a flow converting samples into measurements must skip it."
     }
   },
   "allOf": [

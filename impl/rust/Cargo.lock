@@ -669,6 +669,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "connector-bench"
+version = "0.0.17"
+dependencies = [
+ "async-trait",
+ "serde_json",
+ "tedge-dot-sdk",
+ "time",
+ "tokio",
+ "toml",
+]
+
+[[package]]
 name = "connector-canbus"
 version = "0.0.17"
 dependencies = [
@@ -3198,6 +3210,7 @@ name = "tedge-dot"
 version = "0.0.17"
 dependencies = [
  "clap",
+ "connector-bench",
  "connector-canbus",
  "connector-canopen",
  "connector-modbus",
@@ -3213,12 +3226,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "tedge-dot-bench"
+version = "0.0.17"
+dependencies = [
+ "clap",
+ "libc",
+ "rumqttc",
+ "serde",
+ "serde_json",
+ "time",
+ "tokio",
+ "toml",
+]
+
+[[package]]
 name = "tedge-dot-sdk"
 version = "0.0.17"
 dependencies = [
  "async-trait",
  "proptest",
  "rumqttc",
+ "ryu",
  "serde",
  "serde_json",
  "thiserror 1.0.69",

@@ -8,20 +8,6 @@
 # main.js documents every key (type, severity, text, when: equals / not_equals / above / below /
 # hysteresis).
 #
-# The settings below are the measurement alarm: ONE measurement series watched with a threshold
-# and hysteresis. It is off while `series` is empty.
-
-# Measurement series to monitor: payload[group][series], e.g. series = "temp_u16". Empty = off.
-# Empty group -> taken from the m/<group> segment of the source topic (any protocol).
-group = ""
-series = ""
-
-# Raise the alarm at or above `threshold`; clear only once the value drops below
-# (threshold - hysteresis). Hysteresis prevents rapid toggling near the limit.
-threshold = 70.0
-hysteresis = 5.0
-
-# Alarm metadata. `alarm_type` becomes the topic suffix: te/device/<device>///a/<alarm_type>.
-severity = "major"
-alarm_type = "ot_overrange"
-text = "OT value high"
+#
+# The measurement alarm (ONE series watched with a threshold and hysteresis) is the separate flow
+# ot-alarm-series, with these settings in its own params file.

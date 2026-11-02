@@ -3,7 +3,6 @@
 // Direction: OT protocol format / thin-edge.io data model -> thin-edge.io data model.
 //   in:  te/device/<device>/ot/<protocol>/sample/<point>  (samples: alarms declared per point)
 //        te/device/<device>/ot/<protocol>/status/link     (retained: the configured points)
-//        te/device/<device>///m/<group>                   (measurements: the `series` param)
 //   out: te/device/<device>///a/<alarm_type>              (retained: the alarm, or "" to clear)
 //
 // Per-signal alarms (from samples): the connector echoes the point's free-form `meta` table in
@@ -32,9 +31,9 @@
 // topic level, an unknown severity, a `when` with no condition it knows — is skipped. Only good
 // samples are evaluated: a failed read changes no alarm.
 //
-// Measurement alarms (from measurements): the flow params watch ONE series with a threshold and
-// hysteresis — the original mode, kept for existing deployments. It is off while `series` is
-// empty, which is what lets the flow ship active: without params it only acts on declarations.
+// The measurement-series alarm (one series with a threshold, set in params) is the separate flow
+// ot-alarm-series: subscribing to the measurements here would wake this flow on every batch a
+// connector publishes in measurement output (contract §5.5).
 //
 // Alarms are retained, so they outlive this flow's in-memory state. After a mapper restart an
 // alarm's state is first taken from its retained message, which the companion flow
@@ -62,7 +61,6 @@
 //                                              by ("equals", "above", ...), false, or absent
 //                                              while unknown. A pruned alarm is kept as
 //                                              { active: false }, without an owner.
-//   context.script "<alarm topic>:active"   -> true / false for the measurement alarm
 //   context.mapper "ot-alarm-retained:<alarm topic>" -> true / false, from alarm-state.js
 
 const decoder = new TextDecoder();
@@ -263,62 +261,6 @@ function onLinkStatus(parts, status, context) {
   return out;
 }
 
-function onMeasurement(message, payload, context) {
-  const cfg = context.config || {};
-  // Off unless a series is configured: the flow ships active, and only declarations drive it then.
-  const series = cfg.series || "";
-  if (!series) return [];
-
-  // Group defaults to the m/<group> segment of the source topic, so this flow follows whatever
-  // protocol produced the measurement.
-  const group = cfg.group || message.topic.split("/")[6] || "value";
-  const threshold = Number(cfg.threshold ?? 70);
-  const hysteresis = Number(cfg.hysteresis ?? 5);
-  const severity = cfg.severity || "major";
-  const alarmType = cfg.alarm_type || "ot_alarm";
-  const text = cfg.text || "Value exceeded threshold";
-
-  // Extract the series value, tolerating both { series: v } and { series: { value: v } }.
-  const node = payload?.[group]?.[series];
-  const value = typeof node === "object" && node !== null ? node.value : node;
-  if (typeof value !== "number") return [];
-
-  // Alarm topic derived from the device prefix of the incoming measurement topic.
-  // e.g. "te/device/plc1///m/modbus" -> "te/device/plc1///a/<alarm_type>"
-  const devicePrefix = message.topic.split("/").slice(0, 5).join("/");
-  const alarmTopic = `${devicePrefix}/a/${alarmType}`;
-
-  const clearBelow = threshold - hysteresis;
-  const key = `${alarmTopic}:active`;
-  // Unknown until the retained alarm or the first reading after a (re)start settles it, see the
-  // header.
-  let active = knownBool(context.script.get(key));
-  if (active === undefined) active = retainedState(context, alarmTopic);
-
-  if (value >= threshold) {
-    context.script.set(key, true);
-    if (active === true) return []; // already raised; no redundant publish
-    return [{
-      topic: alarmTopic,
-      payload: JSON.stringify({
-        severity,
-        text: `${text} (${value} >= ${threshold})`,
-        time: payload.time,
-      }),
-      mqtt: { retain: true, qos: 1 },
-    }];
-  }
-
-  if (value < clearBelow) {
-    context.script.set(key, false);
-    if (active === false) return []; // already clear
-    return [clearMessage(alarmTopic)];
-  }
-
-  // Inside the hysteresis band: no state change.
-  return [];
-}
-
 export function onMessage(message, context) {
   let payload;
   try {
@@ -330,6 +272,5 @@ export function onMessage(message, context) {
   const parts = message.topic.split("/");
   if (parts[3] === "ot" && parts[5] === "sample") return onSample(parts, payload, context);
   if (parts[3] === "ot" && parts[5] === "status") return onLinkStatus(parts, payload, context);
-  if (parts[5] === "m") return onMeasurement(message, payload, context);
   return [];
 }

@@ -473,6 +473,7 @@ impl CanopenConnector {
                     seq: None,
                     error: None,
                     source_value: None,
+                    source_ts: None,
                 },
                 Mode::Typed => {
                     let dt = match pt.datatype {
@@ -504,6 +505,7 @@ impl CanopenConnector {
                                 seq: None,
                                 error: None,
                                 source_value: None,
+                                source_ts: None,
                             }
                         }
                         Err(e) => {
@@ -637,6 +639,7 @@ fn make_bad_sample(
 ) -> Sample {
     Sample {
         source_value: None,
+        source_ts: None,
         ts,
         device: device.clone(),
         protocol: PROTOCOL,

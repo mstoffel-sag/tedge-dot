@@ -74,6 +74,17 @@ pub struct ConnectorSection {
     /// Default reporting policy for every point (§5.3), as written.
     #[serde(default)]
     pub report: Option<serde_json::Value>,
+    /// What readings are published as (§5.5): `"samples"` (the default) or `"measurements"`.
+    /// Read it through [`crate::measure::Output::of`].
+    #[serde(default)]
+    pub output: Option<String>,
+    /// Measurement naming for measurement output (§5.5): `group`, `series`, `point_separator`
+    /// and `include_boolean`, as the `ot-measurement` flow's parameters of the same names.
+    #[serde(default)]
+    pub measurement: Option<serde_json::Value>,
+    /// Default grouping policy for every point in measurement output (§5.5), as written.
+    #[serde(default)]
+    pub batch: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -128,6 +139,9 @@ pub struct DeviceConfig {
     /// Default reporting policy for this device's points (§5.3), as written.
     #[serde(default)]
     pub report: Option<serde_json::Value>,
+    /// Default grouping policy for this device's points in measurement output (§5.5).
+    #[serde(default)]
+    pub batch: Option<serde_json::Value>,
 }
 
 // The opaque protocol tables may hold credentials (an SNMP USM password, an OPC UA user
@@ -157,6 +171,7 @@ impl fmt::Debug for DeviceConfig {
             .field("points_from", &self.points_from)
             .field("points", &self.points)
             .field("report", &self.report)
+            .field("batch", &self.batch)
             .finish()
     }
 }
@@ -232,6 +247,14 @@ pub struct PointConfig {
     /// This point's reporting policy (§5.3), as written (merged with a library's).
     #[serde(default)]
     pub report: Option<serde_json::Value>,
+    /// This point's grouping policy in measurement output (§5.5), as written (merged with a
+    /// library's).
+    #[serde(default)]
+    pub batch: Option<serde_json::Value>,
+    /// In measurement output, whether this point still publishes samples (§5.5): `true` for a
+    /// consumer other than the flows, `false` to publish none. Unset, the runtime decides.
+    #[serde(default)]
+    pub sample: Option<bool>,
     /// This point's value map (§4.3), as written. A library's is replaced, not merged; an empty
     /// table means no map. Read it through [`PointConfig::value_map`].
     #[serde(default)]
@@ -267,6 +290,15 @@ impl ConnectorConfig {
         crate::report::merge_into(&mut table, self.connector.report.as_ref());
         crate::report::merge_into(&mut table, device.report.as_ref());
         crate::report::merge_into(&mut table, point.report.as_ref());
+        table
+    }
+
+    /// The merged `batch` table of one point (§5.5), merged like [`ConnectorConfig::report_table`].
+    pub fn batch_table(&self, device: &DeviceConfig, point: &PointConfig) -> serde_json::Map<String, serde_json::Value> {
+        let mut table = serde_json::Map::new();
+        crate::report::merge_into(&mut table, self.connector.batch.as_ref());
+        crate::report::merge_into(&mut table, device.batch.as_ref());
+        crate::report::merge_into(&mut table, point.batch.as_ref());
         table
     }
 

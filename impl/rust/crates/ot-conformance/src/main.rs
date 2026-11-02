@@ -30,6 +30,37 @@ struct Cli {
 enum Command {
     /// Run the conformance suite against a connector's conformance.toml.
     Check(CheckArgs),
+    /// Run a standalone simulator for throughput measurements (bench/, doc/performance.md),
+    /// until interrupted.
+    #[cfg(feature = "opcua")]
+    #[command(subcommand)]
+    Serve(Serve),
+}
+
+#[cfg(feature = "opcua")]
+#[derive(Subcommand)]
+enum Serve {
+    /// An OPC UA server with N `Double` nodes ns=2;s=Bulk0 .. Bulk<N-1>, anonymous with
+    /// security None, each starting at its index. Prints the endpoint on stdout once it
+    /// accepts connections.
+    Opcua(ServeOpcuaArgs),
+}
+
+#[cfg(feature = "opcua")]
+#[derive(Args)]
+struct ServeOpcuaArgs {
+    /// Number of bulk nodes.
+    #[arg(long)]
+    points: usize,
+    /// Nodes changed per second, round robin and spread evenly (each change adds 1).
+    #[arg(long, default_value_t = 0.0)]
+    change_rate: f64,
+    /// Address to listen on and advertise.
+    #[arg(long, default_value = "127.0.0.1")]
+    host: String,
+    /// Port to listen on; 0 picks a free one.
+    #[arg(long, default_value_t = 4840)]
+    port: u16,
 }
 
 #[derive(Args)]
@@ -77,6 +108,28 @@ async fn main() -> ExitCode {
                 ExitCode::from(2)
             }
         },
+        #[cfg(feature = "opcua")]
+        Command::Serve(Serve::Opcua(args)) => {
+            match ot_conformance::sim::bulk::BulkServer::start(
+                args.points,
+                args.change_rate,
+                &args.host,
+                args.port,
+            )
+            .await
+            {
+                Ok(server) => {
+                    println!("{}", server.endpoint);
+                    let _ = tokio::signal::ctrl_c().await;
+                    drop(server);
+                    ExitCode::SUCCESS
+                }
+                Err(e) => {
+                    eprintln!("error: {e}");
+                    ExitCode::from(2)
+                }
+            }
+        }
     }
 }
 

@@ -21,13 +21,15 @@ import signal
 import sys
 import logging
 import time
+import os
 
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
 log = logging.getLogger("CANopen Simulator")
 
-NODE_ID = 1
+# CANOPEN_NODE_ID: the measurement-output instance's simulator (docker-compose.yaml) is node 2.
+NODE_ID = int(os.environ.get("CANOPEN_NODE_ID", "1"))
 INTERFACE = "vcan0"
 
 # Seeded values

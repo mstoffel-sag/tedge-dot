@@ -54,7 +54,7 @@ const CONNECTOR_ONLY_KEYS: [&str; 4] = ["connector", "mqtt", "connection", "devi
 /// Point fields that are merged key by key when a later definition overrides an earlier one.
 /// Everything else — `address` included — is replaced wholesale, because a partial protocol
 /// address is not a meaningful thing to inherit.
-const DEEP_MERGED_KEYS: [&str; 3] = ["meta", "transform", "report"];
+const DEEP_MERGED_KEYS: [&str; 4] = ["meta", "transform", "report", "batch"];
 
 // The keys a contract-level table may carry (§3.3). Anything else is refused, with the nearest
 // known key suggested, so a misspelt setting — `polling_interval` for `poll_interval` — is
@@ -72,6 +72,9 @@ const CONNECTOR_KEYS: &[&str] = &[
     "stall_timeout",
     "point_library_path",
     "report",
+    "output",
+    "measurement",
+    "batch",
 ];
 const MQTT_KEYS: &[&str] = &["host", "port"];
 const DEVICE_KEYS: &[&str] = &[
@@ -85,6 +88,7 @@ const DEVICE_KEYS: &[&str] = &[
     "point",
     "enabled",
     "report",
+    "batch",
 ];
 const POINT_KEYS: &[&str] = &[
     "id",
@@ -105,6 +109,8 @@ const POINT_KEYS: &[&str] = &[
     "enabled",
     "report",
     "map",
+    "batch",
+    "sample",
 ];
 const TRANSFORM_KEYS: &[&str] = &["multiplier", "divisor", "decimal_shift", "offset"];
 const LIBRARY_TOP_KEYS: &[&str] = &["library", "point"];
@@ -184,6 +190,12 @@ fn check_document(doc: &Value) -> Result<(), String> {
         if let Some(report) = connector.get("report") {
             check_keys(report, crate::report::REPORT_KEYS, "the report of [connector]")?;
         }
+        if let Some(batch) = connector.get("batch") {
+            check_keys(batch, crate::measure::BATCH_KEYS, "the batch of [connector]")?;
+        }
+        if let Some(measurement) = connector.get("measurement") {
+            check_keys(measurement, crate::measure::MEASUREMENT_KEYS, "the measurement of [connector]")?;
+        }
     }
     if let Some(mqtt) = doc.get("mqtt") {
         check_keys(mqtt, MQTT_KEYS, "[mqtt]")?;
@@ -193,6 +205,9 @@ fn check_document(doc: &Value) -> Result<(), String> {
         check_keys(device, DEVICE_KEYS, &format!("device '{name}'"))?;
         if let Some(report) = device.get("report") {
             check_keys(report, crate::report::REPORT_KEYS, &format!("the report of device '{name}'"))?;
+        }
+        if let Some(batch) = device.get("batch") {
+            check_keys(batch, crate::measure::BATCH_KEYS, &format!("the batch of device '{name}'"))?;
         }
         for point in device.get("point").and_then(Value::as_array).into_iter().flatten() {
             check_point_keys(point)?;
@@ -210,6 +225,9 @@ fn check_point_keys(point: &Value) -> Result<(), String> {
     }
     if let Some(report) = point.get("report") {
         check_keys(report, crate::report::REPORT_KEYS, &format!("the report of point '{id}'"))?;
+    }
+    if let Some(batch) = point.get("batch") {
+        check_keys(batch, crate::measure::BATCH_KEYS, &format!("the batch of point '{id}'"))?;
     }
     if let Some(map) = point.get("map") {
         check_keys(map, crate::map::MAP_KEYS, &format!("the map of point '{id}'"))?;
@@ -318,7 +336,9 @@ fn check_point_values(point: &Value) -> Result<(), String> {
     check_type(point, "meta", Value::is_table, "a table")?;
     check_type(point, "subscribe", Value::is_bool, "true or false")?;
     check_type(point, "enabled", Value::is_bool, "true or false")?;
+    check_type(point, "sample", Value::is_bool, "true or false")?;
     check_report(point)?;
+    check_batch(point)?;
     check_map(point)
 }
 
@@ -375,6 +395,8 @@ fn check_resolved_methods(config: &crate::config::ConnectorConfig) -> Result<(),
                 ("sampling_interval", point.sampling_interval.is_some()),
                 ("subscribe", point.subscribe.is_some()),
                 ("report", point.report.is_some()),
+                ("batch", point.batch.is_some()),
+                ("sample", point.sample.is_some()),
                 ("meta.parameter", parameter),
             ];
             if let Some((field, _)) = declared.iter().find(|(_, set)| *set) {
@@ -391,6 +413,24 @@ fn check_resolved_methods(config: &crate::config::ConnectorConfig) -> Result<(),
 /// The `report` table of a connector, device or point (§5.3), when present.
 fn check_report(table: &Value) -> Result<(), String> {
     table.get("report").map_or(Ok(()), crate::report::check_values)
+}
+
+/// The `batch` table of a connector, device or point (§5.5), when present.
+fn check_batch(table: &Value) -> Result<(), String> {
+    table.get("batch").map_or(Ok(()), crate::measure::check_values)
+}
+
+/// The grouping policy every point ends up with (§5.5): what only the merge of `[connector]`,
+/// device and point `batch` tables decides — the duration its `group_by` needs is there, and no
+/// key of another policy is. Checked on the typed configuration, like the maps.
+fn check_resolved_batches(config: &crate::config::ConnectorConfig) -> Result<(), String> {
+    for device in &config.devices {
+        for point in &device.points {
+            crate::measure::GroupBy::from_table(&config.batch_table(device, point))
+                .map_err(|e| format!("device '{}': point '{}': {e}", device.name, point.id))?;
+        }
+    }
+    Ok(())
 }
 
 /// Drop the resolved points switched off with `enabled = false` (§3.3) from a device's point
@@ -521,6 +561,9 @@ pub fn resolve(text: &str, base_dir: &Path) -> Result<ConnectorConfig, String> {
         check_duration(connector, "poll_interval")
             .and_then(|()| check_duration(connector, "sampling_interval"))
             .and_then(|()| check_report(connector))
+            .and_then(|()| check_one_of(connector, "output", crate::measure::OUTPUTS))
+            .and_then(|()| connector.get("measurement").map_or(Ok(()), crate::measure::check_measurement))
+            .and_then(|()| check_batch(connector))
             .map_err(|e| format!("[connector] {e}"))?;
     }
     expand(&mut doc, base_dir)?;
@@ -529,6 +572,7 @@ pub fn resolve(text: &str, base_dir: &Path) -> Result<ConnectorConfig, String> {
         .map_err(|e: toml::de::Error| format!("failed to parse config: {e}"))?;
     check_resolved_maps(&config)?;
     check_resolved_methods(&config)?;
+    check_resolved_batches(&config)?;
     // Absolute, so a later change of working directory cannot move what it points at.
     config.base_dir = Some(std::path::absolute(base_dir).unwrap_or_else(|_| base_dir.to_path_buf()));
     Ok(config)
@@ -587,6 +631,7 @@ fn expand(doc: &mut Value, base_dir: &Path) -> Result<(), String> {
             .and_then(|()| check_duration(device, "poll_interval"))
             .and_then(|()| check_duration(device, "sampling_interval"))
             .and_then(|()| check_report(device))
+            .and_then(|()| check_batch(device))
             .map_err(|e| format!("device '{name}': {e}"))?;
         // Checked here rather than left to the typed parse, because an empty string would
         // otherwise be accepted as a type and silently behave like an absent one — and the C

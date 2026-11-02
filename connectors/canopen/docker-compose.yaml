@@ -38,6 +38,28 @@ services:
       retries: 10
       start_period: 5s
 
+  # A second node on vcan0, for the measurement-output instance (connector-measure.toml): two
+  # SDO clients asking one node could take each other's responses.
+  measure-simulator:
+    build:
+      context: ../..
+      dockerfile: connectors/canopen/sim/Dockerfile
+      args:
+        BASE_REGISTRY: ${BASE_REGISTRY:-public.ecr.aws/docker/library}
+    network_mode: host
+    privileged: true
+    environment:
+      CANOPEN_NODE_ID: "2"
+    depends_on:
+      broker:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "ip", "link", "show", "vcan0"]
+      interval: 3s
+      timeout: 2s
+      retries: 10
+      start_period: 5s
+
   connector:
     # Stable image name so every (randomly named) project reuses the built image instead of
     # rebuilding it. IMPL/CONNECTOR_DOCKERFILE select the implementation under test:
@@ -59,4 +81,6 @@ services:
       broker:
         condition: service_started
       simulator:
+        condition: service_healthy
+      measure-simulator:
         condition: service_healthy

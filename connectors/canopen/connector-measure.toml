@@ -1,0 +1,39 @@
+# The `com` device of the CANopen e2e harness, in measurement output (contract §5.5, openspec
+# change native-batched-output): the connector publishes the thin-edge measurements itself,
+# batched. `output` is a connector setting, so the device is a connector instance of its own,
+# which entrypoint.sh starts next to the main one. It reads node 2 (measure-simulator), not the
+# main instance's node 1, so the two SDO clients never share a node.
+#
+#   analog_in    1234, a unit             -> a series of m/canopen, and the units metadata
+#   temperature  -100, meta.measurement   -> the series Node.Temperature on m/Node
+
+[connector]
+protocol      = "canopen"
+service_name  = "tedge-dot-measure"
+poll_interval = "1s"
+log_level     = "info"
+output        = "measurements"
+
+[mqtt]
+host = "localhost"
+port = 13884
+
+[connection]
+interface = "vcan0"
+
+[[device]]
+name             = "com"
+protocol_address = { node_id = 2 }
+default_mode     = "typed"
+
+  [[device.point]]
+  id       = "analog_in"
+  datatype = "uint16"
+  unit     = "counts"
+  address  = { index = 0x2000, subindex = 0 }
+
+  [[device.point]]
+  id       = "temperature"
+  datatype = "int16"
+  address  = { index = 0x2001, subindex = 0 }
+  meta     = { measurement = { group = "Node", series = "Temperature" } }

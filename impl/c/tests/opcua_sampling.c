@@ -83,6 +83,13 @@ static void check_revised(void) {
     CHECK(!tdot_ua_revised(200.0, 200.0), "granted as requested");
     CHECK(!tdot_ua_revised(200.0, 200.4), "under a millisecond");
     CHECK(!tdot_ua_revised(200.0, NAN), "NaN");
+
+    /* The source time: the source timestamp, else the server's, else none. */
+    long long unix_epoch = 116444736000000000LL, t1 = unix_epoch + 17672256009130000LL;
+    CHECK(tdot_ua_source_ts_ms(true, t1, true, t1 + 10000) == 1767225600913.0, "source wins");
+    CHECK(tdot_ua_source_ts_ms(false, 0, true, t1) == 1767225600913.0, "server next");
+    CHECK(tdot_ua_source_ts_ms(true, 0, false, 0) == 0, "a null timestamp is none");
+    CHECK(tdot_ua_source_ts_ms(false, 0, false, 0) == 0, "none");
 }
 
 int main(void) {

@@ -66,7 +66,7 @@
         {
           "type": "toml",
           "path": "impl/rust/Cargo.lock",
-          "jsonpath": "$.package[?(@.name.value == 'tedge-dot' || @.name.value == 'tedge-dot-sdk' || @.name.value == 'connector-modbus' || @.name.value == 'connector-opcua' || @.name.value == 'connector-canbus' || @.name.value == 'connector-canopen' || @.name.value == 'connector-profibus' || @.name.value == 'connector-snmp' || @.name.value == 'ot-conformance')].version"
+          "jsonpath": "$.package[?(@.name.value == 'tedge-dot' || @.name.value == 'tedge-dot-sdk' || @.name.value == 'connector-modbus' || @.name.value == 'connector-opcua' || @.name.value == 'connector-canbus' || @.name.value == 'connector-canopen' || @.name.value == 'connector-profibus' || @.name.value == 'connector-snmp' || @.name.value == 'connector-bench' || @.name.value == 'tedge-dot-bench' || @.name.value == 'ot-conformance')].version"
         },
         {
           "type": "generic",

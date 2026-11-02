@@ -1,0 +1,12 @@
+# ONE measurement series, an event each time its value changes. It is off while `series` is
+# empty. (Moved here from ot-event, whose params file took these settings before.)
+
+# Measurement series to monitor for changes: payload[group][series], e.g. series = "value".
+# Empty = off. Empty group -> taken from the m/<group> segment of the source topic (any protocol).
+group = ""
+series = ""
+
+# Event metadata. `event_type` becomes the topic suffix: te/device/<device>///e/<event_type>.
+# An event is raised every time the monitored value changes (mirrors the legacy eventmapping).
+event_type = "ot_event"
+text = "OT value changed"

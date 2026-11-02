@@ -9,6 +9,8 @@
 pub mod modbus;
 #[cfg(feature = "opcua")]
 pub mod opcua;
+#[cfg(feature = "opcua")]
+pub mod bulk;
 pub mod proxy;
 
 use tedge_dot_sdk::{DataType, Mode};

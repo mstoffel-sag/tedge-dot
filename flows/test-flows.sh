@@ -156,6 +156,9 @@ check "measurement: bool coil -> 1" ot-measurement \
   '{"modbus":{"coil_rw":1}'
 check_empty "measurement: bad quality dropped" ot-measurement \
   "[te/device/plc1/ot/modbus/sample/level_f32] $SBAD"
+# Measurement output (contract §5.5): the connector published the series itself.
+check_empty "measurement: a measured sample is not converted again" ot-measurement \
+  "[te/device/plc1/ot/modbus/sample/level_f32] ${S%\}},\"measured\":true}"
 
 # --- ot-measurement units (sample.unit -> retained measurement metadata on <topic>/meta) ---
 # A sample of point p with unit $2, value $3 and optional extra fields $4 (e.g. a meta table).
@@ -395,18 +398,17 @@ ot_bad() {
     "$2" "$1" "$2" "$3"
 }
 
-# --- ot-event: measurement mode (one series from the params; off without one) ---
-# The template sets no series, which is what lets the flow ship active.
-check_empty "event: measurement mode is off without a series" ot-event \
+# --- ot-event-series: one measurement series from the params; off without one ---
+check_empty "event-series: off without a series" ot-event-series \
   '[te/device/plc1///m/modbus] {"modbus":{"value":5},"time":"2026-05-30T10:00:00.000Z"}'
-check_params "event: emits on first value" ot-event 'series = "value"' \
+check_params "event-series: emits on first value" ot-event-series 'series = "value"' \
   '[te/device/plc1///m/modbus] {"modbus":{"value":5},"time":"2026-05-30T10:00:00.000Z"}' \
   '[te/device/plc1///e/ot_event] {"text":"OT value changed","time":"2026-05-30T10:00:00.000Z"}'
-check_params "event: opcua measurement raises (generic)" ot-event 'series = "value"' \
+check_params "event-series: opcua measurement raises (generic)" ot-event-series 'series = "value"' \
   '[te/device/opc1///m/opcua] {"opcua":{"value":9},"time":"2026-05-30T10:00:00.000Z"}' \
   '[te/device/opc1///e/ot_event]'
 # Same value twice -> a single event (the second is suppressed as unchanged).
-check_output "event: change-detection fires once for repeats" ot-event 'series = "value"' \
+check_output "event-series: change-detection fires once for repeats" ot-event-series 'series = "value"' \
   "$(lines '[te/device/plc1///m/modbus] {"modbus":{"value":5},"time":"t1"}' \
            '[te/device/plc1///m/modbus] {"modbus":{"value":5},"time":"t2"}')" \
   '[te/device/plc1///e/ot_event] {"text":"OT value changed","time":"t1"}'
@@ -469,16 +471,16 @@ check_output "event: every still ignores a failed read" ot-event "" \
   "$(ot_bad t1 link_down "$TRAP")" \
   ''
 
-# --- ot-alarm: measurement mode (one series from the params, hysteresis; off without one) ---
-check_empty "alarm: measurement mode is off without a series" ot-alarm \
+# --- ot-alarm-series: one measurement series from the params, hysteresis; off without one ---
+check_empty "alarm-series: off without a series" ot-alarm-series \
   '[te/device/plc1///m/modbus] {"modbus":{"temp_u16":80},"time":"2026-05-30T10:00:00.000Z"}'
-check_params "alarm: modbus measurement raises" ot-alarm 'series = "temp_u16"' \
+check_params "alarm-series: modbus measurement raises" ot-alarm-series 'series = "temp_u16"' \
   '[te/device/plc1///m/modbus] {"modbus":{"temp_u16":80},"time":"2026-05-30T10:00:00.000Z"}' \
   '[te/device/plc1///a/ot_overrange] {"severity":"major"'
-check_params "alarm: opcua measurement raises (generic)" ot-alarm 'series = "temp_u16"' \
+check_params "alarm-series: opcua measurement raises (generic)" ot-alarm-series 'series = "temp_u16"' \
   '[te/device/opc1///m/opcua] {"opcua":{"temp_u16":80},"time":"2026-05-30T10:00:00.000Z"}' \
   '[te/device/opc1///a/ot_overrange] {"severity":"major"'
-check_output "alarm: measurement alarm raised and cleared once each, held inside the band" ot-alarm 'series = "temp_u16"' \
+check_output "alarm-series: raised and cleared once each, held inside the band" ot-alarm-series 'series = "temp_u16"' \
   "$(lines '[te/device/plc1///m/modbus] {"modbus":{"temp_u16":80},"time":"t1"}' \
            '[te/device/plc1///m/modbus] {"modbus":{"temp_u16":81},"time":"t2"}' \
            '[te/device/plc1///m/modbus] {"modbus":{"temp_u16":67},"time":"t3"}' \
@@ -488,9 +490,22 @@ check_output "alarm: measurement alarm raised and cleared once each, held inside
            '[te/device/plc1///a/ot_overrange] ')"
 # The alarm is retained but the flow's memory is not: after a mapper restart the first reading
 # settles the alarm either way, so one whose value recovered in the meantime is cleared.
-check_output "alarm: below the clear threshold, a fresh state is settled with a clear" ot-alarm 'series = "temp_u16"' \
+check_output "alarm-series: below the clear threshold, a fresh state is settled with a clear" ot-alarm-series 'series = "temp_u16"' \
   '[te/device/plc1///m/modbus] {"modbus":{"temp_u16":60},"time":"t1"}' \
   '[te/device/plc1///a/ot_overrange] '
+
+# A connector in measurement output publishes batches on m/+: neither flow wakes on them, whatever
+# an old params file still says.
+for f in ot-alarm ot-event; do
+  ptmp="$(flow_with_params "$f" 'series = "temp_u16"')"
+  check_empty "$f: measurements do not wake it, even with a series in its old params" "$ptmp" \
+    '[te/device/plc1///m/modbus] {"modbus":{"temp_u16":80},"time":"2026-05-30T10:00:00.000Z"}'
+  rm -rf "$ptmp"
+done
+# The sample a connector in measurement output still publishes for an alarm point drives it.
+check "alarm: a measured sample of an alarm point raises the alarm" ot-alarm \
+  '[te/device/opc1/ot/opcua/sample/temp] {"ts":"t1","device":"opc1","protocol":"opcua","point":"temp","quality":"good","access":"read","value":90,"measured":true,"meta":{"alarm":{"type":"hot","when":{"above":70}}}}' \
+  '[te/device/opc1///a/hot] {"severity":"major","text":"temp is 90","time":"t1"}'
 
 # --- ot-alarm: per-signal alarms declared on the point (meta.alarm), from samples ---
 PUMP='{"measurement":false,"alarm":{"type":"pump_fault","severity":"critical","text":"{point} on {device} is {value}","when":{"equals":["FAULT","TRIP"]}}}'
@@ -582,7 +597,7 @@ check_output "alarm: a reading that settles nothing before the retained replay d
 check_output "alarm: a clear seen on the alarm topic is known, so a normal reading publishes nothing" ot-alarm "" \
   "$(lines '[te/device/opc1///a/pump_fault] ' "$(ot_sample t1 pump_state '"RUNNING"' "$PUMP")")" \
   ''
-check_output "alarm: a retained measurement alarm still standing is not raised again" ot-alarm 'series = "temp_u16"' \
+check_output "alarm-series: a retained alarm still standing is not raised again" ot-alarm-series 'series = "temp_u16"' \
   "$(lines '[te/device/plc1///a/ot_overrange] {"severity":"major","text":"OT value high (80 >= 70)","time":"t0"}' \
            '[te/device/plc1///m/modbus] {"modbus":{"temp_u16":85},"time":"t1"}')" \
   ''

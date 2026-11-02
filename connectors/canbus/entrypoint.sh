@@ -13,4 +13,11 @@ echo "waiting for broker:13883 ..."
 until nc -z localhost 13883; do sleep 1; done
 
 echo "starting tedge-dot"
+# The measurement-output device (connector-measure.toml) is a connector instance of its own, in
+# a second process, so the main instance keeps running from its one file as PID 1.
+if [ -f /etc/connector-measure.toml ]; then
+    echo "starting tedge-dot (measurement output)"
+    /usr/bin/tedge-dot /etc/connector-measure.toml &
+fi
+
 exec /usr/bin/tedge-dot /etc/connector.toml

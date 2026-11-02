@@ -68,6 +68,7 @@ test *args="":
 # Lint
 lint:
     cargo clippy {{MANIFEST}} --workspace --all-targets -- -D warnings
+    ./ci/check-release-features.sh
 
 # Run the SDK property-based tests only (proptest; part of `just test` too).
 test-properties:
@@ -524,3 +525,48 @@ docs:
 # link validation).
 docs-build:
     cd site && npm ci --no-audit --no-fund && npm test && npm run build
+
+# --- Performance harness (bench/, doc/performance.md) ---------------------------
+#
+# Measures the real runtimes and the host's real tedge-mapper c8y on a private, offline stack
+# (no Cumulocity). Needs tedge, tedge-mapper and mosquitto on the PATH. Results are only
+# comparable on one host: read them as ratios.
+
+BENCH := "impl/rust/target/release/tedge-dot-bench"
+
+# Release builds of what the harness drives: both connectors with the bench module, the harness
+# and the OPC UA simulator.
+# Build the performance harness and both connectors with the bench module.
+bench-build:
+    cargo build {{MANIFEST}} --release --features bench --bin tedge-dot
+    cargo build {{MANIFEST}} --release -p tedge-dot-bench -p ot-conformance
+    cmake -S impl/c -B impl/c/build-bench -G Ninja -DCMAKE_BUILD_TYPE=Release -DTDOT_BENCH=ON \
+        -DTDOT_MODBUS=ON -DTDOT_OPCUA=ON -DTDOT_SNMP=ON -DTDOT_PROFIBUS=ON
+    cmake --build impl/c/build-bench --target tedge-dot
+
+# Both implementations unless IMPL=rust|c is set; results go to bench/results/.
+# Usage: just bench samples-noflows [--rate 10000] [--window 30s]
+# Run one performance scenario.
+bench scenario *args: bench-build
+    {{BENCH}} run {{scenario}} {{args}}
+
+# Writes bench/results/baseline-<host>.md (the median of three runs per scenario).
+# Run every performance scenario three times per implementation.
+bench-baseline: bench-build
+    {{BENCH}} run all --repeat 3
+    {{BENCH}} summary
+
+# samples-flows and samples-noflows at 1,000 readings/s for 10 s with each implementation.
+# Fails on rejected messages, lost samples or a slow drain, never on CPU figures.
+# Run the performance harness's CI smoke.
+bench-smoke: bench-build
+    {{BENCH}} run samples-flows samples-noflows --rate 1000 --window 10s --check --no-record
+
+# Each run otherwise starts and stops the stack itself.
+# Start the performance harness's private stack.
+bench-stack-up:
+    {{BENCH}} stack up
+
+# Stop the performance harness's private stack.
+bench-stack-down:
+    {{BENCH}} stack down

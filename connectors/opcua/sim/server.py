@@ -8,6 +8,8 @@ Exposes a handful of nodes with stable string NodeIds under namespace index 2
     ns=2;s=Setpoint      Int32   0   (writable)  (read/write round-trip)
     ns=2;s=Running       Boolean false (writable)(read/write round-trip)
     ns=2;s=Ticks         UInt32  incremented every second (subscription/push tests)
+    ns=2;s=Stamped       Double  incremented every second, always with the source timestamp
+                                 2026-01-01T00:00:00.913Z (source-time tests, contract §5.4)
 
 Reading ns=2;s=DoesNotExist yields a Bad status, exercising bad-quality handling.
 
@@ -71,6 +73,9 @@ from asyncua.common.structures104 import new_enum, new_struct, new_struct_field
 from asyncua.crypto import uacrypto
 from asyncua.server.user_managers import UserManager
 from asyncua.crypto.permission_rules import User, UserRole
+
+# The source timestamp of every write to ns=2;s=Stamped.
+STAMPED_SOURCE_TIME = datetime(2026, 1, 1, 0, 0, 0, 913000, tzinfo=timezone.utc)
 
 ENDPOINT_HOST = os.environ.get("OPCUA_ENDPOINT_HOST", "0.0.0.0")
 CONTROL_DIR = os.environ.get("OPCUA_SIM_CONTROL_DIR", "")
@@ -166,7 +171,12 @@ async def build_server(port, policies, user_manager=None, cert=None, key=None):
         ua.QualifiedName("Ticks", idx),
         ua.Variant(0, ua.VariantType.UInt32),
     )
-    nodes = {"idx": idx, "temperature": temperature, "count": count, "ticks": ticks}
+    # A source timestamp the connector cannot have made up: every write carries the same one.
+    stamped = await plc.add_variable(
+        ua.NodeId("Stamped", idx), ua.QualifiedName("Stamped", idx), 0.0
+    )
+    nodes = {"idx": idx, "temperature": temperature, "count": count, "ticks": ticks,
+             "stamped": stamped}
     if BULK:
         for i in range(BULK):
             await plc.add_variable(ua.NodeId(f"Bulk{i}", idx), ua.QualifiedName(f"Bulk{i}", idx), float(i))
@@ -345,6 +355,12 @@ async def main():
                 print(f"registered {LATE_URI} at runtime (namespace idx={late})", flush=True)
             for _server, nodes in servers:
                 await nodes["ticks"].write_value(ua.Variant(n, ua.VariantType.UInt32))
+                await nodes["stamped"].write_value(
+                    ua.DataValue(
+                        Value=ua.Variant(float(n), ua.VariantType.Double),
+                        SourceTimestamp=STAMPED_SOURCE_TIME,
+                    )
+                )
                 # Structured values that change, for the push tests of the `opc3` device.
                 await nodes["drive"].write_value(
                     ua.Variant(ua.SimMotor(Current=float(n), Temp=40.0), ua.VariantType.ExtensionObject)

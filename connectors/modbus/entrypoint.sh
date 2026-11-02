@@ -31,5 +31,13 @@ if [ -n "${MULTI_DEVICE_COUNT:-}" ]; then
     exec /usr/bin/tedge-dot run -c "$dir"
 fi
 
+# The measurement-output device (connector-measure.toml) is a connector instance of its own, in
+# a second process: the suite edits /etc/connector.toml in place and signals PID 1, so the main
+# instance keeps running from that one file.
+if [ -f /etc/connector-measure.toml ]; then
+    echo "starting tedge-dot (measurement output)"
+    /usr/bin/tedge-dot /etc/connector-measure.toml &
+fi
+
 echo "starting tedge-dot"
 exec /usr/bin/tedge-dot /etc/connector.toml

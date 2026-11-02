@@ -6,7 +6,7 @@
 | Protocol id | `opcua` |
 | Crate | `connector-opcua` (feature `opcua`) · C module `impl/c/connectors/opcua/` (option `TDOT_OPCUA`) |
 | Builds on | Rust: [`async-opcua`](https://github.com/FreeOpcUa/async-opcua) (MPL-2.0), with `async-opcua-crypto` vendored and patched (`impl/rust/vendor/async-opcua-crypto/TEDGE-DOT-PATCH.md`). C: [open62541](https://github.com/open62541/open62541) 1.5 (MPL-2.0) with [mbedTLS](https://github.com/Mbed-TLS/mbedtls) 3.6 (Apache-2.0), both built from source and linked statically. [Connector SDK](../sdk/connector-sdk.md) |
-| Implements | [OT Connector Contract](../contract/ot-connector-contract.md) v0.1.0 |
+| Implements | [OT Connector Contract](../contract/ot-connector-contract.md) v0.2.0 |
 | Test vectors | [connectors/opcua/conformance/tools/genpki.py](../../connectors/opcua/conformance/tools/genpki.py) (PKI scenarios, generated at test time) |
 
 This spec is normative for both implementations. Where it says "the connector", the Rust and

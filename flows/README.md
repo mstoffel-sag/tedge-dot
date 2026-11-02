@@ -21,8 +21,10 @@ modules that run inside a mapper and are hot-reloaded without restarts.
 | Flow | Direction | Reads | Emits |
 | --- | --- | --- | --- |
 | [ot-measurement](ot-measurement/) | OT → thin-edge | `ot/<protocol>/sample/<point>` | `m/<group>` measurement, `m/<group>/meta` units (retained) |
-| [ot-alarm](ot-alarm/) | OT → thin-edge | `sample/<point>` (`meta.alarm`), `status/link`; or one `m/<group>` series | `a/<type>` alarm, retained: raised and cleared |
-| [ot-event](ot-event/) | OT → thin-edge | `sample/<point>` (`meta.event`); or one `m/<group>` series | `e/<type>` event |
+| [ot-alarm](ot-alarm/) | OT → thin-edge | `sample/<point>` (`meta.alarm`), `status/link` | `a/<type>` alarm, retained: raised and cleared |
+| [ot-event](ot-event/) | OT → thin-edge | `sample/<point>` (`meta.event`) | `e/<type>` event |
+| [ot-alarm-series](ot-alarm-series/) | thin-edge → thin-edge | one `m/<group>` series (params) | `a/<type>` alarm, retained: raised and cleared |
+| [ot-event-series](ot-event-series/) | thin-edge → thin-edge | one `m/<group>` series (params) | `e/<type>` event |
 | [ot-registration](ot-registration/) | OT → thin-edge | `ot/<protocol>/status/link`, `service/<service>/ot/capabilities` | `te/device/<device>//` child registration (+ optional `twin/<fragment>`, + `cmd/ot_call_method` for devices with methods) |
 | [ot-command-forward](ot-command-forward/) | thin-edge → OT | `cmd/ot_<verb>/<id>` (incl. `parameter_update`) | `ot/<protocol>/cmd/<verb>/<id>`, or `service/<service>/ot/cmd/<verb>/<id>` for management verbs |
 | [ot-command-result](ot-command-result/) | OT → thin-edge | `ot/<protocol>/cmd/<verb>/<id>`, `service/<service>/ot/cmd/<verb>/<id>` | `cmd/ot_<verb>/<id>` (or the `origin.command`) |
@@ -178,9 +180,13 @@ skips a label like any other string.
 
 By default `ot-measurement` names the measurement group after the sample's `protocol`
 (`m/modbus`, `m/opcua`, ...) and `ot-registration` types the child device as `<protocol>-device`.
-Override either via each flow's `params.toml`, where `ot-alarm` / `ot-event` can also watch one
-`m/<group>` series for a threshold or for changes (their measurement mode, off until `series` is
-set).
+Override either via each flow's `params.toml`. Watching one `m/<group>` series for a threshold or
+for changes is the job of `ot-alarm-series` / `ot-event-series`, which subscribe to every
+measurement and so are not installed unless used (see below).
+
+A connector can also publish the measurements itself, batched, with `[connector] output =
+"measurements"` ([measurement output](../doc/measurement-output.md)). It then publishes samples
+only for the points a flow reads, marked `"measured": true`, and `ot-measurement` skips those.
 
 To remap individual signals to specific groups/series with a single flow instance, name the
 connector points with a separator and set `point_separator` (e.g. `"."`): the point id
@@ -232,7 +238,7 @@ through `ot-command-result`.
  OT device                    tedge-dot (driver)            flows (this dir)            cloud mapper
  ───────────────   reads ──▶  ot/<protocol>/sample/<point> ──▶  ot-measurement ──▶  m/<group>  ──▶  measurement
                              ot/<protocol>/status/link      ──▶  ot-registration ─▶ te/device/x// ─▶ child device
-                                                                 m/<group> ──▶ ot-alarm ──▶ a/<type> ──▶ alarm
+                             ot/<protocol>/sample/<point>   ──▶  ot-alarm ──▶ a/<type> ──▶ alarm
 
  cloud operation  ──▶  cmd/ot_<verb>/<id>  ──▶ ot-command-forward ──▶ ot/<protocol>/cmd/<verb>/<id> ──▶ driver acts
  driver result    ──▶  ot/<protocol>/cmd/<verb>/<id> ─▶ ot-command-result ──▶ cmd/ot_<verb>/<id> (operation completes)
@@ -311,21 +317,28 @@ Cumulocity mapper's flows directory:
 ```
 
 `ot-alarm` and `ot-event` do nothing until a point declares an alarm or an event, so they need no
-settings. Only their measurement mode — one `m/<group>` series watched for a threshold or for
-changes — is configured, in a `params.toml`:
+settings.
+
+The measurement-series alarm and event (one `m/<group>` series watched for a threshold, or an
+event on every change of it) are the flows `ot-alarm-series` and `ot-event-series`. They subscribe
+to every measurement, so the package ships them inactive in `/usr/share/tedge-dot/flows/`, and
+installs one into the mapper on upgrade only when the `ot-alarm` or `ot-event` `params.toml` of an
+earlier version sets `series` (that params file is copied over). To use one, copy it and write its
+`params.toml`:
 
 ```sh
-sudo cp /etc/tedge/mappers/c8y/flows/ot-alarm/params.toml.template \
-        /etc/tedge/mappers/c8y/flows/ot-alarm/params.toml
-sudo -u tedge $EDITOR /etc/tedge/mappers/c8y/flows/ot-alarm/params.toml
+sudo cp -r /usr/share/tedge-dot/flows/ot-alarm-series /etc/tedge/mappers/c8y/flows/
+sudo cp /etc/tedge/mappers/c8y/flows/ot-alarm-series/params.toml.template \
+        /etc/tedge/mappers/c8y/flows/ot-alarm-series/params.toml
+sudo -u tedge $EDITOR /etc/tedge/mappers/c8y/flows/ot-alarm-series/params.toml
 ```
 
 Earlier packages shipped these two inert in `/usr/share/tedge-dot/flows/`. A copy enabled from
 there by hand is replaced by the packaged flow on upgrade, and the `params.toml` next to it is
-kept. Its measurement mode keeps working only if that `params.toml` sets `series`: the packaged
-template no longer names one, so a copy that ran on the template's example series (`temp_u16`
-for `ot-alarm`, `value` for `ot-event`) or on the flow's old built-in default (`value`) goes
-quiet until `series` is set.
+kept. Its measurement mode is now `ot-alarm-series` / `ot-event-series`, installed with that
+`params.toml` when it sets `series`. A copy that ran on the old template's example series
+(`temp_u16` for `ot-alarm`, `value` for `ot-event`) or on the flow's old built-in default (`value`)
+gets no series flow until its `params.toml` sets `series` and the series flow is installed.
 
 Either way the mapper picks the change up and hot-reloads — no restart. Only the flow logic
 (`flow.toml`, `main.js`) and the `params.toml.template` are packaged; the `params.toml` you write

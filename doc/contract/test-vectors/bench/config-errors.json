@@ -1,0 +1,96 @@
+{
+ "about": "Invalid bench configurations and the message each build refuses them with. `device` is the device's TOML body after `name` (it must set protocol_address), `points` the point tables. `rust` and `c` are the module's message, without any prefix the binary adds; null means the build accepts the config.",
+ "cases": [
+  {
+   "name": "change above 1",
+   "device": "protocol_address = {}",
+   "points": "[[device.point]]\nid = \"p1\"\ndatatype = \"float64\"\naddress = { change = 1.5 }",
+   "rust": "point 'p1' on device 'plc0' address: 'change' must be a number from 0 to 1",
+   "c": "point 'p1' on device 'plc0' address: 'change' must be a number from 0 to 1"
+  },
+  {
+   "name": "batch of 0",
+   "device": "protocol_address = { batch = 0 }",
+   "points": "",
+   "rust": "device 'plc0' protocol_address: 'batch' must be a positive integer",
+   "c": "device 'plc0' protocol_address: 'batch' must be a positive integer"
+  },
+  {
+   "name": "negative push rate",
+   "device": "protocol_address = { push_rate = -1 }",
+   "points": "",
+   "rust": "device 'plc0' protocol_address: 'push_rate' must be a number of 0 or more",
+   "c": "device 'plc0' protocol_address: 'push_rate' must be a number of 0 or more"
+  },
+  {
+   "name": "first unknown key in sort order",
+   "device": "protocol_address = { zeta = 1, alpha = 1 }",
+   "points": "",
+   "rust": "device 'plc0' protocol_address: unknown key 'alpha'",
+   "c": "device 'plc0' protocol_address: unknown key 'alpha'"
+  },
+  {
+   "name": "latency not a duration",
+   "device": "protocol_address = { latency = \"fast\" }",
+   "points": "",
+   "rust": "device 'plc0' protocol_address: 'latency' must be a duration such as \"2ms\"",
+   "c": "device 'plc0' protocol_address: 'latency' must be a duration such as \"2ms\""
+  },
+  {
+   "name": "unknown model",
+   "device": "protocol_address = {}",
+   "points": "[[device.point]]\nid = \"p1\"\ndatatype = \"float64\"\naddress = { model = \"sine\" }",
+   "rust": "point 'p1' on device 'plc0' address: 'model' must be \"walk\", \"constant\" or \"counter\"",
+   "c": "point 'p1' on device 'plc0' address: 'model' must be \"walk\", \"constant\" or \"counter\""
+  },
+  {
+   "name": "negative step",
+   "device": "protocol_address = {}",
+   "points": "[[device.point]]\nid = \"p1\"\ndatatype = \"float64\"\naddress = { step = -1 }",
+   "rust": "point 'p1' on device 'plc0' address: 'step' must be a finite number of 0 or more",
+   "c": "point 'p1' on device 'plc0' address: 'step' must be a finite number of 0 or more"
+  },
+  {
+   "name": "unknown point key",
+   "device": "protocol_address = {}",
+   "points": "[[device.point]]\nid = \"p1\"\ndatatype = \"float64\"\naddress = { rate = 2 }",
+   "rust": "point 'p1' on device 'plc0' address: unknown key 'rate'",
+   "c": "point 'p1' on device 'plc0' address: unknown key 'rate'"
+  },
+  {
+   "name": "unsupported datatype",
+   "device": "protocol_address = {}",
+   "points": "[[device.point]]\nid = \"p1\"\ndatatype = \"uint16\"\naddress = {}",
+   "rust": "point 'p1' on device 'plc0': datatype must be float64, int32, bool or string",
+   "c": "point 'p1' on device 'plc0': datatype must be float64, int32, bool or string"
+  },
+  {
+   "name": "raw mode",
+   "device": "protocol_address = {}",
+   "points": "[[device.point]]\nid = \"p1\"\nmode = \"raw\"\naddress = {}",
+   "rust": "point 'p1' on device 'plc0': the bench module supports typed points only",
+   "c": "point 'p1' on device 'plc0': the bench module supports typed points only"
+  },
+  {
+   "name": "resolution below 1 ms",
+   "device": "protocol_address = { ts_resolution = \"0ms\" }",
+   "points": "",
+   "rust": "device 'plc0' protocol_address: 'ts_resolution' must be at least 1ms",
+   "c": "device 'plc0' protocol_address: 'ts_resolution' must be at least 1ms"
+  },
+  {
+   "name": "source-time jitter",
+   "device": "protocol_address = { ts_jitter = \"50ms\" }",
+   "points": "",
+   "rust": null,
+   "c": null
+  },
+  {
+   "name": "grouped delivery",
+   "device": "protocol_address = { publish_interval = \"100ms\" }",
+   "points": "",
+   "rust": null,
+   "c": null
+  }
+ ]
+}

@@ -1,0 +1,1544 @@
+{
+ "cases": [
+  {
+   "name": "default naming: group is the protocol, series the point id; units before the first measurement",
+   "config": "[connector]\nprotocol = \"opcua\"\noutput = \"measurements\"\n\n[[device]]\nname = \"plc1\"\nprotocol_address = {}\n\n[[device.point]]\nid = \"flow\"\ndatatype = \"float64\"\nunit = \"L/min\"\naddress = {}\n",
+   "steps": [
+    {
+     "at": 0,
+     "read": {
+      "device": "plc1",
+      "point": "flow",
+      "value": 118.6,
+      "ts": "2026-01-01T00:00:00.913Z"
+     }
+    },
+    {
+     "at": 0,
+     "pass": true
+    }
+   ],
+   "messages": [
+    {
+     "topic": "te/device/plc1///m/opcua/meta",
+     "retain": true,
+     "payload": {
+      "opcua.flow": {
+       "unit": "L/min"
+      }
+     }
+    },
+    {
+     "topic": "te/device/plc1///m/opcua",
+     "retain": false,
+     "payload": {
+      "time": "2026-01-01T00:00:00.913Z",
+      "opcua": {
+       "flow": 118.6
+      }
+     }
+    }
+   ],
+   "routing": [
+    {
+     "sample": false,
+     "measured": true
+    }
+   ]
+  },
+  {
+   "name": "a polled pass at one read time is one message",
+   "config": "[connector]\nprotocol = \"opcua\"\noutput = \"measurements\"\n\n[[device]]\nname = \"plc1\"\nprotocol_address = {}\n\n[[device.point]]\nid = \"p0\"\ndatatype = \"float64\"\naddress = {}\n[[device.point]]\nid = \"p1\"\ndatatype = \"float64\"\naddress = {}\n[[device.point]]\nid = \"p2\"\ndatatype = \"float64\"\naddress = {}\n",
+   "steps": [
+    {
+     "at": 0,
+     "read": {
+      "device": "plc1",
+      "point": "p0",
+      "value": 1,
+      "ts": "2026-01-01T00:00:00.000Z"
+     }
+    },
+    {
+     "at": 0,
+     "read": {
+      "device": "plc1",
+      "point": "p1",
+      "value": 2.5,
+      "ts": "2026-01-01T00:00:00.000Z"
+     }
+    },
+    {
+     "at": 0,
+     "read": {
+      "device": "plc1",
+      "point": "p2",
+      "value": -3,
+      "ts": "2026-01-01T00:00:00.000Z"
+     }
+    },
+    {
+     "at": 0,
+     "pass": true
+    }
+   ],
+   "messages": [
+    {
+     "topic": "te/device/plc1///m/opcua",
+     "retain": false,
+     "payload": {
+      "time": "2026-01-01T00:00:00.000Z",
+      "opcua": {
+       "p0": 1,
+       "p1": 2.5,
+       "p2": -3
+      }
+     }
+    }
+   ],
+   "routing": [
+    {
+     "sample": false,
+     "measured": true
+    },
+    {
+     "sample": false,
+     "measured": true
+    },
+    {
+     "sample": false,
+     "measured": true
+    }
+   ]
+  },
+  {
+   "name": "naming precedence: point meta, then [connector] measurement, then the point id split, then the defaults",
+   "config": "[connector]\nprotocol = \"opcua\"\noutput = \"measurements\"\nmeasurement = { point_separator = \".\" }\n[[device]]\nname = \"plc1\"\nprotocol_address = {}\n\n[[device.point]]\nid = \"a\"\ndatatype = \"float64\"\nmeta = { measurement = { group = \"Environment\", series = \"Temperature\" } }\naddress = {}\n[[device.point]]\nid = \"Line1.Speed\"\ndatatype = \"float64\"\naddress = {}\n[[device.point]]\nid = \"b\"\ndatatype = \"float64\"\nmeta = { measurement = { series = \"Pressure\" } }\naddress = {}\n[[device.point]]\nid = \"plain\"\ndatatype = \"float64\"\naddress = {}\n",
+   "steps": [
+    {
+     "at": 0,
+     "read": {
+      "device": "plc1",
+      "point": "a",
+      "value": 21.5,
+      "ts": "2026-01-01T00:00:00.000Z"
+     }
+    },
+    {
+     "at": 0,
+     "read": {
+      "device": "plc1",
+      "point": "Line1.Speed",
+      "value": 3,
+      "ts": "2026-01-01T00:00:00.000Z"
+     }
+    },
+    {
+     "at": 0,
+     "read": {
+      "device": "plc1",
+      "point": "b",
+      "value": 1.25,
+      "ts": "2026-01-01T00:00:00.000Z"
+     }
+    },
+    {
+     "at": 0,
+     "read": {
+      "device": "plc1",
+      "point": "plain",
+      "value": 7,
+      "ts": "2026-01-01T00:00:00.000Z"
+     }
+    },
+    {
+     "at": 0,
+     "pass": true
+    }
+   ],
+   "messages": [
+    {
+     "topic": "te/device/plc1///m/Environment",
+     "retain": false,
+     "payload": {
+      "time": "2026-01-01T00:00:00.000Z",
+      "Environment": {
+       "Temperature": 21.5
+      }
+     }
+    },
+    {
+     "topic": "te/device/plc1///m/Line1",
+     "retain": false,
+     "payload": {
+      "time": "2026-01-01T00:00:00.000Z",
+      "Line1": {
+       "Speed": 3
+      }
+     }
+    },
+    {
+     "topic": "te/device/plc1///m/opcua",
+     "retain": false,
+     "payload": {
+      "time": "2026-01-01T00:00:00.000Z",
+      "opcua": {
+       "Pressure": 1.25,
+       "plain": 7
+      }
+     }
+    }
+   ],
+   "routing": [
+    {
+     "sample": false,
+     "measured": true
+    },
+    {
+     "sample": false,
+     "measured": true
+    },
+    {
+     "sample": false,
+     "measured": true
+    },
+    {
+     "sample": false,
+     "measured": true
+    }
+   ]
+  },
+  {
+   "name": "[connector] measurement group and series apply to points without their own",
+   "config": "[connector]\nprotocol = \"opcua\"\noutput = \"measurements\"\nmeasurement = { group = \"Plant\" }\n[[device]]\nname = \"plc1\"\nprotocol_address = {}\n\n[[device.point]]\nid = \"a\"\ndatatype = \"float64\"\naddress = {}\n[[device.point]]\nid = \"b\"\ndatatype = \"float64\"\nmeta = { measurement = { group = \"Mine\" } }\naddress = {}\n",
+   "steps": [
+    {
+     "at": 0,
+     "read": {
+      "device": "plc1",
+      "point": "a",
+      "value": 1,
+      "ts": "2026-01-01T00:00:00.000Z"
+     }
+    },
+    {
+     "at": 0,
+     "read": {
+      "device": "plc1",
+      "point": "b",
+      "value": 2,
+      "ts": "2026-01-01T00:00:00.000Z"
+     }
+    },
+    {
+     "at": 0,
+     "pass": true
+    }
+   ],
+   "messages": [
+    {
+     "topic": "te/device/plc1///m/Plant",
+     "retain": false,
+     "payload": {
+      "time": "2026-01-01T00:00:00.000Z",
+      "Plant": {
+       "a": 1
+      }
+     }
+    },
+    {
+     "topic": "te/device/plc1///m/Mine",
+     "retain": false,
+     "payload": {
+      "time": "2026-01-01T00:00:00.000Z",
+      "Mine": {
+       "b": 2
+      }
+     }
+    }
+   ],
+   "routing": [
+    {
+     "sample": false,
+     "measured": true
+    },
+    {
+     "sample": false,
+     "measured": true
+    }
+   ]
+  },
+  {
+   "name": "group by time: pushed readings share a message only at the same millisecond",
+   "config": "[connector]\nprotocol = \"opcua\"\noutput = \"measurements\"\n\n[[device]]\nname = \"plc1\"\nprotocol_address = {}\n\n[[device.point]]\nid = \"a\"\ndatatype = \"float64\"\naddress = {}\n[[device.point]]\nid = \"b\"\ndatatype = \"float64\"\naddress = {}\n[[device.point]]\nid = \"c\"\ndatatype = \"float64\"\naddress = {}\n",
+   "steps": [
+    {
+     "at": 0,
+     "read": {
+      "device": "plc1",
+      "point": "a",
+      "value": 1,
+      "ts": "2026-01-01T00:00:00.913Z"
+     }
+    },
+    {
+     "at": 0,
+     "read": {
+      "device": "plc1",
+      "point": "b",
+      "value": 2,
+      "ts": "2026-01-01T00:00:00.913Z"
+     }
+    },
+    {
+     "at": 0,
+     "read": {
+      "device": "plc1",
+      "point": "c",
+      "value": 3,
+      "ts": "2026-01-01T00:00:00.914Z"
+     }
+    },
+    {
+     "at": 0,
+     "pass": true
+    }
+   ],
+   "messages": [
+    {
+     "topic": "te/device/plc1///m/opcua",
+     "retain": false,
+     "payload": {
+      "time": "2026-01-01T00:00:00.913Z",
+      "opcua": {
+       "a": 1,
+       "b": 2
+      }
+     }
+    },
+    {
+     "topic": "te/device/plc1///m/opcua",
+     "retain": false,
+     "payload": {
+      "time": "2026-01-01T00:00:00.914Z",
+      "opcua": {
+       "c": 3
+      }
+     }
+    }
+   ],
+   "routing": [
+    {
+     "sample": false,
+     "measured": true
+    },
+    {
+     "sample": false,
+     "measured": true
+    },
+    {
+     "sample": false,
+     "measured": true
+    }
+   ]
+  },
+  {
+   "name": "a repeated point at the same time starts a new message and neither value is lost",
+   "config": "[connector]\nprotocol = \"opcua\"\noutput = \"measurements\"\n\n[[device]]\nname = \"plc1\"\nprotocol_address = {}\n\n[[device.point]]\nid = \"a\"\ndatatype = \"float64\"\naddress = {}\n[[device.point]]\nid = \"b\"\ndatatype = \"float64\"\naddress = {}\n",
+   "steps": [
+    {
+     "at": 0,
+     "read": {
+      "device": "plc1",
+      "point": "a",
+      "value": 1,
+      "ts": "2026-01-01T00:00:00.500Z"
+     }
+    },
+    {
+     "at": 0,
+     "read": {
+      "device": "plc1",
+      "point": "b",
+      "value": 2,
+      "ts": "2026-01-01T00:00:00.500Z"
+     }
+    },
+    {
+     "at": 0,
+     "read": {
+      "device": "plc1",
+      "point": "a",
+      "value": 3,
+      "ts": "2026-01-01T00:00:00.500Z"
+     }
+    },
+    {
+     "at": 0,
+     "pass": true
+    }
+   ],
+   "messages": [
+    {
+     "topic": "te/device/plc1///m/opcua",
+     "retain": false,
+     "payload": {
+      "time": "2026-01-01T00:00:00.500Z",
+      "opcua": {
+       "a": 1,
+       "b": 2
+      }
+     }
+    },
+    {
+     "topic": "te/device/plc1///m/opcua",
+     "retain": false,
+     "payload": {
+      "time": "2026-01-01T00:00:00.500Z",
+      "opcua": {
+       "a": 3
+      }
+     }
+    }
+   ],
+   "routing": [
+    {
+     "sample": false,
+     "measured": true
+    },
+    {
+     "sample": false,
+     "measured": true
+    },
+    {
+     "sample": false,
+     "measured": true
+    }
+   ]
+  },
+  {
+   "name": "only good numbers and booleans become series; bad, strings, raw points and meta.measurement = false do not",
+   "config": "[connector]\nprotocol = \"opcua\"\noutput = \"measurements\"\n\n[[device]]\nname = \"plc1\"\nprotocol_address = {}\n\n[[device.point]]\nid = \"n\"\ndatatype = \"float64\"\naddress = {}\n[[device.point]]\nid = \"bad\"\ndatatype = \"float64\"\naddress = {}\n[[device.point]]\nid = \"flag\"\ndatatype = \"bool\"\naddress = {}\n[[device.point]]\nid = \"text\"\ndatatype = \"string\"\naddress = {}\n[[device.point]]\nid = \"big\"\ndatatype = \"int64\"\naddress = {}\n[[device.point]]\nid = \"raw\"\ndatatype = \"uint16\"\nmode = \"raw\"\naddress = {}\n[[device.point]]\nid = \"param\"\ndatatype = \"float64\"\nmeta = { measurement = false }\naddress = {}\n",
+   "steps": [
+    {
+     "at": 0,
+     "read": {
+      "device": "plc1",
+      "point": "n",
+      "value": 0.5,
+      "ts": "2026-01-01T00:00:00.000Z"
+     }
+    },
+    {
+     "at": 0,
+     "read": {
+      "device": "plc1",
+      "point": "bad",
+      "value": 9,
+      "ts": "2026-01-01T00:00:00.000Z",
+      "quality": "bad"
+     }
+    },
+    {
+     "at": 0,
+     "read": {
+      "device": "plc1",
+      "point": "flag",
+      "value": true,
+      "ts": "2026-01-01T00:00:00.000Z"
+     }
+    },
+    {
+     "at": 0,
+     "read": {
+      "device": "plc1",
+      "point": "text",
+      "value": "hello",
+      "ts": "2026-01-01T00:00:00.000Z"
+     }
+    },
+    {
+     "at": 0,
+     "read": {
+      "device": "plc1",
+      "point": "big",
+      "value": "9007199254740993",
+      "ts": "2026-01-01T00:00:00.000Z"
+     }
+    },
+    {
+     "at": 0,
+     "read": {
+      "device": "plc1",
+      "point": "raw",
+      "value": 1,
+      "ts": "2026-01-01T00:00:00.000Z"
+     }
+    },
+    {
+     "at": 0,
+     "read": {
+      "device": "plc1",
+      "point": "param",
+      "value": 4,
+      "ts": "2026-01-01T00:00:00.000Z"
+     }
+    },
+    {
+     "at": 0,
+     "read": {
+      "device": "plc1",
+      "point": "flag",
+      "value": false,
+      "ts": "2026-01-01T00:00:00.001Z"
+     }
+    },
+    {
+     "at": 0,
+     "pass": true
+    }
+   ],
+   "messages": [
+    {
+     "topic": "te/device/plc1///m/opcua",
+     "retain": false,
+     "payload": {
+      "time": "2026-01-01T00:00:00.000Z",
+      "opcua": {
+       "n": 0.5,
+       "flag": 1
+      }
+     }
+    },
+    {
+     "topic": "te/device/plc1///m/opcua",
+     "retain": false,
+     "payload": {
+      "time": "2026-01-01T00:00:00.001Z",
+      "opcua": {
+       "flag": 0
+      }
+     }
+    }
+   ],
+   "routing": [
+    {
+     "sample": false,
+     "measured": true
+    },
+    {
+     "sample": false,
+     "measured": false
+    },
+    {
+     "sample": false,
+     "measured": true
+    },
+    {
+     "sample": false,
+     "measured": false
+    },
+    {
+     "sample": false,
+     "measured": false
+    },
+    {
+     "sample": false,
+     "measured": false
+    },
+    {
+     "sample": false,
+     "measured": false
+    },
+    {
+     "sample": false,
+     "measured": true
+    }
+   ]
+  },
+  {
+   "name": "include_boolean = false leaves booleans out",
+   "config": "[connector]\nprotocol = \"opcua\"\noutput = \"measurements\"\nmeasurement = { include_boolean = false }\n[[device]]\nname = \"plc1\"\nprotocol_address = {}\n\n[[device.point]]\nid = \"flag\"\ndatatype = \"bool\"\naddress = {}\n[[device.point]]\nid = \"n\"\ndatatype = \"float64\"\naddress = {}\n",
+   "steps": [
+    {
+     "at": 0,
+     "read": {
+      "device": "plc1",
+      "point": "flag",
+      "value": true,
+      "ts": "2026-01-01T00:00:00.000Z"
+     }
+    },
+    {
+     "at": 0,
+     "read": {
+      "device": "plc1",
+      "point": "n",
+      "value": 2,
+      "ts": "2026-01-01T00:00:00.000Z"
+     }
+    },
+    {
+     "at": 0,
+     "pass": true
+    }
+   ],
+   "messages": [
+    {
+     "topic": "te/device/plc1///m/opcua",
+     "retain": false,
+     "payload": {
+      "time": "2026-01-01T00:00:00.000Z",
+      "opcua": {
+       "n": 2
+      }
+     }
+    }
+   ],
+   "routing": [
+    {
+     "sample": false,
+     "measured": false
+    },
+    {
+     "sample": false,
+     "measured": true
+    }
+   ]
+  },
+  {
+   "name": "samples only for points flows read, marked measured when the reading also became a series",
+   "config": "[connector]\nprotocol = \"opcua\"\noutput = \"measurements\"\n\n[[device]]\nname = \"plc1\"\nprotocol_address = {}\n\n[[device.point]]\nid = \"alarm\"\ndatatype = \"float64\"\nmeta = { alarm = { type = \"high\" } }\naddress = {}\n[[device.point]]\nid = \"event\"\ndatatype = \"float64\"\nmeta = { event = { type = \"e\" } }\naddress = {}\n[[device.point]]\nid = \"param\"\ndatatype = \"float64\"\nmeta = { parameter = { key = \"s.k\" } }\naddress = {}\n[[device.point]]\nid = \"setpoint\"\ndatatype = \"float64\"\naccess = \"read_write\"\naddress = {}\n[[device.point]]\nid = \"third_party\"\ndatatype = \"float64\"\nsample = true\naddress = {}\n[[device.point]]\nid = \"quiet_alarm\"\ndatatype = \"float64\"\nmeta = { alarm = { type = \"x\" } }\nsample = false\naddress = {}\n[[device.point]]\nid = \"plain\"\ndatatype = \"float64\"\naddress = {}\n[[device.point]]\nid = \"no_param\"\ndatatype = \"float64\"\nmeta = { parameter = false }\naddress = {}\n",
+   "steps": [
+    {
+     "at": 0,
+     "read": {
+      "device": "plc1",
+      "point": "alarm",
+      "value": 1,
+      "ts": "2026-01-01T00:00:00.000Z"
+     }
+    },
+    {
+     "at": 0,
+     "read": {
+      "device": "plc1",
+      "point": "event",
+      "value": 1,
+      "ts": "2026-01-01T00:00:00.000Z"
+     }
+    },
+    {
+     "at": 0,
+     "read": {
+      "device": "plc1",
+      "point": "param",
+      "value": 1,
+      "ts": "2026-01-01T00:00:00.000Z"
+     }
+    },
+    {
+     "at": 0,
+     "read": {
+      "device": "plc1",
+      "point": "setpoint",
+      "value": 1,
+      "ts": "2026-01-01T00:00:00.000Z"
+     }
+    },
+    {
+     "at": 0,
+     "read": {
+      "device": "plc1",
+      "point": "third_party",
+      "value": 1,
+      "ts": "2026-01-01T00:00:00.000Z"
+     }
+    },
+    {
+     "at": 0,
+     "read": {
+      "device": "plc1",
+      "point": "quiet_alarm",
+      "value": 1,
+      "ts": "2026-01-01T00:00:00.000Z"
+     }
+    },
+    {
+     "at": 0,
+     "read": {
+      "device": "plc1",
+      "point": "plain",
+      "value": 1,
+      "ts": "2026-01-01T00:00:00.000Z"
+     }
+    },
+    {
+     "at": 0,
+     "read": {
+      "device": "plc1",
+      "point": "no_param",
+      "value": 1,
+      "ts": "2026-01-01T00:00:00.000Z"
+     }
+    },
+    {
+     "at": 0,
+     "read": {
+      "device": "plc1",
+      "point": "alarm",
+      "value": 2,
+      "ts": "2026-01-01T00:00:00.001Z",
+      "quality": "bad"
+     }
+    },
+    {
+     "at": 0,
+     "pass": true
+    }
+   ],
+   "messages": [
+    {
+     "topic": "te/device/plc1///m/opcua",
+     "retain": false,
+     "payload": {
+      "time": "2026-01-01T00:00:00.000Z",
+      "opcua": {
+       "alarm": 1,
+       "event": 1,
+       "param": 1,
+       "setpoint": 1,
+       "third_party": 1,
+       "quiet_alarm": 1,
+       "plain": 1,
+       "no_param": 1
+      }
+     }
+    }
+   ],
+   "routing": [
+    {
+     "sample": true,
+     "measured": true
+    },
+    {
+     "sample": true,
+     "measured": true
+    },
+    {
+     "sample": true,
+     "measured": true
+    },
+    {
+     "sample": true,
+     "measured": true
+    },
+    {
+     "sample": true,
+     "measured": true
+    },
+    {
+     "sample": false,
+     "measured": true
+    },
+    {
+     "sample": false,
+     "measured": true
+    },
+    {
+     "sample": false,
+     "measured": true
+    },
+    {
+     "sample": true,
+     "measured": false
+    }
+   ]
+  },
+  {
+   "name": "group by frame: readings within the window share a message stamped with the first reading's time",
+   "config": "[connector]\nprotocol = \"opcua\"\noutput = \"measurements\"\n\n[[device]]\nname = \"plc1\"\nprotocol_address = {}\nbatch = { group_by = \"frame\", window = \"100ms\" }\n[[device.point]]\nid = \"a\"\ndatatype = \"float64\"\naddress = {}\n[[device.point]]\nid = \"b\"\ndatatype = \"float64\"\naddress = {}\n[[device.point]]\nid = \"c\"\ndatatype = \"float64\"\naddress = {}\n",
+   "steps": [
+    {
+     "at": 0,
+     "read": {
+      "device": "plc1",
+      "point": "a",
+      "value": 1,
+      "ts": "2026-01-01T00:00:00.000Z"
+     }
+    },
+    {
+     "at": 10,
+     "read": {
+      "device": "plc1",
+      "point": "b",
+      "value": 2,
+      "ts": "2026-01-01T00:00:00.015Z"
+     }
+    },
+    {
+     "at": 10,
+     "pass": true
+    },
+    {
+     "at": 40,
+     "read": {
+      "device": "plc1",
+      "point": "c",
+      "value": 3,
+      "ts": "2026-01-01T00:00:00.038Z"
+     }
+    },
+    {
+     "at": 99,
+     "due": true
+    },
+    {
+     "at": 100,
+     "due": true
+    },
+    {
+     "at": 150,
+     "read": {
+      "device": "plc1",
+      "point": "a",
+      "value": 4,
+      "ts": "2026-01-01T00:00:00.150Z"
+     }
+    },
+    {
+     "at": 260,
+     "due": true
+    }
+   ],
+   "messages": [
+    {
+     "topic": "te/device/plc1///m/opcua",
+     "retain": false,
+     "payload": {
+      "time": "2026-01-01T00:00:00.000Z",
+      "opcua": {
+       "a": 1,
+       "b": 2,
+       "c": 3
+      }
+     }
+    },
+    {
+     "topic": "te/device/plc1///m/opcua",
+     "retain": false,
+     "payload": {
+      "time": "2026-01-01T00:00:00.150Z",
+      "opcua": {
+       "a": 4
+      }
+     }
+    }
+   ],
+   "routing": [
+    {
+     "sample": false,
+     "measured": true
+    },
+    {
+     "sample": false,
+     "measured": true
+    },
+    {
+     "sample": false,
+     "measured": true
+    },
+    {
+     "sample": false,
+     "measured": true
+    }
+   ]
+  },
+  {
+   "name": "group by frame: a repeated point starts a new message in the same window, so nothing is overwritten",
+   "config": "[connector]\nprotocol = \"opcua\"\noutput = \"measurements\"\n\n[[device]]\nname = \"plc1\"\nprotocol_address = {}\nbatch = { group_by = \"frame\", window = \"100ms\" }\n[[device.point]]\nid = \"a\"\ndatatype = \"float64\"\naddress = {}\n",
+   "steps": [
+    {
+     "at": 0,
+     "read": {
+      "device": "plc1",
+      "point": "a",
+      "value": 1,
+      "ts": "2026-01-01T00:00:00.000Z"
+     }
+    },
+    {
+     "at": 30,
+     "read": {
+      "device": "plc1",
+      "point": "a",
+      "value": 2,
+      "ts": "2026-01-01T00:00:00.030Z"
+     }
+    },
+    {
+     "at": 60,
+     "read": {
+      "device": "plc1",
+      "point": "a",
+      "value": 3,
+      "ts": "2026-01-01T00:00:00.060Z"
+     }
+    },
+    {
+     "at": 100,
+     "due": true
+    }
+   ],
+   "messages": [
+    {
+     "topic": "te/device/plc1///m/opcua",
+     "retain": false,
+     "payload": {
+      "time": "2026-01-01T00:00:00.000Z",
+      "opcua": {
+       "a": 1
+      }
+     }
+    },
+    {
+     "topic": "te/device/plc1///m/opcua",
+     "retain": false,
+     "payload": {
+      "time": "2026-01-01T00:00:00.030Z",
+      "opcua": {
+       "a": 2
+      }
+     }
+    },
+    {
+     "topic": "te/device/plc1///m/opcua",
+     "retain": false,
+     "payload": {
+      "time": "2026-01-01T00:00:00.060Z",
+      "opcua": {
+       "a": 3
+      }
+     }
+    }
+   ],
+   "routing": [
+    {
+     "sample": false,
+     "measured": true
+    },
+    {
+     "sample": false,
+     "measured": true
+    },
+    {
+     "sample": false,
+     "measured": true
+    }
+   ]
+  },
+  {
+   "name": "group by frame: a reading after the window ended opens a new frame even before the window is published",
+   "config": "[connector]\nprotocol = \"opcua\"\noutput = \"measurements\"\n\n[[device]]\nname = \"plc1\"\nprotocol_address = {}\nbatch = { group_by = \"frame\", window = \"100ms\" }\n[[device.point]]\nid = \"a\"\ndatatype = \"float64\"\naddress = {}\n[[device.point]]\nid = \"b\"\ndatatype = \"float64\"\naddress = {}\n",
+   "steps": [
+    {
+     "at": 0,
+     "read": {
+      "device": "plc1",
+      "point": "a",
+      "value": 1,
+      "ts": "2026-01-01T00:00:00.000Z"
+     }
+    },
+    {
+     "at": 120,
+     "read": {
+      "device": "plc1",
+      "point": "b",
+      "value": 2,
+      "ts": "2026-01-01T00:00:00.120Z"
+     }
+    },
+    {
+     "at": 220,
+     "due": true
+    }
+   ],
+   "messages": [
+    {
+     "topic": "te/device/plc1///m/opcua",
+     "retain": false,
+     "payload": {
+      "time": "2026-01-01T00:00:00.000Z",
+      "opcua": {
+       "a": 1
+      }
+     }
+    },
+    {
+     "topic": "te/device/plc1///m/opcua",
+     "retain": false,
+     "payload": {
+      "time": "2026-01-01T00:00:00.120Z",
+      "opcua": {
+       "b": 2
+      }
+     }
+    }
+   ],
+   "routing": [
+    {
+     "sample": false,
+     "measured": true
+    },
+    {
+     "sample": false,
+     "measured": true
+    }
+   ]
+  },
+  {
+   "name": "a point's own batch wins over its device's",
+   "config": "[connector]\nprotocol = \"opcua\"\noutput = \"measurements\"\n\n[[device]]\nname = \"plc1\"\nprotocol_address = {}\nbatch = { group_by = \"frame\", window = \"100ms\" }\n[[device.point]]\nid = \"a\"\ndatatype = \"float64\"\naddress = {}\n[[device.point]]\nid = \"exact\"\ndatatype = \"float64\"\nbatch = { group_by = \"time\" }\naddress = {}\n",
+   "steps": [
+    {
+     "at": 0,
+     "read": {
+      "device": "plc1",
+      "point": "a",
+      "value": 1,
+      "ts": "2026-01-01T00:00:00.000Z"
+     }
+    },
+    {
+     "at": 0,
+     "read": {
+      "device": "plc1",
+      "point": "exact",
+      "value": 2,
+      "ts": "2026-01-01T00:00:00.005Z"
+     }
+    },
+    {
+     "at": 20,
+     "read": {
+      "device": "plc1",
+      "point": "a",
+      "value": 3,
+      "ts": "2026-01-01T00:00:00.020Z"
+     }
+    },
+    {
+     "at": 20,
+     "pass": true
+    },
+    {
+     "at": 100,
+     "due": true
+    }
+   ],
+   "messages": [
+    {
+     "topic": "te/device/plc1///m/opcua",
+     "retain": false,
+     "payload": {
+      "time": "2026-01-01T00:00:00.000Z",
+      "opcua": {
+       "a": 1
+      }
+     }
+    },
+    {
+     "topic": "te/device/plc1///m/opcua",
+     "retain": false,
+     "payload": {
+      "time": "2026-01-01T00:00:00.005Z",
+      "opcua": {
+       "exact": 2
+      }
+     }
+    },
+    {
+     "topic": "te/device/plc1///m/opcua",
+     "retain": false,
+     "payload": {
+      "time": "2026-01-01T00:00:00.020Z",
+      "opcua": {
+       "a": 3
+      }
+     }
+    }
+   ],
+   "routing": [
+    {
+     "sample": false,
+     "measured": true
+    },
+    {
+     "sample": false,
+     "measured": true
+    },
+    {
+     "sample": false,
+     "measured": true
+    }
+   ]
+  },
+  {
+   "name": "sample and hold: every slot with a good value, at the sample time; superseded and bad readings left out",
+   "config": "[connector]\nprotocol = \"opcua\"\noutput = \"measurements\"\n\n[[device]]\nname = \"plc1\"\nprotocol_address = {}\nbatch = { group_by = \"sample\", every = \"1s\" }\n[[device.point]]\nid = \"a\"\ndatatype = \"float64\"\naddress = {}\n[[device.point]]\nid = \"b\"\ndatatype = \"float64\"\naddress = {}\n[[device.point]]\nid = \"never\"\ndatatype = \"float64\"\naddress = {}\n",
+   "steps": [
+    {
+     "at": 0,
+     "read": {
+      "device": "plc1",
+      "point": "a",
+      "value": 1,
+      "ts": "2026-01-01T00:00:00.000Z"
+     }
+    },
+    {
+     "at": 300,
+     "read": {
+      "device": "plc1",
+      "point": "a",
+      "value": 2,
+      "ts": "2026-01-01T00:00:00.300Z"
+     }
+    },
+    {
+     "at": 400,
+     "read": {
+      "device": "plc1",
+      "point": "b",
+      "value": 5,
+      "ts": "2026-01-01T00:00:00.400Z"
+     }
+    },
+    {
+     "at": 400,
+     "pass": true
+    },
+    {
+     "at": 999,
+     "due": true
+    },
+    {
+     "at": 1000,
+     "due": true
+    },
+    {
+     "at": 1200,
+     "read": {
+      "device": "plc1",
+      "point": "b",
+      "value": 0,
+      "ts": "2026-01-01T00:00:01.200Z",
+      "quality": "bad"
+     }
+    },
+    {
+     "at": 2000,
+     "due": true
+    }
+   ],
+   "messages": [
+    {
+     "topic": "te/device/plc1///m/opcua",
+     "retain": false,
+     "payload": {
+      "time": "2026-01-01T00:00:01.000Z",
+      "opcua": {
+       "a": 2,
+       "b": 5
+      }
+     }
+    },
+    {
+     "topic": "te/device/plc1///m/opcua",
+     "retain": false,
+     "payload": {
+      "time": "2026-01-01T00:00:02.000Z",
+      "opcua": {
+       "a": 2
+      }
+     }
+    }
+   ],
+   "routing": [
+    {
+     "sample": false,
+     "measured": true
+    },
+    {
+     "sample": false,
+     "measured": true
+    },
+    {
+     "sample": false,
+     "measured": true
+    },
+    {
+     "sample": false,
+     "measured": false
+    }
+   ]
+  },
+  {
+   "name": "sample and hold: a stale device publishes nothing until it is healthy again",
+   "config": "[connector]\nprotocol = \"opcua\"\noutput = \"measurements\"\n\n[[device]]\nname = \"plc1\"\nprotocol_address = {}\nbatch = { group_by = \"sample\", every = \"1s\" }\n[[device.point]]\nid = \"a\"\ndatatype = \"float64\"\naddress = {}\n",
+   "steps": [
+    {
+     "at": 0,
+     "read": {
+      "device": "plc1",
+      "point": "a",
+      "value": 1,
+      "ts": "2026-01-01T00:00:00.000Z"
+     }
+    },
+    {
+     "at": 500,
+     "stale": {
+      "device": "plc1",
+      "stale": true
+     }
+    },
+    {
+     "at": 1000,
+     "due": true
+    },
+    {
+     "at": 1500,
+     "stale": {
+      "device": "plc1",
+      "stale": false
+     }
+    },
+    {
+     "at": 2000,
+     "due": true
+    }
+   ],
+   "messages": [
+    {
+     "topic": "te/device/plc1///m/opcua",
+     "retain": false,
+     "payload": {
+      "time": "2026-01-01T00:00:02.000Z",
+      "opcua": {
+       "a": 1
+      }
+     }
+    }
+   ],
+   "routing": [
+    {
+     "sample": false,
+     "measured": true
+    }
+   ]
+  },
+  {
+   "name": "sample and hold: event points keep every occurrence with its own time",
+   "config": "[connector]\nprotocol = \"opcua\"\noutput = \"measurements\"\n\n[[device]]\nname = \"plc1\"\nprotocol_address = {}\nbatch = { group_by = \"sample\", every = \"1s\" }\n[[device.point]]\nid = \"a\"\ndatatype = \"float64\"\naddress = {}\n[[device.point]]\nid = \"trip\"\ndatatype = \"float64\"\nmeta = { event = { type = \"trip\", every = true } }\naddress = {}\n",
+   "steps": [
+    {
+     "at": 100,
+     "read": {
+      "device": "plc1",
+      "point": "trip",
+      "value": 1,
+      "ts": "2026-01-01T00:00:00.100Z"
+     }
+    },
+    {
+     "at": 200,
+     "read": {
+      "device": "plc1",
+      "point": "trip",
+      "value": 1,
+      "ts": "2026-01-01T00:00:00.200Z"
+     }
+    },
+    {
+     "at": 300,
+     "read": {
+      "device": "plc1",
+      "point": "trip",
+      "value": 1,
+      "ts": "2026-01-01T00:00:00.300Z"
+     }
+    },
+    {
+     "at": 300,
+     "read": {
+      "device": "plc1",
+      "point": "a",
+      "value": 7,
+      "ts": "2026-01-01T00:00:00.300Z"
+     }
+    },
+    {
+     "at": 300,
+     "pass": true
+    },
+    {
+     "at": 1000,
+     "due": true
+    }
+   ],
+   "messages": [
+    {
+     "topic": "te/device/plc1///m/opcua",
+     "retain": false,
+     "payload": {
+      "time": "2026-01-01T00:00:00.100Z",
+      "opcua": {
+       "trip": 1
+      }
+     }
+    },
+    {
+     "topic": "te/device/plc1///m/opcua",
+     "retain": false,
+     "payload": {
+      "time": "2026-01-01T00:00:00.200Z",
+      "opcua": {
+       "trip": 1
+      }
+     }
+    },
+    {
+     "topic": "te/device/plc1///m/opcua",
+     "retain": false,
+     "payload": {
+      "time": "2026-01-01T00:00:00.300Z",
+      "opcua": {
+       "trip": 1
+      }
+     }
+    },
+    {
+     "topic": "te/device/plc1///m/opcua",
+     "retain": false,
+     "payload": {
+      "time": "2026-01-01T00:00:01.000Z",
+      "opcua": {
+       "a": 7
+      }
+     }
+    }
+   ],
+   "routing": [
+    {
+     "sample": true,
+     "measured": true
+    },
+    {
+     "sample": true,
+     "measured": true
+    },
+    {
+     "sample": true,
+     "measured": true
+    },
+    {
+     "sample": false,
+     "measured": true
+    }
+   ]
+  },
+  {
+   "name": "units: one retained message per topic with every series that has a unit, published once",
+   "config": "[connector]\nprotocol = \"opcua\"\noutput = \"measurements\"\n\n[[device]]\nname = \"plc1\"\nprotocol_address = {}\n\n[[device.point]]\nid = \"t\"\ndatatype = \"float64\"\nunit = \"°C\"\naddress = {}\n[[device.point]]\nid = \"h\"\ndatatype = \"float64\"\nunit = \"%\"\naddress = {}\n[[device.point]]\nid = \"n\"\ndatatype = \"float64\"\naddress = {}\n[[device.point]]\nid = \"x\"\ndatatype = \"float64\"\nunit = \"m\"\nmeta = { measurement = { group = \"Other\" } }\naddress = {}\n[[device.point]]\nid = \"y\"\ndatatype = \"float64\"\nmeta = { measurement = { group = \"Bare\" } }\naddress = {}\n",
+   "steps": [
+    {
+     "at": 0,
+     "read": {
+      "device": "plc1",
+      "point": "t",
+      "value": 20,
+      "ts": "2026-01-01T00:00:00.000Z"
+     }
+    },
+    {
+     "at": 0,
+     "read": {
+      "device": "plc1",
+      "point": "n",
+      "value": 1,
+      "ts": "2026-01-01T00:00:00.000Z"
+     }
+    },
+    {
+     "at": 0,
+     "pass": true
+    },
+    {
+     "at": 1,
+     "read": {
+      "device": "plc1",
+      "point": "t",
+      "value": 21,
+      "ts": "2026-01-01T00:00:00.001Z"
+     }
+    },
+    {
+     "at": 1,
+     "read": {
+      "device": "plc1",
+      "point": "y",
+      "value": 2,
+      "ts": "2026-01-01T00:00:00.001Z"
+     }
+    },
+    {
+     "at": 1,
+     "pass": true
+    }
+   ],
+   "messages": [
+    {
+     "topic": "te/device/plc1///m/opcua/meta",
+     "retain": true,
+     "payload": {
+      "opcua.t": {
+       "unit": "°C"
+      },
+      "opcua.h": {
+       "unit": "%"
+      }
+     }
+    },
+    {
+     "topic": "te/device/plc1///m/opcua",
+     "retain": false,
+     "payload": {
+      "time": "2026-01-01T00:00:00.000Z",
+      "opcua": {
+       "t": 20,
+       "n": 1
+      }
+     }
+    },
+    {
+     "topic": "te/device/plc1///m/opcua",
+     "retain": false,
+     "payload": {
+      "time": "2026-01-01T00:00:00.001Z",
+      "opcua": {
+       "t": 21
+      }
+     }
+    },
+    {
+     "topic": "te/device/plc1///m/Bare",
+     "retain": false,
+     "payload": {
+      "time": "2026-01-01T00:00:00.001Z",
+      "Bare": {
+       "y": 2
+      }
+     }
+    }
+   ],
+   "routing": [
+    {
+     "sample": false,
+     "measured": true
+    },
+    {
+     "sample": false,
+     "measured": true
+    },
+    {
+     "sample": false,
+     "measured": true
+    },
+    {
+     "sample": false,
+     "measured": true
+    }
+   ]
+  },
+  {
+   "name": "names are escaped and may be long or non-ASCII",
+   "config": "[connector]\nprotocol = \"opcua\"\noutput = \"measurements\"\n\n[[device]]\nname = \"plc1\"\nprotocol_address = {}\n\n[[device.point]]\nid = \"q\"\ndatatype = \"float64\"\nmeta = { measurement = { group = \"Halle \\\"A\\\"\", series = \"Température_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\" } }\naddress = {}\n",
+   "steps": [
+    {
+     "at": 0,
+     "read": {
+      "device": "plc1",
+      "point": "q",
+      "value": 1.5,
+      "ts": "2026-01-01T00:00:00.000Z"
+     }
+    },
+    {
+     "at": 0,
+     "pass": true
+    }
+   ],
+   "messages": [
+    {
+     "topic": "te/device/plc1///m/Halle \"A\"",
+     "retain": false,
+     "payload": {
+      "time": "2026-01-01T00:00:00.000Z",
+      "Halle \"A\"": {
+       "Température_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx": 1.5
+      }
+     }
+    }
+   ],
+   "routing": [
+    {
+     "sample": false,
+     "measured": true
+    }
+   ]
+  },
+  {
+   "name": "a large pass is split before its estimated c8y size passes 15,000 bytes",
+   "config": "[connector]\nprotocol = \"opcua\"\noutput = \"measurements\"\n\n[[device]]\nname = \"plc1\"\nprotocol_address = {}\n\n",
+   "generate": {
+    "device": "plc1",
+    "count": 2000,
+    "id": "series_with_a_rather_long_name_for_the_size_budget_{i:04}",
+    "datatype": "float64"
+   },
+   "steps": [
+    {
+     "at": 0,
+     "read_all": {
+      "device": "plc1",
+      "value": 123.456,
+      "ts": "2026-01-01T00:00:00.000Z"
+     }
+    },
+    {
+     "at": 0,
+     "pass": true
+    }
+   ],
+   "split": {
+    "topic": "te/device/plc1///m/opcua",
+    "series": [
+     191,
+     191,
+     191,
+     191,
+     191,
+     191,
+     191,
+     191,
+     191,
+     191,
+     90
+    ]
+   }
+  }
+ ]
+}

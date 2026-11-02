@@ -1,0 +1,53 @@
+# The `pbm` device of the PROFIBUS-DP e2e harness, in measurement output (contract §5.5, openspec
+# change native-batched-output): the connector publishes the thin-edge measurements itself,
+# batched. `output` is a connector setting, so the device is a connector instance of its own,
+# which entrypoint.sh starts next to the main one, against a simulator of its own
+# (measure-simulator: a simulator takes one master).
+#
+#   ai0_raw   4660, a unit                -> a series of m/profibus, and the units metadata
+#   di_bit3   true                        -> the series 1
+#   ai1_raw   100, meta.measurement       -> the series Analog.In1 on m/Analog
+#   di_raw    input byte 0, raw mode      -> no series
+
+[connector]
+protocol      = "profibus"
+service_name  = "tedge-dot-measure"
+poll_interval = "500ms"
+log_level     = "info"
+output        = "measurements"
+
+[mqtt]
+host = "broker"
+port = 1883
+
+[connection]
+port           = "tcp://measure-simulator:9200"
+baudrate       = 19200
+master_address = 2
+slot_bits      = 300
+
+[[device]]
+name             = "pbm"
+protocol_address = { station_address = 7, ident_number = 0, input_bytes = 8, output_bytes = 4 }
+
+  [[device.point]]
+  id       = "ai0_raw"
+  datatype = "uint16"
+  unit     = "counts"
+  address  = { direction = "input", byte_offset = 2 }
+
+  [[device.point]]
+  id       = "di_bit3"
+  datatype = "bool"
+  address  = { direction = "input", byte_offset = 0, bit_offset = 3, bit_count = 1 }
+
+  [[device.point]]
+  id       = "ai1_raw"
+  datatype = "uint16"
+  address  = { direction = "input", byte_offset = 4 }
+  meta     = { measurement = { group = "Analog", series = "In1" } }
+
+  [[device.point]]
+  id       = "di_raw"
+  mode     = "raw"
+  address  = { direction = "input", byte_offset = 0 }

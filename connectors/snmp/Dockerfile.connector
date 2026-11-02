@@ -24,6 +24,7 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=build /usr/local/bin/tedge-dot /usr/bin/tedge-dot
 COPY connectors/snmp/connector.toml /etc/connector.toml
+COPY connectors/snmp/connector-measure.toml /etc/connector-measure.toml
 COPY connectors/snmp/entrypoint.sh /entrypoint.sh
 # SNMPv3 passwords connector.toml reads with `*_password_file` (connectors/_shared/Dockerfile.connector-c
 # installs them at the same path).

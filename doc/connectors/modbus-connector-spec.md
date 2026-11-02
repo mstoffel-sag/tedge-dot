@@ -6,7 +6,7 @@
 | Protocol id | `modbus` |
 | Crate | `connector-modbus` (feature `modbus`) |
 | Builds on | [`tokio-modbus`](https://github.com/slowtec/tokio-modbus), [Connector SDK](../sdk/connector-sdk.md) |
-| Implements | [OT Connector Contract](../contract/ot-connector-contract.md) v0.1.0 |
+| Implements | [OT Connector Contract](../contract/ot-connector-contract.md) v0.2.0 |
 
 This is the **reference connector**. It is written to be precise enough that a competent
 developer — or an AI coding agent — can implement it from this document plus the SDK spec,

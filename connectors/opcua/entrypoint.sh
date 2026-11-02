@@ -17,8 +17,8 @@ until nc -z broker 1883; do sleep 1; done
 
 echo "starting tedge-dot (opcua)"
 # Every config of the stack runs as its own connector instance: connector.toml, plus
-# connector-structures.toml (the structured-value device) and connector-load.toml (queue size and a
-# 5000-point device). Both builds take a directory, and the
+# connector-structures.toml (the structured-value device), connector-load.toml (queue size and a
+# 5000-point device) and connector-measure.toml (measurement output). Both builds take a directory, and the
 # C build only that form for more than one file.
 mkdir -p /etc/ot
 cp /etc/connector.toml /etc/ot/

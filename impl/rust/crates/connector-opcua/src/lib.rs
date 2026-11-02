@@ -988,10 +988,10 @@ impl Connector for OpcuaConnector {
                     None => {}
                     Some(Ok(dv)) => {
                         let mut sample = build_sample(id, model, dv, &types);
-                        // Contract §5: polled samples carry the read-completion time. Servers
-                        // may return a (stale) source timestamp even for TimestampsToReturn::
-                        // Neither; only the push path reports event time.
-                        sample.ts = OffsetDateTime::now_utc();
+                        // Contract §5: polled samples carry the read-completion time, which the
+                        // runtime sets. Servers may return a (stale) source timestamp even for
+                        // TimestampsToReturn::Neither; only the push path reports event time.
+                        sample.source_ts = None;
                         out.push(sample);
                     }
                     Some(Err(reason)) => out.push(bad_sample(id, Some(model), reason)),
@@ -2025,14 +2025,13 @@ fn uint_from_json(value: &serde_json::Value) -> Option<u64> {
         .or_else(|| value.as_str().and_then(|s| s.parse::<u64>().ok()))
 }
 
-/// Sample timestamp for a `DataValue`: prefer the source timestamp, then the server timestamp,
-/// then "now" (polled reads request no timestamps, so they always fall back to "now").
-fn data_value_ts(dv: &DataValue) -> OffsetDateTime {
+/// The source time of a `DataValue`: its source timestamp, else its server timestamp. Polled
+/// reads request no timestamps, so a polled value carries the read time instead.
+fn data_value_source_ts(dv: &DataValue) -> Option<OffsetDateTime> {
     dv.source_timestamp
         .as_ref()
         .or(dv.server_timestamp.as_ref())
         .and_then(opcua_datetime_to_ts)
-        .unwrap_or_else(OffsetDateTime::now_utc)
 }
 
 /// Convert an OPC-UA `DateTime` (100 ns ticks since 1601-01-01) to an `OffsetDateTime`.
@@ -2267,7 +2266,8 @@ fn build_sample(id: &str, model: &OpcuaPoint, dv: &DataValue, types: &resolve::S
     let raw = decoded.raw;
     Sample {
         source_value: None,
-        ts: data_value_ts(dv),
+        source_ts: data_value_source_ts(dv),
+        ts: OffsetDateTime::now_utc(),
         device: String::new(),
         protocol: PROTOCOL,
         point: id.to_string(),
@@ -2404,6 +2404,7 @@ fn index_range(index: Option<u32>) -> NumericRange {
 fn bad_sample(id: &str, model: Option<&OpcuaPoint>, error: &str) -> Sample {
     Sample {
         source_value: None,
+        source_ts: None,
         ts: OffsetDateTime::now_utc(),
         device: String::new(),
         protocol: PROTOCOL,
@@ -2793,15 +2794,16 @@ mod tests {
             server_timestamp: Some(server),
             ..Default::default()
         };
-        let ts = data_value_ts(&dv);
+        let ts = data_value_source_ts(&dv).unwrap();
         assert_eq!((ts.year(), u8::from(ts.month()), ts.day()), (2026, 1, 2));
+        let dv = DataValue { server_timestamp: Some(server), ..Default::default() };
+        let ts = data_value_source_ts(&dv).unwrap();
+        assert_eq!((ts.year(), u8::from(ts.month()), ts.day()), (2026, 6, 7));
     }
 
     #[test]
-    fn data_value_ts_falls_back_to_now() {
-        let before = OffsetDateTime::now_utc();
-        let ts = data_value_ts(&DataValue::default());
-        assert!(ts >= before);
+    fn data_value_without_timestamps_has_no_source_time() {
+        assert!(data_value_source_ts(&DataValue::default()).is_none());
     }
 
     /// A device with a namespace table, a method point and `point` (TOML) as a second point.

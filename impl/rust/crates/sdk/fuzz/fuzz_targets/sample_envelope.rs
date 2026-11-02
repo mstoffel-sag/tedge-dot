@@ -55,6 +55,7 @@ fuzz_target!(|input: Input| {
         seq: input.seq,
         error: input.error,
         source_value: None,
+        source_ts: None,
     };
     let envelope = sample.to_envelope();
     // The envelope must always be serializable JSON.

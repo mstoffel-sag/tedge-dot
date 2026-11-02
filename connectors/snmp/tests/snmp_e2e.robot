@@ -46,6 +46,11 @@ ${COUNTER64}            9007199254740993
 ...                     rw-priv-pass-1    sha2-auth-pass-1    sha2-priv-pass-1    wrong-password-9
 
 ${READY_TIMEOUT}        90
+# Measurement output (connector-measure.toml, openspec native-batched-output): the `snmpm` device.
+${MEASURE_TOPIC}            te/device/snmpm///m/${PROTOCOL}
+${MEASURE_SAMPLE_PREFIX}    te/device/snmpm/ot/${PROTOCOL}/sample
+# The flows container installs thin-edge from the main channel at build time; give it time.
+${MEASURE_FLOWS_TIMEOUT}    120
 ${SAMPLE_TIMEOUT}       10
 # request_timeout 1s x (1 + retries 1), then the runtime's reconnect backoff.
 ${OUTAGE_TIMEOUT}       30
@@ -546,6 +551,51 @@ LinkDown Raises An Alarm That LinkUp Clears
     Wait Until Keyword Succeeds    ${SAMPLE_TIMEOUT}s    500ms    Latest Message Should Contain    ${ALARM_TOPIC}    Link down
     Send Trap    simulator    linkup    10
     Wait Until Keyword Succeeds    ${SAMPLE_TIMEOUT}s    500ms    Latest Message Should Be Empty    ${ALARM_TOPIC}
+
+
+Measurement Output Batches A Polled Pass Into One Measurement
+    [Documentation]    In measurement output the connector publishes the thin-edge measurement
+    ...                itself: the device's polled points of one group share the read time of
+    ...                their call, so they arrive in one message (contract §5.4, §5.5). A string
+    ...                becomes no series; a boolean becomes 1.
+    ${payload}=    Wait For Message Containing    ${MEASURE_TOPIC}    "gauge_float"    timeout=${READY_TIMEOUT}
+    ${gauge}=    Get Json Field    ${payload}    snmp.gauge_float
+    Should Be Equal As Numbers    ${gauge}    42
+    ${flag}=    Get Json Field    ${payload}    snmp.gauge_bool
+    Should Be Equal As Numbers    ${flag}    1
+    Should Contain    ${payload}    "int_negative"
+    Should Not Contain    ${payload}    sys_descr
+
+Measurement Output Names Series As The Measurement Flow Does
+    [Documentation]    A point's meta.measurement names its group and series.
+    ${payload}=    Wait For Message Containing    te/device/snmpm///m/Agent    "Seed"    timeout=${READY_TIMEOUT}
+    ${seed}=    Get Json Field    ${payload}    Agent.Seed
+    Should Be Equal As Numbers    ${seed}    1234
+
+Measurement Output Publishes The Units Metadata
+    [Documentation]    The connector publishes the units of a measurement topic, retained, on
+    ...                <topic>/meta: only the series with a unit.
+    # Read from the broker: a retained message is delivered once per subscription.
+    Wait For Message Containing    ${MEASURE_TOPIC}    "time"    timeout=${READY_TIMEOUT}
+    ${payload}=    Fetch Retained    ${MEASURE_TOPIC}/meta    timeout=${SAMPLE_TIMEOUT}
+    # The keys hold a dot ("<group>.<series>"), so they are matched as text.
+    Should Contain    ${payload}    "snmp.int_negative":{"unit":"u"}
+    Should Not Contain    ${payload}    gauge_float
+
+Measurement Output Publishes Samples Only For Points Flows Read
+    [Documentation]    The alarm point still publishes samples, marked "measured" so
+    ...                ot-measurement does not convert them again; a plain point publishes none.
+    ${payload}=    Wait For Sample    ${MEASURE_SAMPLE_PREFIX}/gauge_float    timeout=${READY_TIMEOUT}
+    ${measured}=    Get Json Field    ${payload}    measured
+    Should Be Equal    ${measured}    ${True}
+    No New Messages On Topic    ${MEASURE_SAMPLE_PREFIX}/int_negative    timeout=5
+
+Alarm Point Raises Its Alarm In Measurement Output
+    [Documentation]    ot-alarm raises the alarm declared on the point from its measured sample.
+    Wait Until Keyword Succeeds    ${MEASURE_FLOWS_TIMEOUT}s    2s    Fetch Retained    te/device/snmpm///a/snmpm_gauge_high    timeout=2
+    ${payload}=    Fetch Retained    te/device/snmpm///a/snmpm_gauge_high    timeout=2
+    ${severity}=    Get Json Field    ${payload}    severity
+    Should Be Equal    ${severity}    major
 
 
 *** Keywords ***

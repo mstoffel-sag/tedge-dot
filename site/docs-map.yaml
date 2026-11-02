@@ -42,6 +42,10 @@ pages:
     slug: reference/contract/map-vectors
     section: Contract
     label: Value-mapping vectors
+  - source: doc/contract/test-vectors/measurements/README.md
+    slug: reference/contract/measurement-vectors
+    section: Contract
+    label: Measurement-output vectors
   - source: doc/contract/test-vectors/opcua-struct/README.md
     slug: reference/contract/opcua-struct-vectors
     section: Contract
@@ -50,6 +54,9 @@ pages:
   # Configuration
   - source: doc/reducing-data-volume.md
     slug: reference/configuration/reducing-data-volume
+    section: Configuration
+  - source: doc/measurement-output.md
+    slug: reference/configuration/measurement-output
     section: Configuration
   - source: doc/mapping-values.md
     slug: reference/configuration/mapping-values
@@ -171,6 +178,10 @@ pages:
     slug: reference/project/testing
     section: Project
     label: Testing strategy
+  - source: doc/performance.md
+    slug: reference/project/performance
+    section: Project
+    label: Performance harness
   - source: doc/conformance/conformance-suite.md
     slug: reference/project/conformance
     section: Project

@@ -1,0 +1,51 @@
+# The `plcm` device of the Modbus e2e harness, in measurement output (contract §5.5, openspec
+# change native-batched-output): the connector publishes the thin-edge measurements itself,
+# batched, and samples only for the points a flow reads. `output` is a connector setting, so the
+# device is a connector instance of its own, which entrypoint.sh starts next to the main one.
+#
+# It reads registers the main suite never writes:
+#
+#   count_u32  holding 4..5, uint32 617001, a unit  -> a series of m/modbus, and the units metadata
+#   level_f32  holding 6..7, float32 404.17, alarm  -> a series, and a sample marked "measured"
+#                                                      that ot-alarm raises the alarm from
+#   level_raw  holding 6..7, raw mode               -> no series
+#   named      holding 4..5, meta.measurement       -> the series Tank.Count on m/Tank
+
+[connector]
+protocol      = "modbus"
+service_name  = "tedge-dot-measure"
+poll_interval = "1s"
+log_level     = "info"
+output        = "measurements"
+
+[mqtt]
+host = "broker"
+port = 1883
+
+[[device]]
+name             = "plcm"
+protocol_address = { transport = "tcp", host = "simulator", port = 502, unit_id = 1 }
+default_mode     = "typed"
+
+  [[device.point]]
+  id       = "count_u32"
+  datatype = "uint32"
+  unit     = "pcs"
+  address  = { table = "holding", address = 4, count = 2 }
+
+  [[device.point]]
+  id       = "level_f32"
+  datatype = "float32"
+  address  = { table = "holding", address = 6, count = 2 }
+  meta     = { alarm = { type = "plcm_level_high", when = { above = 100 } } }
+
+  [[device.point]]
+  id       = "level_raw"
+  mode     = "raw"
+  address  = { table = "holding", address = 6, count = 2 }
+
+  [[device.point]]
+  id       = "named"
+  datatype = "uint32"
+  address  = { table = "holding", address = 4, count = 2 }
+  meta     = { measurement = { group = "Tank", series = "Count" } }

@@ -28,18 +28,24 @@ static const char *const TOP_KEYS[] = {"connector", "mqtt", "connection", "devic
 static const char *const CONNECTOR_KEYS[] = {
     "protocol",          "service_name",  "poll_interval",      "sampling_interval",
     "log_level",         "operation_timeout", "stall_timeout",  "point_library_path",
-    "report",            NULL};
+    "report",            "output",        "measurement",        "batch",
+    NULL};
 static const char *const MQTT_KEYS[] = {"host", "port", NULL};
 static const char *const DEVICE_KEYS[] = {
     "name",         "type",        "protocol_address", "poll_interval",
     "sampling_interval", "default_mode", "points_from", "point",
-    "enabled",      "report",      NULL};
+    "enabled",      "report",      "batch",            NULL};
 static const char *const POINT_KEYS[] = {
     "id",      "mode",   "datatype", "endianness",  "word_order",
     "poll_interval", "sampling_interval", "address", "access", "unit", "name",
     "description",
-    "transform", "meta", "subscribe", "enabled", "report", "map", NULL};
+    "transform", "meta", "subscribe", "enabled", "report", "map", "batch", "sample", NULL};
 static const char *const MAP_KEYS[] = {"cases", "default", "as", NULL};
+/* Measurement output (contract §5.5), as measure.rs lists them. */
+static const char *const BATCH_KEYS[] = {"group_by", "window", "every", NULL};
+static const char *const MEASUREMENT_KEYS[] = {"group", "series", "point_separator",
+                                               "include_boolean", NULL};
+static const char *const OUTPUTS[] = {"samples", "measurements", NULL};
 static const char *const CASE_KEYS[] = {"eq", "min", "max", "to", "write", NULL};
 static const char *const TRANSFORM_KEYS[] = {"multiplier", "divisor",
                                              "decimal_shift", "offset", NULL};
@@ -178,6 +184,12 @@ static int check_point_keys(toml_table_t *pt, char *err, size_t errlen) {
                  id.ok ? id.u.s : "<unnamed>");
         rc = check_keys(report, TDOT_REPORT_KEYS, place, err, errlen);
     }
+    toml_table_t *batch = toml_table_in(pt, "batch");
+    if (rc == 0 && batch) {
+        snprintf(place, sizeof place, "the batch of point '%s'",
+                 id.ok ? id.u.s : "<unnamed>");
+        rc = check_keys(batch, BATCH_KEYS, place, err, errlen);
+    }
     toml_table_t *map = toml_table_in(pt, "map");
     if (rc == 0 && map) {
         snprintf(place, sizeof place, "the map of point '%s'", id.ok ? id.u.s : "<unnamed>");
@@ -211,6 +223,14 @@ static int check_document_keys(toml_table_t *root, char *err, size_t errlen) {
     if (conn_report && check_keys(conn_report, TDOT_REPORT_KEYS, "the report of [connector]",
                                   err, errlen) != 0)
         return -1;
+    toml_table_t *conn_batch = conn ? toml_table_in(conn, "batch") : NULL;
+    if (conn_batch &&
+        check_keys(conn_batch, BATCH_KEYS, "the batch of [connector]", err, errlen) != 0)
+        return -1;
+    toml_table_t *conn_meas = conn ? toml_table_in(conn, "measurement") : NULL;
+    if (conn_meas && check_keys(conn_meas, MEASUREMENT_KEYS, "the measurement of [connector]",
+                                err, errlen) != 0)
+        return -1;
     toml_table_t *mqtt = toml_table_in(root, "mqtt");
     if (mqtt && check_keys(mqtt, MQTT_KEYS, "[mqtt]", err, errlen) != 0)
         return -1;
@@ -223,8 +243,10 @@ static int check_document_keys(toml_table_t *root, char *err, size_t errlen) {
         toml_datum_t name = toml_string_in(dt, "name");
         char place[256];
         snprintf(place, sizeof place, "device '%s'", name.ok ? name.u.s : "<unnamed>");
-        char report_place[300];
+        char report_place[300], batch_place[300];
         snprintf(report_place, sizeof report_place, "the report of device '%s'",
+                 name.ok ? name.u.s : "<unnamed>");
+        snprintf(batch_place, sizeof batch_place, "the batch of device '%s'",
                  name.ok ? name.u.s : "<unnamed>");
         if (name.ok)
             free(name.u.s);
@@ -233,6 +255,9 @@ static int check_document_keys(toml_table_t *root, char *err, size_t errlen) {
         toml_table_t *dev_report = toml_table_in(dt, "report");
         if (dev_report &&
             check_keys(dev_report, TDOT_REPORT_KEYS, report_place, err, errlen) != 0)
+            return -1;
+        toml_table_t *dev_batch = toml_table_in(dt, "batch");
+        if (dev_batch && check_keys(dev_batch, BATCH_KEYS, batch_place, err, errlen) != 0)
             return -1;
         toml_array_t *points = toml_array_in(dt, "point");
         int npoints = points ? toml_array_nelem(points) : 0;
@@ -521,6 +546,7 @@ static void init_point(tdot_point_t *point, double device_interval,
     point->enabled = true;
     point->poll_interval_s = device_interval;
     point->sampling_interval_s = -1.0; /* unset until a definition sets it */
+    point->sample = -1;
     tdot_transform_init(&point->transform);
 }
 
@@ -690,6 +716,81 @@ static int check_report_values(toml_table_t *owner, char *err, size_t errlen) {
     return 0;
 }
 
+/* `key` of a `batch` table, when present: a duration within [min_ms, max_ms],
+ * compared in whole nanoseconds as the Rust build compares Durations. */
+static int batch_duration(toml_table_t *batch, const char *key, long long min_ms,
+                          long long max_ms, const char *range, char *err, size_t errlen) {
+    if (!key_present(batch, key))
+        return 0;
+    toml_datum_t d = toml_string_in(batch, key);
+    double secs = d.ok ? tdot_duration_parse(d.u.s) : -1.0;
+    if (d.ok)
+        free(d.u.s);
+    long long ns = secs < 0 ? -1 : llround(secs * 1e9);
+    if (ns < min_ms * 1000000LL || ns > max_ms * 1000000LL) {
+        snprintf(err, errlen, "batch.%s must be a duration from %s", key, range);
+        return -1;
+    }
+    return 0;
+}
+
+/* The values of the `batch` table of `owner` (a connector, device or point
+ * table), when it has one; the caller prefixes the place. Same rules and
+ * messages as measure.rs `check_values`: a table that chooses its group_by may
+ * only set that policy's duration. */
+static int check_batch_values(toml_table_t *owner, char *err, size_t errlen) {
+    if (!key_present(owner, "batch"))
+        return 0;
+    toml_table_t *batch = toml_table_in(owner, "batch");
+    if (!batch) {
+        snprintf(err, errlen, "batch must be a table");
+        return -1;
+    }
+    if (key_present(batch, "group_by")) {
+        toml_datum_t g = toml_string_in(batch, "group_by");
+        const char *group_by = NULL;
+        static const char *const POLICIES[] = {"time", "frame", "sample"};
+        for (size_t i = 0; g.ok && i < 3; i++)
+            if (strcmp(g.u.s, POLICIES[i]) == 0)
+                group_by = POLICIES[i];
+        if (g.ok)
+            free(g.u.s);
+        if (!group_by) {
+            snprintf(err, errlen, "batch.group_by must be \"time\", \"frame\" or \"sample\"");
+            return -1;
+        }
+        static const char *const OWN[][2] = {{"window", "frame"}, {"every", "sample"}};
+        for (size_t i = 0; i < 2; i++)
+            if (key_present(batch, OWN[i][0]) && strcmp(group_by, OWN[i][1]) != 0) {
+                snprintf(err, errlen, "batch.%s does not apply to group_by = \"%s\"",
+                         OWN[i][0], group_by);
+                return -1;
+            }
+    }
+    if (batch_duration(batch, "window", 1, 60000, "1ms to 60s", err, errlen) ||
+        batch_duration(batch, "every", 100, 3600000, "100ms to 1h", err, errlen))
+        return -1;
+    return 0;
+}
+
+/* The `[connector] measurement` table's values; the caller prefixes the place. */
+static int check_measurement_values(toml_table_t *conn, char *err, size_t errlen) {
+    if (!key_present(conn, "measurement"))
+        return 0;
+    toml_table_t *m = toml_table_in(conn, "measurement");
+    if (!m) {
+        snprintf(err, errlen, "measurement must be a table");
+        return -1;
+    }
+    return check_shape(m, "group", SHAPE_STRING, "measurement.", err, errlen) ||
+                   check_shape(m, "series", SHAPE_STRING, "measurement.", err, errlen) ||
+                   check_shape(m, "point_separator", SHAPE_STRING, "measurement.", err,
+                               errlen) ||
+                   check_shape(m, "include_boolean", SHAPE_BOOL, "measurement.", err, errlen)
+               ? -1
+               : 0;
+}
+
 /* The `map` table of a point definition (§4.3), when present: its shape and
  * output types, with the messages of map.rs. The checks that need the
  * resolved datatype run once the point is merged (resolve_device_points). */
@@ -729,9 +830,10 @@ static int check_point_values(toml_table_t *pt, char *err, size_t errlen) {
         return -1;
     if (check_shape(pt, "meta", SHAPE_TABLE, "", err, errlen) ||
         check_shape(pt, "subscribe", SHAPE_BOOL, "", err, errlen) ||
-        check_shape(pt, "enabled", SHAPE_BOOL, "", err, errlen))
+        check_shape(pt, "enabled", SHAPE_BOOL, "", err, errlen) ||
+        check_shape(pt, "sample", SHAPE_BOOL, "", err, errlen))
         return -1;
-    if (check_report_values(pt, err, errlen) != 0)
+    if (check_report_values(pt, err, errlen) != 0 || check_batch_values(pt, err, errlen) != 0)
         return -1;
     return check_map_values(pt, err, errlen);
 }
@@ -784,6 +886,8 @@ static void apply_point_table(toml_table_t *pt, tdot_point_t *point,
         {"sampling_interval", TDOT_FIELD_SAMPLING_INTERVAL},
         {"subscribe", TDOT_FIELD_SUBSCRIBE},
         {"report", TDOT_FIELD_REPORT},
+        {"batch", TDOT_FIELD_BATCH},
+        {"sample", TDOT_FIELD_SAMPLE},
     };
     for (size_t i = 0; i < sizeof own / sizeof own[0]; i++)
         if (key_present(pt, own[i].key))
@@ -861,6 +965,13 @@ static void apply_point_table(toml_table_t *pt, tdot_point_t *point,
     toml_table_t *report = toml_table_in(pt, "report");
     if (report)
         merge_report(&point->report_table, report);
+    /* `batch` merges key by key like `report` (§5.5). */
+    toml_table_t *batch = toml_table_in(pt, "batch");
+    if (batch)
+        merge_report(&point->batch_table, batch);
+    d = toml_bool_in(pt, "sample");
+    if (d.ok)
+        point->sample = d.u.b ? 1 : 0;
 
     /* `map` replaces as a whole (§4.3): its cases are an ordered list, so
      * merging them would mean nothing; `map = {}` removes an inherited one.
@@ -924,6 +1035,8 @@ static int validate_method_point(const tdot_device_t *dev, const tdot_point_t *p
         {TDOT_FIELD_SAMPLING_INTERVAL, "sampling_interval"},
         {TDOT_FIELD_SUBSCRIBE, "subscribe"},
         {TDOT_FIELD_REPORT, "report"},
+        {TDOT_FIELD_BATCH, "batch"},
+        {TDOT_FIELD_SAMPLE, "sample"},
     };
     const char *bad = NULL;
     for (size_t i = 0; !bad && i < sizeof refused / sizeof refused[0]; i++)
@@ -1518,6 +1631,7 @@ static void free_point(tdot_point_t *p) {
     free(p->addr_json);
     free(p->proto);
     cJSON_Delete(p->report_table);
+    cJSON_Delete(p->batch_table);
     tdot_map_free(p->map);
     if (p->report_state) {
         tdot_report_free(p->report_state);
@@ -1721,6 +1835,53 @@ static void resolve_sampling_intervals(const tdot_config_t *cfg, tdot_device_t *
     }
 }
 
+/* The grouping policy of a merged `batch` table (§5.5): what only the merge
+ * decides is checked here -- the duration the policy needs is there. A key of
+ * another policy is inherited from a level that chose it, and is ignored.
+ * Mirrors GroupBy::from_table (Rust). */
+static int group_by_of(const cJSON *table, tdot_group_by_t *out, char *err, size_t errlen) {
+    const cJSON *g = cJSON_GetObjectItemCaseSensitive(table, "group_by");
+    const char *group_by = cJSON_IsString(g) ? g->valuestring : "time";
+    out->kind = TDOT_GROUP_TIME;
+    out->ms = 0;
+    const char *needs = NULL;
+    if (strcmp(group_by, "frame") == 0) {
+        out->kind = TDOT_GROUP_FRAME;
+        needs = "window";
+    } else if (strcmp(group_by, "sample") == 0) {
+        out->kind = TDOT_GROUP_SAMPLE;
+        needs = "every";
+    }
+    if (!needs)
+        return 0;
+    const cJSON *d = cJSON_GetObjectItemCaseSensitive(table, needs);
+    double secs = cJSON_IsString(d) ? tdot_duration_parse(d->valuestring) : -1.0;
+    if (secs < 0) {
+        snprintf(err, errlen, "batch.%s is required with group_by = \"%s\"", needs, group_by);
+        return -1;
+    }
+    out->ms = llround(secs * 1000.0);
+    return 0;
+}
+
+/* Each point's effective grouping policy (§5.5): [connector], then the device,
+ * then the point, merged key by key. */
+static int resolve_point_batches(const tdot_config_t *cfg, tdot_device_t *dev, char *err,
+                                 size_t errlen) {
+    for (size_t j = 0; j < dev->npoints; j++) {
+        tdot_point_t *pt = &dev->points[j];
+        cJSON *merged = tdot_config_batch_table(cfg, dev, pt);
+        char why[256];
+        int rc = group_by_of(merged, &pt->group_by, why, sizeof why);
+        cJSON_Delete(merged);
+        if (rc != 0) {
+            snprintf(err, errlen, "device '%s': point '%s': %s", dev->name, pt->id, why);
+            return -1;
+        }
+    }
+    return 0;
+}
+
 static void resolve_point_reports(const tdot_config_t *cfg, tdot_device_t *dev) {
     for (size_t j = 0; j < dev->npoints; j++) {
         tdot_point_t *pt = &dev->points[j];
@@ -1820,6 +1981,33 @@ tdot_config_t *tdot_config_load(const char *path, char *err, size_t errlen) {
     toml_table_t *conn_report = toml_table_in(conn, "report");
     if (conn_report)
         cfg->report_table = report_to_json(conn_report);
+    /* Measurement output (§5.5), in the Rust loader's order. */
+    if (check_one_of(conn, "output", OUTPUTS, why, sizeof why) != 0 ||
+        check_measurement_values(conn, why, sizeof why) != 0 ||
+        check_batch_values(conn, why, sizeof why) != 0) {
+        snprintf(err, errlen, "%s: [connector] %s", path, why);
+        goto fail;
+    }
+    d = toml_string_in(conn, "output");
+    if (d.ok) {
+        cfg->output_measurements = strcmp(d.u.s, "measurements") == 0;
+        free(d.u.s);
+    }
+    cfg->include_boolean = true;
+    toml_table_t *meas = toml_table_in(conn, "measurement");
+    if (meas) {
+        if ((d = toml_string_in(meas, "group")).ok)
+            cfg->measurement_group = d.u.s;
+        if ((d = toml_string_in(meas, "series")).ok)
+            cfg->measurement_series = d.u.s;
+        if ((d = toml_string_in(meas, "point_separator")).ok)
+            cfg->measurement_separator = d.u.s;
+        if ((d = toml_bool_in(meas, "include_boolean")).ok)
+            cfg->include_boolean = d.u.b;
+    }
+    toml_table_t *conn_batch = toml_table_in(conn, "batch");
+    if (conn_batch)
+        cfg->batch_table = report_to_json(conn_batch);
 
     /* Liveness bounds (contract §8.1). Both are optional; an unparseable value
      * falls back to the default with a warning rather than failing the load,
@@ -1949,7 +2137,8 @@ tdot_config_t *tdot_config_load(const char *path, char *err, size_t errlen) {
         if (check_one_of(dt, "default_mode", MODES, why, sizeof why) != 0 ||
             check_duration(dt, "poll_interval", why, sizeof why) != 0 ||
             check_duration(dt, "sampling_interval", why, sizeof why) != 0 ||
-            check_report_values(dt, why, sizeof why) != 0) {
+            check_report_values(dt, why, sizeof why) != 0 ||
+            check_batch_values(dt, why, sizeof why) != 0) {
             snprintf(err, errlen, "%s: device '%s': %s", path, dev->name, why);
             goto fail;
         }
@@ -2002,6 +2191,13 @@ tdot_config_t *tdot_config_load(const char *path, char *err, size_t errlen) {
             dev->report_table = report_to_json(dev_report);
         resolve_point_reports(cfg, dev);
         resolve_sampling_intervals(cfg, dev);
+        toml_table_t *dev_batch = toml_table_in(dt, "batch");
+        if (dev_batch)
+            dev->batch_table = report_to_json(dev_batch);
+        if (resolve_point_batches(cfg, dev, why, sizeof why) != 0) {
+            snprintf(err, errlen, "%s: %s", path, why);
+            goto fail;
+        }
     }
     return cfg;
 
@@ -2075,6 +2271,7 @@ static void free_contents(tdot_config_t *cfg, bool keep_path) {
         free(dev->name);
         free(dev->type);
         cJSON_Delete(dev->report_table);
+        cJSON_Delete(dev->batch_table);
         tdot_schedule_free(dev);
         free(dev->proto); /* connectors keep flat per-device state here and
                              release transports in disconnect_device() */
@@ -2087,6 +2284,10 @@ static void free_contents(tdot_config_t *cfg, bool keep_path) {
     free(cfg->log_level);
     free(cfg->mqtt_host);
     cJSON_Delete(cfg->report_table);
+    cJSON_Delete(cfg->batch_table);
+    free(cfg->measurement_group);
+    free(cfg->measurement_series);
+    free(cfg->measurement_separator);
     if (cfg->root)
         toml_free(cfg->root);
     /* The point tables borrowed by dev->points[].address live in these. */
@@ -2119,6 +2320,50 @@ cJSON *tdot_config_report_table(const tdot_config_t *cfg, const tdot_device_t *d
     merge_report_json(&table, dev ? dev->report_table : NULL);
     merge_report_json(&table, pt ? pt->report_table : NULL);
     return table;
+}
+
+cJSON *tdot_config_batch_table(const tdot_config_t *cfg, const tdot_device_t *dev,
+                               const tdot_point_t *pt) {
+    cJSON *table = cJSON_CreateObject();
+    merge_report_json(&table, cfg ? cfg->batch_table : NULL);
+    merge_report_json(&table, dev ? dev->batch_table : NULL);
+    merge_report_json(&table, pt ? pt->batch_table : NULL);
+    return table;
+}
+
+cJSON *tdot_config_outputs(const tdot_config_t *cfg) {
+    bool any_batch = cfg->batch_table != NULL;
+    for (size_t i = 0; i < cfg->ndevices && !any_batch; i++)
+        any_batch = cfg->devices[i].batch_table != NULL;
+    if (!cfg->output_measurements && !any_batch)
+        return NULL;
+    cJSON *out = cJSON_CreateArray();
+    for (size_t i = 0; i < cfg->ndevices; i++) {
+        const tdot_device_t *dev = &cfg->devices[i];
+        cJSON *batch = NULL;
+        merge_report_json(&batch, cfg->batch_table);
+        merge_report_json(&batch, dev->batch_table);
+        if (!batch)
+            batch = cJSON_CreateObject();
+        /* The default first, so the two builds print the same order. */
+        cJSON *ordered = cJSON_CreateObject();
+        const cJSON *g = cJSON_GetObjectItemCaseSensitive(batch, "group_by");
+        cJSON_AddItemToObject(ordered, "group_by",
+                              g ? cJSON_Duplicate(g, 1) : cJSON_CreateString("time"));
+        for (const char *const *k = BATCH_KEYS + 1; *k; k++) {
+            const cJSON *v = cJSON_GetObjectItemCaseSensitive(batch, *k);
+            if (v)
+                cJSON_AddItemToObject(ordered, *k, cJSON_Duplicate(v, 1));
+        }
+        cJSON_Delete(batch);
+        cJSON *entry = cJSON_CreateObject();
+        cJSON_AddStringToObject(entry, "device", dev->name);
+        cJSON_AddStringToObject(entry, "output",
+                                cfg->output_measurements ? "measurements" : "samples");
+        cJSON_AddItemToObject(entry, "batch", ordered);
+        cJSON_AddItemToArray(out, entry);
+    }
+    return out;
 }
 
 /* `table` with its keys in the canonical order (TDOT_REPORT_KEYS), values as

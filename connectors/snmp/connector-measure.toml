@@ -1,0 +1,62 @@
+# The `snmpm` device of the SNMP e2e harness, in measurement output (contract §5.5, openspec
+# change native-batched-output): the connector publishes the thin-edge measurements itself,
+# batched, and samples only for the points a flow reads. `output` is a connector setting, so the
+# device is a connector instance of its own, which entrypoint.sh starts next to the main one. It
+# polls the v2c agent (agent/agent.py seeds):
+#
+#   int_negative  -42, a unit             -> a series of m/snmp, and the units metadata
+#   gauge_float   42, declares an alarm   -> a series, and a sample marked "measured" that
+#                                            ot-alarm raises the alarm from
+#   gauge_bool    the same gauge, bool    -> the series 1
+#   int_seed      1234, meta.measurement  -> the series Agent.Seed on m/Agent
+#   sys_descr     a string                -> no series
+
+[connector]
+protocol      = "snmp"
+service_name  = "tedge-dot-measure"
+log_level     = "info"
+poll_interval = "1s"
+output        = "measurements"
+
+[mqtt]
+host = "broker"
+port = 1883
+
+# Not the main instance's trap port: this instance receives no notifications.
+[connection]
+listen          = "0.0.0.0:1162"
+request_timeout = "1s"
+retries         = 1
+
+[[device]]
+name             = "snmpm"
+protocol_address = { host = "agent", community = "public" }
+default_mode     = "typed"
+
+  [[device.point]]
+  id       = "int_negative"
+  datatype = "int32"
+  unit     = "u"
+  address  = { oid = "1.3.6.1.4.1.99999.1.1.0" }
+
+  [[device.point]]
+  id       = "gauge_float"
+  datatype = "float64"
+  address  = { oid = "1.3.6.1.4.1.99999.1.8.0" }
+  meta     = { alarm = { type = "snmpm_gauge_high", when = { above = 10 } } }
+
+  [[device.point]]
+  id       = "gauge_bool"
+  datatype = "bool"
+  address  = { oid = "1.3.6.1.4.1.99999.1.8.0" }
+
+  [[device.point]]
+  id       = "int_seed"
+  datatype = "int16"
+  address  = { oid = "1.3.6.1.4.1.99999.1.2.0" }
+  meta     = { measurement = { group = "Agent", series = "Seed" } }
+
+  [[device.point]]
+  id       = "sys_descr"
+  datatype = "string"
+  address  = { oid = "1.3.6.1.2.1.1.1.0" }

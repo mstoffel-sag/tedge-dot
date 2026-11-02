@@ -1,0 +1,59 @@
+# The `opcm` device of the OPC UA e2e harness, in measurement output (contract §5.5, openspec
+# change native-batched-output): the connector publishes the thin-edge measurements itself,
+# batched, and samples only for the points a flow reads. `output` is a connector setting, so the
+# device is its own connector instance (entrypoint.sh runs every connector-*.toml).
+#
+#   temperature  polled, with a unit           -> a series of m/opcua, and the units metadata
+#   hot          polled, declares an alarm     -> a series, and a sample marked "measured" that
+#                                                 ot-alarm raises the alarm from
+#   count        polled, named by its meta     -> the series Plant.Count on m/Plant
+#   stamped      pushed, sample = true         -> keeps the server's source time (§5.4)
+
+[connector]
+protocol      = "opcua"
+service_name  = "tedge-dot-measure"
+poll_interval = "1s"
+log_level     = "info"
+operation_timeout = "5s"
+output        = "measurements"
+
+[mqtt]
+host = "broker"
+port = 1883
+
+[connection]
+application_name = "tedge-dot-measure"
+security_policy  = "None"
+security_mode    = "none"
+
+[[device]]
+name             = "opcm"
+protocol_address = { endpoint = "opc.tcp://simulator:4840/", security_policy = "None", security_mode = "none" }
+default_mode     = "typed"
+
+  [[device.point]]
+  id        = "temperature"
+  subscribe = false
+  datatype  = "float64"
+  unit      = "°C"
+  address   = { node_id = "ns=2;s=Temperature" }
+
+  [[device.point]]
+  id        = "hot"
+  subscribe = false
+  datatype  = "float64"
+  address   = { node_id = "ns=2;s=Temperature" }
+  meta      = { alarm = { type = "opcm_hot", when = { above = 20 } } }
+
+  [[device.point]]
+  id        = "count"
+  subscribe = false
+  datatype  = "uint32"
+  address   = { node_id = "ns=2;s=Count" }
+  meta      = { measurement = { group = "Plant", series = "Count" } }
+
+  [[device.point]]
+  id        = "stamped"
+  datatype  = "float64"
+  sample    = true
+  address   = { node_id = "ns=2;s=Stamped" }

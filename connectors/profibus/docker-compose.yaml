@@ -35,6 +35,22 @@ services:
       retries: 10
       start_period: 3s
 
+  # A second simulator for the measurement-output instance (connector-measure.toml): a
+  # simulator takes one master connection, and the main instance holds `simulator`'s.
+  measure-simulator:
+    build:
+      context: ../..
+      dockerfile: connectors/profibus/sim/Dockerfile
+      args:
+        BASE_REGISTRY: ${BASE_REGISTRY:-public.ecr.aws/docker/library}
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "grep", "-q", ":23F0", "/proc/net/tcp"]
+      interval: 3s
+      timeout: 2s
+      retries: 10
+      start_period: 3s
+
   connector:
     # Stable image name so every (randomly named) project reuses the built image instead of
     # rebuilding it. IMPL/CONNECTOR_DOCKERFILE select the implementation under test:
@@ -54,4 +70,6 @@ services:
       broker:
         condition: service_started
       simulator:
+        condition: service_healthy
+      measure-simulator:
         condition: service_healthy

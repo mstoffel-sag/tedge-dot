@@ -207,10 +207,10 @@ class MqttClient:
 
     @keyword
     def get_json_field(self, payload, field):
-        """Return a field from a JSON payload (dotted path supported)."""
+        """Return a field from a JSON payload (dotted path supported; a number indexes a list)."""
         data = json.loads(payload)
         for part in field.split("."):
-            data = data[part]
+            data = data[int(part)] if isinstance(data, list) else data[part]
         return data
 
     @keyword

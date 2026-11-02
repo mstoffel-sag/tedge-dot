@@ -50,7 +50,8 @@ cmake -B "$OUT" -S "$SRC/impl/c" -G Ninja \
   -DTDOT_OPCUA_VENDORED=ON \
   -DTDOT_NETSNMP_HOST="$DEB_MULTIARCH" \
   ${VERSION:+"-DTDOT_BUILD_VERSION=$VERSION"} \
-  "$@"
+  "$@" \
+  -DTDOT_BENCH=OFF # last, so no argument above can put the bench module in a release
 cmake --build "$OUT"
 
 echo "==> built:"

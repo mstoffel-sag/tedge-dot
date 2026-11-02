@@ -614,6 +614,7 @@ fn good_sample(
 ) -> Sample {
     Sample {
         source_value: None,
+        source_ts: None,
         ts: OffsetDateTime::now_utc(),
         device: String::new(), // filled in by the SDK from the topic context if needed
         protocol: PROTOCOL,
@@ -647,6 +648,7 @@ fn bad_sample(
     let mode = model.map(|m| m.mode).unwrap_or(Mode::Raw);
     Sample {
         source_value: None,
+        source_ts: None,
         ts: OffsetDateTime::now_utc(),
         device: String::new(),
         protocol: PROTOCOL,

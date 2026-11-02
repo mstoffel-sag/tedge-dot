@@ -1,0 +1,29 @@
+# ot-alarm-series: one measurement series -> thin-edge alarm (retained; raised and cleared)
+#
+# The measurement alarm that ot-alarm carried before measurement output (contract §5.5): ONE
+# series watched with a threshold and hysteresis. A flow of its own because it subscribes to every
+# measurement, and ot-alarm then woke on every batch the connector published. The package installs
+# it only when an ot-alarm params file sets `series` (see doc/measurement-output.md); copy the
+# directory from /usr/share/tedge-dot/flows/ to use it.
+#
+# The companion flow alarm-state.toml records which alarms are standing, so a restart does not
+# raise a still-retained alarm again (it is the same as ot-alarm's, and they share the store).
+input.mqtt.topics = [
+  # Matches any measurement group (m/<group>); the monitored group is taken from the topic
+  # unless overridden by params.group.
+  "te/+/+/+/+/m/+",
+]
+
+[config]
+# Series within the measurement to monitor: payload[group][series]. Empty series = off.
+group      = "${params.group}"
+series     = "${params.series}"
+# Raise at/above threshold; clear only below (threshold - hysteresis).
+threshold  = "${params.threshold}"
+hysteresis = "${params.hysteresis}"
+severity   = "${params.severity}"
+alarm_type = "${params.alarm_type}"
+text       = "${params.text}"
+
+[[steps]]
+script = "main.js"

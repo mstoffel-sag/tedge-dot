@@ -9,6 +9,7 @@ use crate::connector::{
 };
 use crate::decode::{Endianness, WordOrder};
 use crate::map::ValueMap;
+use crate::measure::{Batcher, Message, Output};
 use crate::model::{format_rfc3339_ms, DataType, Mode, Quality, Sample};
 use crate::report::{Obs, ReportState};
 use rumqttc::{AsyncClient, Event, LastWill, MqttOptions, Packet, QoS};
@@ -699,7 +700,7 @@ pub async fn run_until_reloadable(
     let mut meta_index = build_meta_index(&config);
     let mut reporter = Reporter::new(&config);
     let mut point_health = PointHealth::default();
-    let mut seq_counters: HashMap<(String, String), u64> = HashMap::new();
+    let mut publisher = Publisher::new(&protocol, &config, None);
     // Devices whose transport needs re-establishing, keyed by device name.
     let mut reconnects: HashMap<String, ReconnectEntry> = HashMap::new();
     // A device whose subscribe failed may have points it cannot poll, so it needs
@@ -736,30 +737,35 @@ pub async fn run_until_reloadable(
                 for (device_index, points) in due {
                     let device = config.devices[device_index].name.clone();
                     let (mut samples, failure) =
-                        split_link_lost(bounded(limits, "read", connector.read_points(&device, &points)).await);
+                        split_link_lost(stamped(bounded(limits, "read", connector.read_points(&device, &points)).await));
                     for s in samples.iter_mut() {
                         // The runtime owns the device identity for polled reads:
                         // connectors routinely leave `device` empty, and the sample
                         // topic + meta lookup are keyed by the configured name.
                         s.device = device.clone();
-                        if let Some(mut s) = reporter.offer(map_sample(s.clone(), &meta_index)) {
-                            publish_sample(&client, &protocol, &mut s, &mut seq_counters, &meta_index).await;
-                        }
                     }
-                    if !samples.is_empty() {
+                    let polled = !samples.is_empty();
+                    if polled {
                         point_health.note(&device, &samples, true);
                     }
+                    // A batch where every point failed means the device itself is
+                    // unreachable (a single bad point keeps the link healthy). Judged before
+                    // the samples are handed on, so they need not be copied.
+                    let healthy = samples.iter().any(|s| s.quality != crate::model::Quality::Bad);
+                    let reason = (!healthy)
+                        .then(|| samples.iter().find_map(|s| s.error.clone()))
+                        .flatten();
+                    for s in samples {
+                        if let Some(mut s) = reporter.offer(map_sample(s, &meta_index)) {
+                            publisher.reading(&client, &mut s, &meta_index).await;
+                        }
+                    }
+                    publisher.end_of_pass(&client).await;
                     match failure {
                         Ok(()) => {
-                            // A batch where every point failed means the device itself is
-                            // unreachable (a single bad point keeps the link healthy).
-                            if !samples.is_empty() {
-                                let healthy =
-                                    samples.iter().any(|s| s.quality != crate::model::Quality::Bad);
-                                let reason = (!healthy)
-                                    .then(|| samples.iter().find_map(|s| s.error.clone()))
-                                    .flatten();
+                            if polled {
                                 links.note_poll(&client, &device, healthy, reason, &config).await;
+                                publisher.set_stale(&device, !healthy);
                                 if healthy {
                                     reconnects.remove(&device);
                                 } else {
@@ -772,6 +778,7 @@ pub async fn run_until_reloadable(
                             links
                                 .note_poll(&client, &device, false, Some(e.to_string()), &config)
                                 .await;
+                            publisher.set_stale(&device, true);
                             reconnects.entry(device.clone()).or_insert_with(ReconnectEntry::new);
                         }
                     }
@@ -788,6 +795,7 @@ pub async fn run_until_reloadable(
                     match push_action(&result, polled) {
                         PushAction::Link { healthy: true } => {
                             links.note_poll(&client, &device, true, None, &config).await;
+                            publisher.set_stale(&device, false);
                             reconnects.remove(&device);
                         }
                         PushAction::Link { healthy: false } => {
@@ -795,6 +803,7 @@ pub async fn run_until_reloadable(
                                 warn!(%device, "push delivery is down: {}", reason.as_deref().unwrap_or_default());
                             }
                             links.note_poll(&client, &device, false, reason, &config).await;
+                            publisher.set_stale(&device, true);
                             reconnects.entry(device).or_insert_with(ReconnectEntry::new);
                         }
                         PushAction::Recover { dead: true } => {
@@ -814,11 +823,12 @@ pub async fn run_until_reloadable(
                 // the heartbeat reads of pushed points that have been quiet too long.
                 let (held, reads) = reporter.due(&subscribed);
                 for mut s in held {
-                    publish_sample(&client, &protocol, &mut s, &mut seq_counters, &meta_index).await;
+                    publisher.reading(&client, &mut s, &meta_index).await;
                 }
+                publisher.end_of_pass(&client).await;
                 for (device_index, points) in reads {
                     let device = config.devices[device_index].name.clone();
-                    let result = bounded(limits, "read", connector.read_points(&device, &points)).await;
+                    let result = stamped(bounded(limits, "read", connector.read_points(&device, &points)).await);
                     let failure = match &result {
                         Err(ConnectorError::Unsupported(_)) | Ok(_) => None,
                         Err(e) => Some(e.to_string()),
@@ -830,16 +840,19 @@ pub async fn run_until_reloadable(
                     }
                     for s in samples {
                         if let Some(mut s) = reporter.offer(map_sample(s, &meta_index)) {
-                            publish_sample(&client, &protocol, &mut s, &mut seq_counters, &meta_index).await;
+                            publisher.reading(&client, &mut s, &meta_index).await;
                         }
                     }
+                    publisher.end_of_pass(&client).await;
                     // A heartbeat read is evidence about the device like a poll is.
                     if let Some(reason) = failure {
                         warn!(%device, "heartbeat read failed: {reason}");
                         links.note_poll(&client, &device, false, Some(reason), &config).await;
+                        publisher.set_stale(&device, true);
                         reconnects.entry(device.clone()).or_insert_with(ReconnectEntry::new);
                     } else if healthy {
                         links.note_poll(&client, &device, true, None, &config).await;
+                        publisher.set_stale(&device, false);
                     }
                 }
                 // The loop completed an iteration: samples published, reconnects attempted.
@@ -905,12 +918,28 @@ pub async fn run_until_reloadable(
                     }
                 }
             }
-            Some(sample) = sample_rx.recv() => {
-                point_health.note(&sample.device.clone(), std::slice::from_ref(&sample), false);
-                if let Some(mut sample) = reporter.offer(map_sample(sample, &meta_index)) {
-                    publish_sample(&client, &protocol, &mut sample, &mut seq_counters, &meta_index)
-                        .await;
+            Some(first) = sample_rx.recv() => {
+                // What is already queued is one delivery: it shares a pass, so pushed readings
+                // with one time share a measurement.
+                let delivered = OffsetDateTime::now_utc();
+                let mut next = Some(first);
+                let mut taken = 0;
+                while let Some(mut sample) = next.take() {
+                    stamp(std::slice::from_mut(&mut sample), delivered);
+                    point_health.note(&sample.device.clone(), std::slice::from_ref(&sample), false);
+                    if let Some(mut sample) = reporter.offer(map_sample(sample, &meta_index)) {
+                        publisher.reading(&client, &mut sample, &meta_index).await;
+                    }
+                    taken += 1;
+                    if taken < SINK_PASS {
+                        next = sample_rx.try_recv().ok();
+                    }
                 }
+                publisher.end_of_pass(&client).await;
+                progress.mark();
+            }
+            _ = sleep_until(publisher.next_deadline()) => {
+                publisher.due(&client).await;
                 progress.mark();
             }
             _ = reconnected.notified() => {
@@ -981,7 +1010,8 @@ pub async fn run_until_reloadable(
             meta_index = build_meta_index(&config);
             reporter = Reporter::new(&config);
             point_health.clear();
-            seq_counters.clear();
+            publisher.flush_all(&client).await;
+            publisher = Publisher::new(&protocol, &config, Some(publisher));
             // applying the configuration already reconnected every device
             reconnects.clear();
             push_recovery.clear();
@@ -993,6 +1023,7 @@ pub async fn run_until_reloadable(
         }
     }
 
+    publisher.flush_all(&client).await;
     // 7. Clean shutdown: the final health "down", then a DISCONNECT, given a moment to reach the
     // broker (the event loop ends once the DISCONNECT is written). With the broker unreachable
     // there is nothing to send them over, and the broker publishes the last will instead.
@@ -1070,7 +1101,7 @@ pub async fn run_stdout_until(
                 for (device_index, points) in due {
                     let device = config.devices[device_index].name.clone();
                     let (mut samples, failure) =
-                        split_link_lost(bounded(limits, "read", connector.read_points(&device, &points)).await);
+                        split_link_lost(stamped(bounded(limits, "read", connector.read_points(&device, &points)).await));
                     for s in samples.iter_mut() {
                         s.device = device.clone();
                         if let Some(mut s) = reporter.offer(map_sample(s.clone(), &meta_index)) {
@@ -1130,7 +1161,7 @@ pub async fn run_stdout_until(
                 }
                 for (device_index, points) in reads {
                     let device = config.devices[device_index].name.clone();
-                    let result = bounded(limits, "read", connector.read_points(&device, &points)).await;
+                    let result = stamped(bounded(limits, "read", connector.read_points(&device, &points)).await);
                     if let Err(e) = &result {
                         if !matches!(e, ConnectorError::Unsupported(_)) {
                             warn!(%device, "heartbeat read failed: {e}");
@@ -1208,6 +1239,8 @@ pub async fn run_stdout_until(
                 }
             }
             Some(sample) = sample_rx.recv() => {
+                let mut sample = sample;
+                stamp(std::slice::from_mut(&mut sample), OffsetDateTime::now_utc());
                 if let Some(mut sample) = reporter.offer(map_sample(sample, &meta_index)) {
                     print_sample(&mut sample, &mut seq_counters, &meta_index);
                 }
@@ -1343,6 +1376,7 @@ impl Reporter {
                     seq: None,
                     error: Some(e.to_string()),
                     source_value: None,
+                    source_ts: None,
                 })
                 .collect(),
         }
@@ -1387,6 +1421,24 @@ fn print_sample(
     *counter += 1;
     sample.seq = Some(*counter);
     println!("{}", envelope_with_meta(sample, meta_index));
+}
+
+/// Give each sample its time (contract §5): its source time when the module set one, else
+/// `read_ts`, the completion time of the read call or the push delivery. One read time per call
+/// lets a polled pass share a timestamp, so it batches into one measurement.
+fn stamp(samples: &mut [Sample], read_ts: OffsetDateTime) {
+    for s in samples {
+        s.ts = s.source_ts.unwrap_or(read_ts);
+    }
+}
+
+/// A `read_points` result with its samples stamped with the call's completion time (`stamp`).
+fn stamped(mut result: Result<Vec<Sample>, ConnectorError>) -> Result<Vec<Sample>, ConnectorError> {
+    let read_ts = OffsetDateTime::now_utc();
+    if let Ok(samples) | Err(ConnectorError::LinkLost { samples, .. }) = &mut result {
+        stamp(samples, read_ts);
+    }
+    result
 }
 
 /// A poll's `read_points` result as the samples to publish and the failure to handle. A
@@ -1706,14 +1758,133 @@ fn envelope_with_meta(sample: &Sample, meta_index: &MetaIndex) -> serde_json::Va
     envelope
 }
 
+/// The most pushed samples one pass of the main loop takes from the sink before it publishes
+/// what they made and looks at its other work.
+const SINK_PASS: usize = 1024;
+
+/// Sleep until `deadline`, or forever when there is none.
+async fn sleep_until(deadline: Option<Instant>) {
+    match deadline {
+        Some(at) => tokio::time::sleep_until(at.into()).await,
+        None => std::future::pending().await,
+    }
+}
+
+/// Where the readings the reporting policy lets through go: one sample envelope each, or in
+/// measurement output (§5.5) the point table, which publishes measurements, and a sample only for
+/// the points flows read.
+struct Publisher {
+    protocol: String,
+    seq_counters: HashMap<(String, String), u64>,
+    batcher: Option<Batcher>,
+    outbox: Vec<Message>,
+}
+
+impl Publisher {
+    /// The publisher for `config`; `previous` hands over what measurement output has already
+    /// published (the units), so a reload does not publish it again.
+    fn new(protocol: &str, config: &ConnectorConfig, previous: Option<Publisher>) -> Self {
+        let batcher = match Output::of(config) {
+            Output::Samples => None,
+            Output::Measurements => Some(Batcher::new(
+                config,
+                Instant::now(),
+                previous.and_then(|p| p.batcher),
+            )),
+        };
+        Publisher {
+            protocol: protocol.to_string(),
+            seq_counters: HashMap::new(),
+            batcher,
+            outbox: Vec::new(),
+        }
+    }
+
+    async fn reading(&mut self, client: &Mqtt, sample: &mut Sample, meta_index: &MetaIndex) {
+        let Some(batcher) = self.batcher.as_mut() else {
+            publish_sample(client, &self.protocol, sample, &mut self.seq_counters, meta_index, false).await;
+            return;
+        };
+        let routing = batcher.offer(sample, Instant::now(), &mut self.outbox);
+        self.send(client).await;
+        if routing.sample {
+            publish_sample(client, &self.protocol, sample, &mut self.seq_counters, meta_index, routing.measured)
+                .await;
+        }
+    }
+
+    /// The end of a pass: publish the measurements grouped by time.
+    async fn end_of_pass(&mut self, client: &Mqtt) {
+        if let Some(batcher) = self.batcher.as_mut() {
+            batcher.end_of_pass(&mut self.outbox);
+            self.send(client).await;
+        }
+    }
+
+    fn next_deadline(&self) -> Option<Instant> {
+        self.batcher.as_ref().and_then(Batcher::next_deadline)
+    }
+
+    /// Publish the frames that have ended and the samples that are due.
+    async fn due(&mut self, client: &Mqtt) {
+        if let Some(batcher) = self.batcher.as_mut() {
+            batcher.due(Instant::now(), OffsetDateTime::now_utc(), &mut self.outbox);
+            self.send(client).await;
+        }
+    }
+
+    /// Publish every open measurement, before the point table is rebuilt or the connector stops.
+    async fn flush_all(&mut self, client: &Mqtt) {
+        if let Some(batcher) = self.batcher.as_mut() {
+            batcher.flush_all(&mut self.outbox);
+            self.send(client).await;
+        }
+    }
+
+    /// The device's link went down or its push delivery failed its check (`true`), or it is
+    /// healthy again: its slots leave the samples while it is stale.
+    fn set_stale(&mut self, device: &str, stale: bool) {
+        if let Some(batcher) = self.batcher.as_mut() {
+            batcher.set_stale(device, stale);
+        }
+    }
+
+    async fn send(&mut self, client: &Mqtt) {
+        for message in self.outbox.drain(..) {
+            if message.retain {
+                if let Err(e) = publish_retained(client, &message.topic, message.payload).await {
+                    warn!("failed to publish {}: {e}", message.topic);
+                }
+                continue;
+            }
+            if !client.is_online() {
+                // As a sample: a reading of the moment, not queued for a broker that is away.
+                continue;
+            }
+            let publish = client.publish(&message.topic, QoS::AtMostOnce, false, message.payload);
+            match tokio::time::timeout(PUBLISH_TIMEOUT, publish).await {
+                Ok(Ok(())) => {}
+                Ok(Err(e)) => error!("failed to publish a measurement: {e}"),
+                Err(_) => warn!(
+                    "dropping a measurement on {}: the MQTT client did not take it within {}s",
+                    message.topic,
+                    PUBLISH_TIMEOUT.as_secs()
+                ),
+            }
+        }
+    }
+}
+
 /// Stamp the per-point sequence number and publish one sample. Shared by the polling loop and
-/// the subscription channel so both paths get identical seq/meta/topic handling.
+/// the subscription channel so both paths get identical seq/meta/topic handling. `measured`
+/// marks a sample whose reading measurement output also published as a series (§5.5).
 async fn publish_sample(
     client: &Mqtt,
     protocol: &str,
     sample: &mut Sample,
     seq_counters: &mut HashMap<(String, String), u64>,
     meta_index: &MetaIndex,
+    measured: bool,
 ) {
     let counter = seq_counters
         .entry((sample.device.clone(), sample.point.clone()))
@@ -1730,7 +1901,11 @@ async fn publish_sample(
         "te/device/{}/ot/{}/sample/{}",
         sample.device, protocol, sample.point
     );
-    let payload = envelope_with_meta(sample, meta_index).to_string();
+    let mut envelope = envelope_with_meta(sample, meta_index);
+    if measured {
+        envelope["measured"] = serde_json::Value::Bool(true);
+    }
+    let payload = envelope.to_string();
     let publish = client.publish(&topic, QoS::AtMostOnce, false, payload);
     match tokio::time::timeout(PUBLISH_TIMEOUT, publish).await {
         Ok(Ok(())) => {}
@@ -2304,6 +2479,9 @@ fn capability_payload(caps: &Capabilities, config: &ConnectorConfig) -> String {
     }
     if let Some(reports) = crate::descriptor::reports(config) {
         json["reports"] = reports;
+    }
+    if let Some(outputs) = crate::measure::describe(config) {
+        json["outputs"] = outputs;
     }
     json.to_string()
 }
@@ -3690,6 +3868,7 @@ protocol_address = {}
             seq: None,
             error: None,
             source_value: None,
+            source_ts: None,
         };
         let env = envelope_with_meta(&map_sample(sample(Some(1.0), Quality::Good), &index), &index);
         assert_eq!(env["value"], serde_json::json!("running"));
@@ -3730,6 +3909,7 @@ protocol_address = {}
             seq: None,
             error: None,
             source_value: None,
+            source_ts: None,
         };
         let mut index = HashMap::new();
         index.insert(
@@ -3771,6 +3951,38 @@ protocol_address = {}
         let schedule = build_schedule(&cfg, &HashSet::new());
         // connector poll_interval = "2s" flows into the resolved PointRef interval
         assert_eq!(schedule[0].point.interval, Some(Duration::from_secs(2)));
+    }
+
+    /// One read time per `read_points` call (contract §5), and a source time wins over it.
+    #[test]
+    fn a_read_call_shares_one_time_unless_the_source_gives_one() {
+        let source = OffsetDateTime::from_unix_timestamp(1_000).unwrap();
+        let sample = |source_ts| Sample {
+            ts: OffsetDateTime::UNIX_EPOCH,
+            source_ts,
+            device: "d".into(),
+            protocol: "test",
+            point: "p".into(),
+            mode: Mode::Typed,
+            datatype: None,
+            value: None,
+            raw: Vec::new(),
+            raw_group: 1,
+            quality: Quality::Good,
+            unit: None,
+            addr: serde_json::Value::Null,
+            seq: None,
+            error: None,
+            source_value: None,
+        };
+        let before = OffsetDateTime::now_utc();
+        let read = stamped(Ok(vec![sample(None), sample(None), sample(Some(source))])).unwrap();
+        assert!(read[0].ts >= before);
+        assert_eq!(read[0].ts, read[1].ts);
+        assert_eq!(read[2].ts, source);
+        let lost = stamped(Err(ConnectorError::LinkLost { samples: vec![sample(None)], reason: "x".into() }));
+        let Err(ConnectorError::LinkLost { samples, .. }) = lost else { panic!() };
+        assert!(samples[0].ts >= before);
     }
 
     #[test]
@@ -3818,6 +4030,7 @@ protocol_address = {}
             seq: None,
             error: None,
             source_value: None,
+            source_ts: None,
         };
         let (samples, failure) = split_link_lost(Err(ConnectorError::LinkLost {
             samples: vec![good.clone()],
@@ -3856,6 +4069,7 @@ protocol_address = {}
             seq: None,
             error: error.map(str::to_string),
             source_value: None,
+            source_ts: None,
         };
         let lines = |health: &mut PointHealth, samples: &[Sample], batch| {
             health

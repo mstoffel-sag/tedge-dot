@@ -818,6 +818,7 @@ pub(crate) fn sample(
     };
     Sample {
         source_value: None,
+        source_ts: None,
         ts,
         device: device.to_string(),
         protocol: PROTOCOL,

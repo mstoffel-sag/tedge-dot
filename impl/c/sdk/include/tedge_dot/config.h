@@ -47,6 +47,22 @@ typedef enum {
 #define TDOT_FIELD_SAMPLING_INTERVAL 0x080
 #define TDOT_FIELD_SUBSCRIBE 0x100
 #define TDOT_FIELD_REPORT 0x200
+#define TDOT_FIELD_BATCH 0x400
+#define TDOT_FIELD_SAMPLE 0x800
+
+/* When a point's readings are published in measurement output, and with which
+ * time (contract §5.5, `batch.group_by`): grouped by exact time, by a frame of
+ * `ms` milliseconds, or sampled every `ms` milliseconds. */
+typedef enum {
+    TDOT_GROUP_TIME = 0,
+    TDOT_GROUP_FRAME,
+    TDOT_GROUP_SAMPLE,
+} tdot_group_kind_t;
+
+typedef struct {
+    tdot_group_kind_t kind;
+    long long ms; /* the frame's window or the sample period; 0 for time */
+} tdot_group_by_t;
 
 typedef struct tdot_point {
     char *id;
@@ -104,6 +120,14 @@ typedef struct tdot_point {
     /* Effective policy: [connector] report, then the device's, then the
      * point's, merged key by key (tdot_config_report_table). */
     tdot_report_policy_t report;
+    /* The point's own `batch` table (§5.5) as written, merged with a library's
+     * like report_table; NULL when none. */
+    struct cJSON *batch_table;
+    /* Effective grouping policy in measurement output: [connector] batch, then
+     * the device's, then the point's (tdot_config_batch_table). */
+    tdot_group_by_t group_by;
+    /* `sample` (§5.5): 1 true, 0 false, -1 unset (the runtime decides). */
+    int sample;
 
     /* Filled by the connector during configure(): */
     char *addr_json; /* address echo for the sample envelope ("addr") */
@@ -163,6 +187,8 @@ typedef struct tdot_device {
     /* The device's `report` table (§5.3) as written, as a cJSON object (see
      * tdot_point_t.report_table); NULL when none. */
     struct cJSON *report_table;
+    /* The device's `batch` table (§5.5) as written; NULL when none. */
+    struct cJSON *batch_table;
 
     void *proto; /* connector per-device state (e.g. modbus_t*, UA_Client*) */
 
@@ -218,6 +244,17 @@ typedef struct tdot_config {
     /* [connector] report (§5.3), the default policy of every point, as written,
      * as a cJSON object (see tdot_point_t.report_table); NULL when none. */
     struct cJSON *report_table;
+
+    /* Measurement output (contract §5.5): [connector] output = "measurements". */
+    bool output_measurements;
+    /* [connector] measurement: the naming settings, as the ot-measurement
+     * flow's parameters of the same names. NULL strings for unset. */
+    char *measurement_group;
+    char *measurement_series;
+    char *measurement_separator;
+    bool include_boolean; /* default true */
+    /* [connector] batch (§5.5) as written; NULL when none. */
+    struct cJSON *batch_table;
 
     tdot_device_t *devices;
     size_t ndevices;
@@ -276,6 +313,18 @@ int tdot_reject_local_only_settings(const struct cJSON *before, const struct cJS
  * cJSON_Delete()s. Mirrors ConnectorConfig::report_table (Rust). */
 struct cJSON *tdot_config_report_table(const tdot_config_t *cfg, const tdot_device_t *dev,
                                        const tdot_point_t *pt);
+
+/* The merged `batch` table of one point (contract §5.5), merged like
+ * tdot_config_report_table. Caller cJSON_Delete()s. Mirrors
+ * ConnectorConfig::batch_table (Rust). */
+struct cJSON *tdot_config_batch_table(const tdot_config_t *cfg, const tdot_device_t *dev,
+                                      const tdot_point_t *pt);
+
+/* The capability descriptor's `outputs` array (contract §7): each device's
+ * output and its merged `batch` table ([connector], then the device), with the
+ * default group_by filled in. NULL for a connector in samples output that sets
+ * no batch anywhere. Caller cJSON_Delete()s. Mirrors measure::describe (Rust). */
+struct cJSON *tdot_config_outputs(const tdot_config_t *cfg);
 
 /* The capability descriptor's `reports` object (contract §7): `default` (the
  * [connector] report as written), `devices` (each device's report as written)

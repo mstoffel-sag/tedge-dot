@@ -27,4 +27,11 @@ double tdot_ua_publishing_interval_ms(const tdot_device_t *dev, size_t *wanted);
  * milliseconds in practice, so a difference under a millisecond is not one. */
 bool tdot_ua_revised(double requested_ms, double revised_ms);
 
+/* The source time of a data value in Unix milliseconds (contract §5): its
+ * source timestamp, else its server timestamp, each as OPC UA DateTime ticks
+ * (100 ns since 1601-01-01; 0 is null); 0 when it has neither. Mirrors
+ * data_value_source_ts in the Rust module. */
+double tdot_ua_source_ts_ms(bool has_source, long long source, bool has_server,
+                            long long server);
+
 #endif

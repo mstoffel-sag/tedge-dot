@@ -1,0 +1,22 @@
+# ot-event-series: one measurement series -> thin-edge event on every change
+#
+# The measurement event that ot-event carried before measurement output (contract §5.5). A flow of
+# its own because it subscribes to every measurement, and ot-event then woke on every batch the
+# connector published. The package installs it only when an ot-event params file sets `series`
+# (see doc/measurement-output.md); copy the directory from /usr/share/tedge-dot/flows/ to use it.
+input.mqtt.topics = [
+  # Matches any measurement group (m/<group>); the monitored group is taken from the topic
+  # unless overridden by params.group.
+  "te/+/+/+/+/m/+",
+]
+
+[config]
+# Series within the measurement to monitor: payload[group][series]. Empty series = off.
+group      = "${params.group}"
+series     = "${params.series}"
+# Event metadata. event_type becomes the topic suffix: te/device/<device>///e/<event_type>.
+event_type = "${params.event_type}"
+text       = "${params.text}"
+
+[[steps]]
+script = "main.js"

@@ -65,6 +65,42 @@
         "report": {
           "$ref": "#/$defs/report",
           "description": "Default reporting policy for every point of this connector (§5.3)."
+        },
+        "output": {
+          "enum": [
+            "samples",
+            "measurements"
+          ],
+          "default": "samples",
+          "description": "What readings are published as (§5.5): one sample envelope each (default), or batched thin-edge measurements published by the runtime, with samples only for the points flows read."
+        },
+        "measurement": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "Measurement naming in measurement output (§5.5), as the ot-measurement flow's parameters of the same names. A point's meta.measurement.group/series win over group/series.",
+          "properties": {
+            "group": {
+              "type": "string",
+              "description": "The group of every point without its own; default: the protocol id."
+            },
+            "series": {
+              "type": "string",
+              "description": "The series of every point without its own; default: the point id."
+            },
+            "point_separator": {
+              "type": "string",
+              "description": "Split a point id containing it into <group><sep><series>, for points without their own group or series."
+            },
+            "include_boolean": {
+              "type": "boolean",
+              "default": true,
+              "description": "Publish booleans as 1 and 0; false leaves them out."
+            }
+          }
+        },
+        "batch": {
+          "$ref": "#/$defs/batch",
+          "description": "Default grouping policy in measurement output for every point of this connector (§5.5)."
         }
       }
     },
@@ -157,6 +193,40 @@
       "pattern": "^([0-9]+ms|[0-9]+(\\.[0-9]+)?(s|m|h)?)$",
       "description": "Duration string, e.g. '500ms', '10s', '30m'; \"0\" disables the setting."
     },
+    "batch": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Grouping policy in measurement output (contract §5.5), applied by the SDK runtime. Merged key by key: [connector] batch, then the device's, then the point's in a point library, then the point's in the configuration. A table that sets group_by may only set that policy's duration; one inherited from a level that chose another policy is ignored.",
+      "properties": {
+        "group_by": {
+          "enum": [
+            "time",
+            "frame",
+            "sample"
+          ],
+          "default": "time",
+          "description": "time: readings sharing a millisecond timestamp share a message (lossless, no time moved). frame: readings within `window` share a message stamped with the first reading's time (lossless, a time moves by less than the window). sample: every `every`, one series per point holding a good value, stamped with the sample time (lossy by design)."
+        },
+        "window": {
+          "$ref": "#/$defs/duration",
+          "description": "The frame's length, 1ms to 60s; required with group_by = \"frame\"."
+        },
+        "every": {
+          "$ref": "#/$defs/duration",
+          "description": "The sample period, 100ms to 1h; required with group_by = \"sample\"."
+        }
+      },
+      "examples": [
+        {
+          "group_by": "frame",
+          "window": "100ms"
+        },
+        {
+          "group_by": "sample",
+          "every": "1s"
+        }
+      ]
+    },
     "disabled_device": {
       "description": "A device switched off with enabled = false (§3.3). The connector reads nothing but its name and the names of its keys, so this schema requires nothing more of it; fields it does carry are still checked for shape.",
       "required": [
@@ -223,6 +293,10 @@
         "report": {
           "$ref": "#/$defs/report",
           "description": "Default reporting policy for this device's points (§5.3); merged over [connector] report."
+        },
+        "batch": {
+          "$ref": "#/$defs/batch",
+          "description": "Default grouping policy in measurement output for this device's points (§5.5)."
         }
       },
       "allOf": [
@@ -387,6 +461,10 @@
           "$ref": "#/$defs/report",
           "description": "This point's reporting policy (§5.3); merged over the device's and [connector]'s report."
         },
+        "batch": {
+          "$ref": "#/$defs/batch",
+          "description": "This point's grouping policy in measurement output (§5.5); merged over the device's and [connector]'s batch."
+        },
         "map": {
           "$ref": "#/$defs/map",
           "description": "This point's value map (§4.3): state codes to labels, ranges with a catch-all, numeric text to numbers. The samples carry the mapped value (and the unmapped one as source_value); writes carry it too and are mapped back."
@@ -399,6 +477,10 @@
           "type": "boolean",
           "default": true,
           "description": "Set false to keep this point on the polling schedule even when the connector supports push delivery (subscriptions)."
+        },
+        "sample": {
+          "type": "boolean",
+          "description": "In measurement output (§5.5): true keeps publishing this point's samples for a consumer other than the flows; false publishes none even when a flow would read them. Unset, the runtime decides (alarm, event and parameter points, and writable points, keep their samples)."
         },
         "enabled": {
           "type": "boolean",
