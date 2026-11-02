@@ -47,6 +47,9 @@ pub struct Scenario {
     pub sampling_interval: Option<String>,
     pub latency: Option<String>,
     pub batch: Option<usize>,
+    /// `[connector] max_inflight` and `max_inflight_total` (contract §5.6); the defaults when unset.
+    pub max_inflight: Option<usize>,
+    pub max_inflight_total: Option<usize>,
     pub change: Option<f64>,
     pub ts_jitter: Option<String>,
     pub ts_resolution: Option<OneOrMany<String>>,
@@ -117,6 +120,10 @@ pub struct Run {
     pub push_rate_per_device: Option<f64>,
     pub latency: Option<String>,
     pub batch: Option<usize>,
+    /// The connector's requests in flight per endpoint and in all (contract §5.6), as
+    /// configured: the runtime's defaults when the scenario sets none.
+    pub max_inflight: usize,
+    pub max_inflight_total: usize,
     pub change: Option<f64>,
     pub ts_jitter: Option<String>,
     pub ts_resolution: Option<String>,
@@ -261,6 +268,8 @@ pub fn expand(s: &Scenario, o: &Overrides) -> Result<Vec<Run>, String> {
                         push_rate_per_device: push_rate,
                         latency: s.latency.clone(),
                         batch: s.batch,
+                        max_inflight: s.max_inflight.unwrap_or(DEFAULT_MAX_INFLIGHT),
+                        max_inflight_total: s.max_inflight_total.unwrap_or(DEFAULT_MAX_INFLIGHT_TOTAL),
                         change: s.change,
                         ts_jitter: s.ts_jitter.clone(),
                         ts_resolution: res.clone(),
@@ -277,6 +286,11 @@ pub fn expand(s: &Scenario, o: &Overrides) -> Result<Vec<Run>, String> {
     }
     Ok(runs)
 }
+
+/// The runtime's defaults for requests in flight (tedge_dot_sdk::concurrency), written into every
+/// generated config so a result line records what the connector used.
+const DEFAULT_MAX_INFLIGHT: usize = 4;
+const DEFAULT_MAX_INFLIGHT_TOTAL: usize = 32;
 
 /// The `[connector] batch` table of a scenario's `group_by` value.
 fn batch_table(policy: &str) -> Result<String, String> {
@@ -318,6 +332,7 @@ pub fn write_configs(run: &Run, dir: &Path, broker_port: u16, endpoint: Option<&
         if let Some(g) = &run.group_by {
             let _ = writeln!(t, "batch = {}", batch_table(g)?);
         }
+        let _ = writeln!(t, "max_inflight = {}\nmax_inflight_total = {}", run.max_inflight, run.max_inflight_total);
         let _ = writeln!(t, "\n[mqtt]\nhost = \"127.0.0.1\"\nport = {broker_port}\n");
         if run.module == "opcua" {
             let _ = writeln!(t, "[connection]\napplication_name = \"tedge-dot-bench-{i}\"\nsecurity_policy = \"None\"\n");

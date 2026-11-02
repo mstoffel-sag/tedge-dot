@@ -102,11 +102,16 @@ cycle, after the first interval, and covers whole intervals, so the expected cou
   one host with one set of tool versions. The summary warns when they differ.
 - **The broker figure includes the observer.** The observer subscribes only to the topics a
   scenario counts, and its own CPU is reported separately.
-- **Both runtimes poll late.** Both schedule the next poll from the time the last one ran,
-  so the delay before each wake-up adds to the interval. Rust checks for due points on a 200 ms
-  tick, so a 1 s poll runs every 1.0 to 1.2 s, a rate shortfall of about 11 %. C wakes whenever
-  its MQTT socket has traffic, so a 1 s poll runs about every 1.045 s, about 4 %. Nothing is
-  lost in either case.
+- **Polls run on their interval's grid.** Since concurrent reads (§5.6), both runtimes
+  schedule a point's next poll one interval after the one it was due at, not after the moment
+  the loop got to it, so a late tick no longer pushes every later poll back. Before that, a 1 s
+  poll ran every 1.0 to 1.2 s in Rust (a shortfall of about 11 %) and about every 1.045 s in C.
+  A pass that takes longer than the interval still stretches it.
+- **Without latency, the bench hides the cost of round trips.** A local simulator answers in
+  microseconds, so a scenario without `latency` measures CPU, not how a connector copes with a
+  PLC that takes 20 ms per read. `polled-latency` sets `latency` on the bench module;
+  `opcua-latency` starts the OPC UA simulator with `--latency`, a proxy that delays each
+  direction by half the round trip.
 - **The rate shortfall of a polled run moves in whole polls.** A 20 s window at 1 s polls
   counts 17 intervals, so one poll fewer is 5.9 %. The C figure is 0, 5.9 or 11.8 % from run
   to run for the same 4 % lateness.
@@ -142,7 +147,7 @@ replaces them.
 | Built-in c8y conversion, unbatched | About 92 µs per message |
 | Built-in c8y conversion, 500 series per message | 1.56 µs per reading |
 | Rust connector, OPC UA, per sample | 12.5 µs (allocation 36 %, `sendto` 19 %, JSON 16 %, clock reads and timeouts 10 %, OPC UA decode under 3 %) |
-| One Rust OPC UA instance, 20,000 polled points | 52,700 readings/s, bound by sequential reads |
+| One Rust OPC UA instance, 20,000 polled points | 52,700 readings/s: bound by its CPU per sample, not by sequential reads, which a local simulator never shows (see `opcua-latency`) |
 | Spike: point table and one batched measurement per device | 0.33 µs per reading on the connector; 2 % of a core for the broker, 17 % for the mapper at 100,000/s |
 
 ## Reporting a performance change

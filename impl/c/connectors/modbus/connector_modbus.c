@@ -5,6 +5,7 @@
  */
 #include <errno.h>
 #include <modbus.h>
+#include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -458,6 +459,24 @@ static void destroy(tdot_connector_t *self) {
     free(self);
 }
 
+/* A TCP device's host and port; a serial bus carries one request at a time
+ * (contract §5.6). As the Rust module's endpoint. */
+static int endpoint(tdot_connector_t *self, const tdot_device_t *dev, char *buf, size_t len) {
+    (void)self;
+    const mb_device_t *mb = dev->proto;
+    if (!mb)
+        return -1;
+    if (!mb->tcp) {
+        snprintf(buf, len, "%s", mb->serial);
+        return 1;
+    }
+    size_t i = 0;
+    for (; mb->host[i] && i + 1 < len; i++)
+        buf[i] = (char)tolower((unsigned char)mb->host[i]);
+    snprintf(buf + i, len - i, ":%d", mb->port);
+    return 0;
+}
+
 tdot_connector_t *tdot_connector_modbus_new(void) {
     tdot_connector_t *c = calloc(1, sizeof *c);
     c->protocol = "modbus";
@@ -466,6 +485,10 @@ tdot_connector_t *tdot_connector_modbus_new(void) {
     c->configure = configure;
     c->connect_device = connect_device;
     c->read_point = read_point;
+    /* Each device has its own modbus_t (dev->proto) and the read path only
+     * reads the shared timeout (contract §5.6). */
+    c->concurrent_reads = true;
+    c->endpoint = endpoint;
     c->write_point = write_point;
     c->disconnect_device = disconnect_device;
     c->device_info = device_info;

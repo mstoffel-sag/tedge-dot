@@ -9,6 +9,7 @@
 #ifndef TDOT_CONNECTOR_H
 #define TDOT_CONNECTOR_H
 
+#include "concurrency.h"
 #include "config.h"
 #include "model.h"
 
@@ -82,6 +83,38 @@ struct tdot_connector {
     size_t (*read_points)(tdot_connector_t *self, tdot_device_t *dev,
                           tdot_point_t *const *pts, size_t n, tdot_sample_t *out,
                           int *rc);
+
+    /* Concurrent reads (contract §5.6). Set concurrent_reads when read_point,
+     * read_points and read_points_inflight are safe to call at the same time
+     * for DIFFERENT devices, from the runtime's worker threads: each device's
+     * transport state is its own (dev->proto), and nothing they share is
+     * written without a lock. The runtime never reads one device twice at
+     * once, and waits for a device's read before writing to it, reconnecting
+     * it or draining its subscriptions. Zero (the default) keeps every read on
+     * the runtime's own thread, one device after another. */
+    bool concurrent_reads;
+
+    /* Optional: name dev's endpoint into buf (the host and port it talks to, a
+     * serial port, a CAN interface) and return the most requests it may have
+     * in flight whatever the configuration says (0: no cap; 1 for a bus).
+     * Return -1 to make the device its own endpoint (the default when NULL).
+     * Devices on one endpoint share its budget. Must be cheap and pure. */
+    int (*endpoint)(tdot_connector_t *self, const tdot_device_t *dev, char *buf, size_t len);
+
+    /* Optional, with concurrent_reads: how many requests a read of n points of
+     * dev could have in flight at once (its blocks). NULL means 1. */
+    size_t (*read_wanted)(tdot_connector_t *self, tdot_device_t *dev, size_t n);
+
+    /* Optional, with concurrent_reads: read_points for a read on a worker
+     * thread, with every due point of the device (no TDOT_READ_POINTS_MAX
+     * bound) and at most tdot_inflight_current(inflight) requests in flight at
+     * once. Report each request's outcome to `inflight` (ok, busy, timed out)
+     * and send a request refused as busy again once the budget allows. Same
+     * outcomes as read_points. NULL: the worker reads through read_points, or
+     * read_point. */
+    size_t (*read_points_inflight)(tdot_connector_t *self, tdot_device_t *dev,
+                                   tdot_point_t *const *pts, size_t n, tdot_sample_t *out,
+                                   int *rc, tdot_inflight_t *inflight);
 
     /* Execute a typed "write" command. Returns 0 on success, -1 with err. */
     int (*write_point)(tdot_connector_t *self, tdot_device_t *dev,

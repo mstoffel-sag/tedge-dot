@@ -75,6 +75,8 @@ const CONNECTOR_KEYS: &[&str] = &[
     "output",
     "measurement",
     "batch",
+    "max_inflight",
+    "max_inflight_total",
 ];
 const MQTT_KEYS: &[&str] = &["host", "port"];
 const DEVICE_KEYS: &[&str] = &[
@@ -89,6 +91,7 @@ const DEVICE_KEYS: &[&str] = &[
     "enabled",
     "report",
     "batch",
+    "max_inflight",
 ];
 const POINT_KEYS: &[&str] = &[
     "id",
@@ -564,6 +567,8 @@ pub fn resolve(text: &str, base_dir: &Path) -> Result<ConnectorConfig, String> {
             .and_then(|()| check_one_of(connector, "output", crate::measure::OUTPUTS))
             .and_then(|()| connector.get("measurement").map_or(Ok(()), crate::measure::check_measurement))
             .and_then(|()| check_batch(connector))
+            .and_then(|()| crate::concurrency::check_positive(connector, "max_inflight"))
+            .and_then(|()| crate::concurrency::check_positive(connector, "max_inflight_total"))
             .map_err(|e| format!("[connector] {e}"))?;
     }
     expand(&mut doc, base_dir)?;
@@ -632,6 +637,7 @@ fn expand(doc: &mut Value, base_dir: &Path) -> Result<(), String> {
             .and_then(|()| check_duration(device, "sampling_interval"))
             .and_then(|()| check_report(device))
             .and_then(|()| check_batch(device))
+            .and_then(|()| crate::concurrency::check_positive(device, "max_inflight"))
             .map_err(|e| format!("device '{name}': {e}"))?;
         // Checked here rather than left to the typed parse, because an empty string would
         // otherwise be accepted as a type and silently behave like an absent one — and the C

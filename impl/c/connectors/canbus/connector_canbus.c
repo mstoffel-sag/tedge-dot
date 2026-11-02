@@ -517,6 +517,16 @@ static void destroy(tdot_connector_t *self) {
     free(self);
 }
 
+/* A CAN interface is one bus (contract §5.6). */
+static int endpoint(tdot_connector_t *self, const tdot_device_t *dev, char *buf, size_t len) {
+    (void)self;
+    const cb_device_t *cb = dev->proto;
+    if (!cb)
+        return -1;
+    snprintf(buf, len, "%s", cb->interface);
+    return 1;
+}
+
 tdot_connector_t *tdot_connector_canbus_new(void) {
     tdot_connector_t *c = calloc(1, sizeof *c);
     c->protocol = "canbus";
@@ -525,6 +535,7 @@ tdot_connector_t *tdot_connector_canbus_new(void) {
     c->configure = configure;
     c->connect_device = connect_device;
     c->read_point = read_point;
+    c->endpoint = endpoint;
     c->write_point = write_point;
     c->disconnect_device = disconnect_device;
     c->destroy = destroy;

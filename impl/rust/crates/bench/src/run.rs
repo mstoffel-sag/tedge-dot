@@ -188,9 +188,13 @@ pub async fn wait_idle(pid: u32, limit: Duration) -> Result<f64, String> {
 }
 
 /// Start the standalone OPC UA simulator and return its endpoint.
-fn start_opcua_sim(bin: &Path, points: usize, log: &Path, guard: &mut Guard) -> Result<String, String> {
+fn start_opcua_sim(bin: &Path, points: usize, latency: Option<&str>, log: &Path, guard: &mut Guard) -> Result<String, String> {
+    let mut args = vec!["serve".to_string(), "opcua".into(), "--points".into(), points.to_string(), "--port".into(), "0".into()];
+    if let Some(l) = latency {
+        args.extend(["--latency".to_string(), l.to_string()]);
+    }
     let mut child = Command::new(bin)
-        .args(["serve", "opcua", "--points", &points.to_string(), "--port", "0"])
+        .args(&args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(std::fs::File::create(log).map_err(|e| e.to_string())?)
@@ -259,7 +263,14 @@ pub async fn measure(paths: &Paths, stack: &Stack, run: &Run, checks: Option<Che
 
     let mut sim = Guard::default();
     let endpoint = if run.module == "opcua" {
-        Some(start_opcua_sim(&paths.conformance_bin, run.devices * run.points_per_device, &run_dir.join("opcua-sim.log"), &mut sim)?)
+        // An OPC UA scenario's latency is the network's: the simulator adds it (`--latency`).
+        Some(start_opcua_sim(
+            &paths.conformance_bin,
+            run.devices * run.points_per_device,
+            run.latency.as_deref(),
+            &run_dir.join("opcua-sim.log"),
+            &mut sim,
+        )?)
     } else {
         None
     };

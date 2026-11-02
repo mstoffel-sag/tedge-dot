@@ -6,6 +6,7 @@
 #include <open62541/client.h>
 #include <open62541/client_config_default.h>
 #include <open62541/client_highlevel.h>
+#include <open62541/client_highlevel_async.h>
 #include <open62541/client_subscriptions.h>
 #include <open62541/plugin/certificategroup_default.h>
 #include <ctype.h>
@@ -2149,6 +2150,253 @@ static size_t read_points(tdot_connector_t *self, tdot_device_t *dev,
     return got;
 }
 
+
+/* ---- pipelined polling (contract §5.6) ----------------------------------------
+ * read_points on a worker thread: the same blocks as read_points, with up to
+ * tdot_inflight_current() Reads in flight at once on the device's client,
+ * sent with UA_Client_sendAsyncReadRequest and driven by
+ * UA_Client_run_iterate. The runtime reads one device on one thread at a
+ * time, so nothing else drives this client meanwhile. */
+
+/* How often one block is sent again after being refused as busy. */
+#define UA_BUSY_RETRIES 8
+
+/* BadServerTooBusy (OPC UA 1.05), which this open62541 does not name. */
+#ifndef UA_STATUSCODE_BADSERVERTOOBUSY
+#define UA_STATUSCODE_BADSERVERTOOBUSY ((UA_StatusCode)0x80EE0000)
+#endif
+
+typedef struct {
+    UA_ReadValueId *nodes; /* cleared once the block is handled */
+    size_t *at;            /* the points of its nodes, indexes into pts */
+    size_t nnodes;
+    unsigned tries;
+    bool queued;   /* to be sent (again) */
+    bool sent;     /* sent and not yet handled: counts against the allowance */
+    bool answered; /* set by on_block_read, or by a send that failed */
+    UA_ReadResponse resp;
+} ua_pblock_t;
+
+static void on_block_read(UA_Client *client, void *userdata, UA_UInt32 requestId,
+                          UA_ReadResponse *rr) {
+    (void)client;
+    (void)requestId;
+    ua_pblock_t *b = userdata;
+    UA_ReadResponse_init(&b->resp);
+    if (rr)
+        UA_ReadResponse_copy(rr, &b->resp);
+    else
+        b->resp.responseHeader.serviceResult = UA_STATUSCODE_BADUNEXPECTEDERROR;
+    b->answered = true;
+}
+
+/* A status that means the server is busy, not that the request or the link is
+ * wrong: the endpoint backs off and the block is sent again. Not
+ * BadTooManyOperations: a Read larger than the server accepts stays so. */
+static bool ua_busy(UA_StatusCode rc) {
+    return rc == UA_STATUSCODE_BADSERVERTOOBUSY || rc == UA_STATUSCODE_BADRESOURCEUNAVAILABLE;
+}
+
+/* The endpoint key of a device's OPC UA endpoint URL (contract §5.6): its host
+ * and port, lowercase, so devices on one server share its budget whatever
+ * path or case their URLs use. As endpoint_key in the Rust module. */
+static int endpoint(tdot_connector_t *self, const tdot_device_t *dev, char *buf, size_t len) {
+    (void)self;
+    const ua_device_t *ua = dev->proto;
+    if (!ua || !ua->endpoint[0])
+        return -1;
+    const char *rest = strstr(ua->endpoint, "://");
+    rest = rest ? rest + 3 : ua->endpoint;
+    size_t n = strcspn(rest, "/");
+    if (n + 6 >= len)
+        n = len - 7;
+    size_t i = 0;
+    for (; i < n; i++)
+        buf[i] = (char)tolower((unsigned char)rest[i]);
+    buf[i] = '\0';
+    bool has_port = memchr(buf, ':', i) != NULL && buf[i ? i - 1 : 0] != ']';
+    if (!has_port)
+        snprintf(buf + i, len - i, ":4840");
+    return 0;
+}
+
+static size_t read_wanted(tdot_connector_t *self, tdot_device_t *dev, size_t n) {
+    (void)self;
+    ua_device_t *ua = dev->proto;
+    size_t block = ua && ua->nodes_per_read ? ua->nodes_per_read : UA_NODES_PER_READ;
+    return n ? (n + block - 1) / block : 1;
+}
+
+/* Publish a handled block's answer into its points' samples. Returns the first
+ * of its points whose outcome is -1, or `none`. */
+static size_t block_results(ua_pblock_t *b, UA_StatusCode service, tdot_point_t *const *pts,
+                            tdot_sample_t *out, int *rc, size_t none) {
+    size_t lost = none;
+    for (size_t j = 0; j < b->nnodes; j++) {
+        size_t k = b->at[j];
+        if (service != UA_STATUSCODE_GOOD)
+            rc[k] = read_result(service, NULL, pts[k], &out[k]);
+        else
+            rc[k] = read_result(result_status(&b->resp.results[j]), &b->resp.results[j].value,
+                                pts[k], &out[k]);
+        if (rc[k] == -1 && k < lost)
+            lost = k;
+    }
+    return lost;
+}
+
+static size_t read_points_inflight(tdot_connector_t *self, tdot_device_t *dev,
+                                   tdot_point_t *const *pts, size_t n, tdot_sample_t *out,
+                                   int *rc, tdot_inflight_t *inflight) {
+    ua_device_t *ua = dev->proto;
+    ua_state_t *st = self->state;
+    size_t block = ua->nodes_per_read ? ua->nodes_per_read : UA_NODES_PER_READ;
+    size_t maxblocks = n ? (n + block - 1) / block : 1;
+    ua_pblock_t *blocks = calloc(maxblocks, sizeof *blocks);
+    if (!blocks || !ua->client) {
+        free(blocks);
+        return read_points(self, dev, pts, n, out, rc);
+    }
+    /* Prepare every point; one that cannot be read gets its sample now, and
+     * one that takes the link down ends the call there. */
+    size_t nb = 0, lost = n;
+    for (size_t k = 0; k < n && lost == n; k++) {
+        UA_NodeId node;
+        if (!point_read_node(dev, pts[k], &node, &out[k], &rc[k])) {
+            if (rc[k] == -1)
+                lost = k;
+            continue;
+        }
+        ua_pblock_t *b = nb > 0 && blocks[nb - 1].nnodes < block ? &blocks[nb - 1] : NULL;
+        if (!b) {
+            b = &blocks[nb];
+            b->nodes = calloc(block, sizeof *b->nodes);
+            b->at = calloc(block, sizeof *b->at);
+            if (!b->nodes || !b->at) {
+                free(b->nodes);
+                free(b->at);
+                b->nodes = NULL;
+                b->at = NULL;
+                UA_NodeId_clear(&node);
+                tdot_sample_bad(&out[k], "out of memory");
+                rc[k] = -1;
+                lost = k;
+                break;
+            }
+            b->queued = true;
+            nb++;
+        }
+        UA_ReadValueId_init(&b->nodes[b->nnodes]);
+        b->nodes[b->nnodes].nodeId = node; /* owns it now */
+        b->nodes[b->nnodes].attributeId = UA_ATTRIBUTEID_VALUE;
+        b->at[b->nnodes++] = k;
+    }
+
+    size_t sent = 0; /* blocks sent and not yet handled */
+    double deadline = mono_s() + 2.0 * (st ? st->request_timeout_s : 5) + 1.0;
+    for (;;) {
+        /* Send queued blocks in order, within what the call may have in flight;
+         * nothing past a point that took the link down. */
+        for (size_t i = 0; i < nb && sent < tdot_inflight_current(inflight); i++) {
+            ua_pblock_t *b = &blocks[i];
+            if (!b->queued || b->at[0] > lost)
+                continue;
+            UA_ReadRequest req;
+            UA_ReadRequest_init(&req);
+            req.nodesToRead = b->nodes;
+            req.nodesToReadSize = b->nnodes;
+            req.timestampsToReturn = UA_TIMESTAMPSTORETURN_NEITHER;
+            b->queued = false;
+            b->sent = true;
+            sent++;
+            UA_StatusCode rc_send =
+                UA_Client_sendAsyncReadRequest(ua->client, &req, on_block_read, b, NULL);
+            if (rc_send != UA_STATUSCODE_GOOD) {
+                UA_ReadResponse_init(&b->resp);
+                b->resp.responseHeader.serviceResult = rc_send;
+                b->answered = true;
+            }
+        }
+        /* Handle the answers. */
+        bool more = false;
+        for (size_t i = 0; i < nb; i++) {
+            ua_pblock_t *b = &blocks[i];
+            if (b->answered) {
+                b->answered = false;
+                b->sent = false;
+                sent--;
+                UA_StatusCode service = b->resp.responseHeader.serviceResult;
+                if (service == UA_STATUSCODE_GOOD && b->resp.resultsSize != b->nnodes)
+                    service = UA_STATUSCODE_BADUNEXPECTEDERROR;
+                bool busy = ua_busy(service);
+                bool behind = service == UA_STATUSCODE_BADTIMEOUT && sent > 0;
+                if (b->tries < UA_BUSY_RETRIES && (busy || behind)) {
+                    if (busy)
+                        tdot_inflight_busy(inflight);
+                    else
+                        tdot_inflight_timed_out(inflight, true);
+                    b->tries++;
+                    b->queued = true;
+                    UA_ReadResponse_clear(&b->resp);
+                } else {
+                    if (service == UA_STATUSCODE_GOOD)
+                        tdot_inflight_ok(inflight);
+                    size_t l = block_results(b, service, pts, out, rc, n);
+                    if (l < lost)
+                        lost = l;
+                    UA_ReadResponse_clear(&b->resp);
+                    for (size_t j = 0; j < b->nnodes; j++)
+                        UA_ReadValueId_clear(&b->nodes[j]);
+                    b->nnodes = 0;
+                }
+            }
+            if (b->queued && b->at[0] <= lost)
+                more = true;
+        }
+        if (sent == 0 && !more)
+            break;
+        if (mono_s() > deadline) {
+            /* A last resort: open62541 times requests out itself. A block still
+             * in flight keeps its memory (leaked below), since its answer may
+             * arrive on a later iterate. */
+            fprintf(stderr, "warn  device %s: %zu OPC UA Read(s) unanswered past the deadline\n",
+                    dev->name, sent);
+            break;
+        }
+        /* open62541 runs its event loop for the whole timeout, so a short one
+         * sends the next block as soon as an answer frees its place. */
+        UA_StatusCode it = UA_Client_run_iterate(ua->client, 1);
+        if (it != UA_STATUSCODE_GOOD && read_link_lost(it)) {
+            /* The channel is gone: nothing queued is sent. What is in flight is
+             * answered by open62541 as it cancels it, or by the deadline. */
+            for (size_t i = 0; i < nb; i++)
+                if (blocks[i].queued) {
+                    blocks[i].queued = false;
+                    UA_ReadResponse_init(&blocks[i].resp);
+                    blocks[i].resp.responseHeader.serviceResult = it;
+                    blocks[i].answered = true;
+                    blocks[i].sent = true;
+                    sent++;
+                }
+        }
+    }
+    bool keep = false;
+    for (size_t i = 0; i < nb; i++) {
+        ua_pblock_t *b = &blocks[i];
+        if (b->sent) {
+            keep = true; /* its answer may still arrive: leave it be */
+            continue;
+        }
+        for (size_t j = 0; j < b->nnodes; j++)
+            UA_ReadValueId_clear(&b->nodes[j]);
+        free(b->nodes);
+        free(b->at);
+    }
+    if (!keep)
+        free(blocks);
+    return lost < n ? lost + 1 : n;
+}
+
 static int write_point(tdot_connector_t *self, tdot_device_t *dev,
                        tdot_point_t *pt, const tdot_value_t *value, char *err,
                        size_t errlen) {
@@ -3038,6 +3286,12 @@ tdot_connector_t *tdot_connector_opcua_new(void) {
     c->connect_device = connect_device;
     c->read_point = read_point;
     c->read_points = read_points;
+    /* Each device has its own client (dev->proto); the read path touches
+     * nothing the devices share (contract §5.6). */
+    c->concurrent_reads = true;
+    c->endpoint = endpoint;
+    c->read_wanted = read_wanted;
+    c->read_points_inflight = read_points_inflight;
     c->write_point = write_point;
     c->call_method = call_method;
     c->subscribe_device = subscribe_device;

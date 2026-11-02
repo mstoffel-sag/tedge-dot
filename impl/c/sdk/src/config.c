@@ -30,12 +30,13 @@ static const char *const CONNECTOR_KEYS[] = {
     "protocol",          "service_name",  "poll_interval",      "sampling_interval",
     "log_level",         "operation_timeout", "stall_timeout",  "point_library_path",
     "report",            "output",        "measurement",        "batch",
+    "max_inflight",      "max_inflight_total",
     NULL};
 static const char *const MQTT_KEYS[] = {"host", "port", NULL};
 static const char *const DEVICE_KEYS[] = {
     "name",         "type",        "protocol_address", "poll_interval",
     "sampling_interval", "default_mode", "points_from", "point",
-    "enabled",      "report",      "batch",            NULL};
+    "enabled",      "report",      "batch",            "max_inflight", NULL};
 static const char *const POINT_KEYS[] = {
     "id",      "mode",   "datatype", "endianness",  "word_order",
     "poll_interval", "sampling_interval", "address", "access", "unit", "name",
@@ -834,6 +835,21 @@ static int check_batch_values(toml_table_t *owner, char *err, size_t errlen) {
             return -1;
         }
     }
+    return 0;
+}
+
+/* `key` of `t`, when present, must be a positive integer, stored in `*out`
+ * (0 when absent). As concurrency.rs check_positive. */
+static int positive_int(toml_table_t *t, const char *key, long *out, char *err, size_t errlen) {
+    *out = 0;
+    if (!key_present(t, key))
+        return 0;
+    toml_datum_t d = toml_int_in(t, key);
+    if (!d.ok || d.u.i <= 0) {
+        snprintf(err, errlen, "%s must be a positive integer", key);
+        return -1;
+    }
+    *out = (long)d.u.i;
     return 0;
 }
 
@@ -2072,7 +2088,9 @@ tdot_config_t *tdot_config_load(const char *path, char *err, size_t errlen) {
     /* Measurement output (§5.5), in the Rust loader's order. */
     if (check_one_of(conn, "output", OUTPUTS, why, sizeof why) != 0 ||
         check_measurement_values(conn, why, sizeof why) != 0 ||
-        check_batch_values(conn, why, sizeof why) != 0) {
+        check_batch_values(conn, why, sizeof why) != 0 ||
+        positive_int(conn, "max_inflight", &cfg->max_inflight, why, sizeof why) != 0 ||
+        positive_int(conn, "max_inflight_total", &cfg->max_inflight_total, why, sizeof why) != 0) {
         snprintf(err, errlen, "%s: [connector] %s", path, why);
         goto fail;
     }
@@ -2226,7 +2244,8 @@ tdot_config_t *tdot_config_load(const char *path, char *err, size_t errlen) {
             check_duration(dt, "poll_interval", why, sizeof why) != 0 ||
             check_duration(dt, "sampling_interval", why, sizeof why) != 0 ||
             check_report_values(dt, why, sizeof why) != 0 ||
-            check_batch_values(dt, why, sizeof why) != 0) {
+            check_batch_values(dt, why, sizeof why) != 0 ||
+            positive_int(dt, "max_inflight", &dev->max_inflight, why, sizeof why) != 0) {
             snprintf(err, errlen, "%s: device '%s': %s", path, dev->name, why);
             goto fail;
         }

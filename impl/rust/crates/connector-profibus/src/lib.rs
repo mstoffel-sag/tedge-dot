@@ -184,6 +184,12 @@ impl Connector for ProfibusConnector {
         Ok(())
     }
 
+    fn endpoint(&self, device: &DeviceId) -> Option<(String, Option<usize>)> {
+        // Every peripheral is on the connector's one bus (contract §5.6).
+        let _ = self.devices.get(device)?;
+        Some((self.connection.port.clone(), Some(1)))
+    }
+
     fn capabilities(&self) -> Capabilities {
         Capabilities {
             protocol: PROTOCOL,

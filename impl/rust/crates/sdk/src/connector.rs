@@ -268,6 +268,30 @@ pub enum ConnectorError {
     Other(String),
 }
 
+/// Reads one device's points on behalf of the runtime, from a task of its own, so devices are
+/// read concurrently (contract §5.6). Handed out by [`Connector::reader`]; it owns what a read
+/// needs (an OPC UA session behind an `Arc`, for example), never the module itself.
+#[allow(clippy::double_must_use)]
+#[async_trait]
+pub trait DeviceReader: Send + Sync {
+    /// How many requests a read of `points` could have in flight at once: 1 for a protocol that
+    /// cannot pipeline (the default), else its number of blocks. The runtime grants at most this
+    /// many, within the endpoint's budget.
+    fn wanted(&self, points: &[PointRef]) -> usize {
+        let _ = points;
+        1
+    }
+
+    /// As [`Connector::read_points`], with at most [`InFlight::current`] requests in flight at
+    /// once. Report each request's outcome to `inflight` so a busy endpoint backs off; a request
+    /// refused as busy is sent again within the call once the budget allows.
+    async fn read_points(
+        &self,
+        points: &[PointRef],
+        inflight: &crate::concurrency::InFlight,
+    ) -> Result<Vec<Sample>, ConnectorError>;
+}
+
 /// A protocol module. One instance manages the connection(s) for one configured connector.
 ///
 /// Only `Send` is required (not `Sync`): the SDK runtime drives a connector from a single task,
@@ -307,6 +331,25 @@ pub trait Connector: Send {
         device: &DeviceId,
         points: &[PointRef],
     ) -> Result<Vec<Sample>, ConnectorError>;
+
+    /// OPTIONAL: the endpoint `device` talks to (contract §5.6) and the most requests it may
+    /// have in flight whatever the configuration says: the host and port of a network device
+    /// (`None`), a serial port or a CAN interface (`Some(1)`). Devices on one endpoint share its
+    /// budget. The default makes each device its own endpoint. Called after
+    /// [`Connector::configure`]; must be cheap and pure.
+    fn endpoint(&self, device: &DeviceId) -> Option<(String, Option<usize>)> {
+        let _ = device;
+        None
+    }
+
+    /// OPTIONAL: a reader for `device` that the runtime runs in a task of its own, so devices
+    /// are read concurrently (contract §5.6). Asked before every read, so a reader made after a
+    /// reconnect uses the new connection. `None` (the default, and while the device is not
+    /// connected) reads it through [`Connector::read_points`], one call at a time.
+    fn reader(&self, device: &DeviceId) -> Option<std::sync::Arc<dyn DeviceReader>> {
+        let _ = device;
+        None
+    }
 
     /// OPTIONAL: whether the module delivers `point` of `device` by push, for a module that
     /// advertises `subscribe`. Asked before [`Connector::subscribe`]: only the points it answers

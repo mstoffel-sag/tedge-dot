@@ -4,7 +4,10 @@
 //! in the way. Built only with the `bench` feature, which no release enables.
 //!
 //! - Polled: `read_points` returns one good sample per point, after `latency` per block of
-//!   `batch` points.
+//!   `batch` points. Read through a [`tedge_dot_sdk::DeviceReader`] (contract §5.6), blocks
+//!   within the call's allowance wait their latency at the same time, as pipelined requests do,
+//!   and an `endpoint` shared by several devices serves at most `server_inflight` blocks at once,
+//!   refusing the others as busy.
 //! - Pushed: on a device with `push_rate` above 0, every point not set `subscribe = false` is
 //!   pushed. A generator task delivers `push_rate` samples per second, picking the point from a
 //!   per-device stream, with optional source-time jitter and grouped delivery.
@@ -15,13 +18,15 @@ pub mod stream;
 use async_trait::async_trait;
 use config::{DeviceSpec, PointSpec};
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use stream::{PointStream, Rng};
 use tedge_dot_sdk::{
     Capabilities, ConfigError, Connector, ConnectorConfig, ConnectorError, DataType, DeviceId,
-    LinkReport, LinkStatus, Mode, PointRef, Quality, Sample, SampleSink, Value,
+    DeviceReader, LinkReport, LinkStatus, Mode, PointRef, Quality, Sample, SampleSink, Value,
 };
+use tedge_dot_sdk::concurrency::InFlight;
 use time::OffsetDateTime;
 
 const PROTOCOL: &str = "bench";
@@ -78,9 +83,35 @@ struct Device {
     index: HashMap<String, usize>,
 }
 
+/// A simulated endpoint: how many blocks it is serving now, and how many it serves at once.
+struct Server {
+    serving: AtomicUsize,
+    limit: usize,
+}
+
+impl Server {
+    /// Start serving a block, or `false` when the endpoint is full (busy).
+    fn enter(&self) -> bool {
+        let mut n = self.serving.load(Ordering::Acquire);
+        while n < self.limit {
+            match self.serving.compare_exchange_weak(n, n + 1, Ordering::AcqRel, Ordering::Acquire) {
+                Ok(_) => return true,
+                Err(now) => n = now,
+            }
+        }
+        false
+    }
+
+    fn leave(&self) {
+        self.serving.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
 #[derive(Default)]
 pub struct BenchConnector {
     devices: HashMap<DeviceId, Arc<Mutex<Device>>>,
+    /// Each device's endpoint name and its simulated server.
+    endpoints: HashMap<DeviceId, (String, Arc<Server>)>,
     push: HashMap<DeviceId, tokio::task::JoinHandle<()>>,
     no_push: bool,
 }
@@ -127,6 +158,27 @@ impl Connector for BenchConnector {
             }
             devices.insert(d.name.clone(), Arc::new(Mutex::new(Device { spec, points, index })));
         }
+        // Devices naming the same endpoint share one server; it serves the smallest
+        // `server_inflight` among them.
+        let mut servers: HashMap<String, usize> = HashMap::new();
+        for (name, dev) in &devices {
+            let d = dev.lock().unwrap();
+            let endpoint = d.spec.endpoint.clone().unwrap_or_else(|| name.clone());
+            let limit = servers.entry(endpoint).or_insert(usize::MAX);
+            *limit = (*limit).min(d.spec.server_inflight);
+        }
+        let servers: HashMap<String, Arc<Server>> = servers
+            .into_iter()
+            .map(|(name, limit)| (name, Arc::new(Server { serving: AtomicUsize::new(0), limit })))
+            .collect();
+        self.endpoints = devices
+            .iter()
+            .map(|(name, dev)| {
+                let endpoint = dev.lock().unwrap().spec.endpoint.clone().unwrap_or_else(|| name.clone());
+                let server = servers[&endpoint].clone();
+                (name.clone(), (endpoint, server))
+            })
+            .collect();
         self.devices = devices;
         Ok(())
     }
@@ -191,6 +243,16 @@ impl Connector for BenchConnector {
         Ok(out)
     }
 
+    fn endpoint(&self, device: &DeviceId) -> Option<(String, Option<usize>)> {
+        self.endpoints.get(device).map(|(name, _)| (name.clone(), None))
+    }
+
+    fn reader(&self, device: &DeviceId) -> Option<Arc<dyn DeviceReader>> {
+        let dev = self.devices.get(device)?.clone();
+        let (_, server) = self.endpoints.get(device)?;
+        Some(Arc::new(BenchReader { device: device.clone(), dev, server: server.clone() }))
+    }
+
     fn pushes_point(&self, device: &DeviceId, _point: &PointRef) -> bool {
         !self.no_push
             && self
@@ -239,6 +301,65 @@ impl Connector for BenchConnector {
             task.abort();
         }
         Ok(())
+    }
+}
+
+/// Reads one bench device from a task of its own (contract §5.6).
+struct BenchReader {
+    device: DeviceId,
+    dev: Arc<Mutex<Device>>,
+    server: Arc<Server>,
+}
+
+#[async_trait]
+impl DeviceReader for BenchReader {
+    fn wanted(&self, points: &[PointRef]) -> usize {
+        points.len().div_ceil(self.dev.lock().unwrap().spec.batch.max(1)).max(1)
+    }
+
+    async fn read_points(&self, points: &[PointRef], inflight: &InFlight) -> Result<Vec<Sample>, ConnectorError> {
+        let latency = self.dev.lock().unwrap().spec.latency;
+        let mut pending = self.wanted(points);
+        let mut running = tokio::task::JoinSet::new();
+        // Blocks in flight wait their latency at the same time; a block the endpoint refuses as
+        // busy is answered after its latency too, and sent again.
+        while pending > 0 || !running.is_empty() {
+            while pending > 0 && running.len() < inflight.current() {
+                pending -= 1;
+                let server = self.server.clone();
+                running.spawn(async move {
+                    let served = server.enter();
+                    if !latency.is_zero() {
+                        tokio::time::sleep(latency).await;
+                    }
+                    if served {
+                        server.leave();
+                    }
+                    served
+                });
+            }
+            match running.join_next().await {
+                Some(Ok(true)) => inflight.ok(),
+                Some(Ok(false)) => {
+                    inflight.busy();
+                    pending += 1;
+                }
+                Some(Err(e)) => return Err(ConnectorError::Other(format!("bench block failed: {e}"))),
+                None => {}
+            }
+        }
+        let ts = OffsetDateTime::now_utc();
+        let mut d = self.dev.lock().unwrap();
+        let mut out = Vec::with_capacity(points.len());
+        for p in points {
+            let Some(&i) = d.index.get(&p.id) else {
+                return Err(ConnectorError::UnknownPoint { device: self.device.clone(), point: p.id.clone() });
+            };
+            let pt = &mut d.points[i];
+            pt.stream.advance();
+            out.push(pt.sample(&self.device, ts));
+        }
+        Ok(out)
     }
 }
 
@@ -362,6 +483,51 @@ mod tests {
         let t = std::time::Instant::now();
         c.read_points(&"plc0".into(), &refs(2000)).await.unwrap();
         assert!(t.elapsed() >= Duration::from_millis(8), "{:?}", t.elapsed());
+    }
+
+    #[tokio::test]
+    async fn pipelined_blocks_overlap() {
+        let c = connector("latency = \"20ms\", batch = 500", 2000);
+        let cfg = config(&format!(
+            "[connector]\nprotocol = \"bench\"\n[[device]]\nname = \"plc0\"\nprotocol_address = {{}}\n{}",
+            points(1)
+        ));
+        let budgets = tedge_dot_sdk::concurrency::Budgets::new(&cfg, |d| c.endpoint(&d.to_string()));
+        let reader = c.reader(&"plc0".into()).unwrap();
+        assert_eq!(reader.wanted(&refs(2000)), 4);
+        let inflight = budgets.acquire(0, 4).await;
+        assert_eq!(inflight.allowance(), 4);
+        let t = std::time::Instant::now();
+        let s = reader.read_points(&refs(2000), &inflight).await.unwrap();
+        let took = t.elapsed();
+        assert_eq!(s.len(), 2000);
+        assert!(took >= Duration::from_millis(20) && took < Duration::from_millis(40), "{took:?}");
+    }
+
+    #[tokio::test]
+    async fn a_busy_endpoint_refuses_and_backs_off() {
+        let cfg = config(&format!(
+            "[connector]\nprotocol = \"bench\"\n\
+             [[device]]\nname = \"a\"\nprotocol_address = {{ latency = \"5ms\", batch = 10, endpoint = \"plc\", server_inflight = 2 }}\n{}\
+             [[device]]\nname = \"b\"\nprotocol_address = {{ latency = \"5ms\", batch = 10, endpoint = \"plc\" }}\n{}",
+            points(40),
+            points(40)
+        ));
+        let mut c = BenchConnector::default();
+        c.configure(&cfg).unwrap();
+        assert_eq!(c.endpoint(&"b".into()), Some(("plc".to_string(), None)));
+        let budgets = tedge_dot_sdk::concurrency::Budgets::new(&cfg, |d| c.endpoint(&d.to_string()));
+        assert_eq!(budgets.endpoint(0).configured(), 4);
+        let (ra, rb) = (c.reader(&"a".into()).unwrap(), c.reader(&"b".into()).unwrap());
+        // Each asks for two of the endpoint's four requests (a read takes one, then what is free).
+        let (ia, ib) = (budgets.acquire(0, 2).await, budgets.acquire(1, 2).await);
+        assert_eq!((ia.allowance(), ib.allowance()), (2, 2));
+        // Four blocks in flight against a server that serves two: some are refused, sent again,
+        // and every point is still read.
+        let pts = refs(40);
+        let (sa, sb) = tokio::join!(ra.read_points(&pts, &ia), rb.read_points(&pts, &ib));
+        assert_eq!(sa.unwrap().len() + sb.unwrap().len(), 80);
+        assert!(budgets.endpoint(0).effective() < 4, "backed off: {}", budgets.endpoint(0).effective());
     }
 
     #[tokio::test]

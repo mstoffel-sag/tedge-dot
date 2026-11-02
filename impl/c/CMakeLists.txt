@@ -51,6 +51,7 @@ add_library(tedge_dot_sdk STATIC
   sdk/src/report.c
   sdk/src/map.c
   sdk/src/measure.c
+  sdk/src/concurrency.c
   sdk/src/runtime.c
   sdk/src/schedule.c
   sdk/src/watch.c
@@ -331,6 +332,14 @@ target_link_libraries(tedge-dot-report PRIVATE tedge_dot_sdk)
 add_test(NAME report-vectors
          COMMAND tedge-dot-report
                  ${CMAKE_CURRENT_SOURCE_DIR}/../../doc/contract/test-vectors/report/vectors.json)
+
+# Concurrent reads (contract §5.6): the budgets, as concurrency.rs's tests.
+add_executable(tedge-dot-concurrency tests/concurrency.c)
+target_link_libraries(tedge-dot-concurrency PRIVATE tedge_dot_sdk)
+add_test(NAME concurrency COMMAND tedge-dot-concurrency)
+add_executable(tedge-dot-concurrent-reads tests/concurrent_reads.c)
+target_link_libraries(tedge-dot-concurrent-reads PRIVATE tedge_dot_sdk)
+add_test(NAME concurrent-reads COMMAND tedge-dot-concurrent-reads)
 
 # Measurement output (contract §5.5): the shared vectors the Rust SDK's measure.rs runs too.
 add_executable(tedge-dot-measure tests/measure.c)

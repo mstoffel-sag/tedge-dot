@@ -61,6 +61,9 @@ pages:
   - source: doc/mapping-values.md
     slug: reference/configuration/mapping-values
     section: Configuration
+  - source: doc/concurrent-reads.md
+    slug: reference/configuration/concurrent-reads
+    section: Configuration
   - source: demo/points.d/README.md
     slug: reference/configuration/point-libraries
     section: Configuration

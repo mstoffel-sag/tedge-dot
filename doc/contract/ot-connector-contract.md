@@ -3,7 +3,7 @@
 | Field | Value |
 | --- | --- |
 | Status | **Normative draft** |
-| Version | 0.3.0 |
+| Version | 0.4.0 |
 | Date | 2026-10-29 |
 | Schemas | [schemas/](schemas/) · [asyncapi.yaml](asyncapi.yaml) |
 
@@ -100,6 +100,8 @@ report        = { max_interval = "30m" }  # optional: default reporting policy f
 output        = "samples"       # optional: "samples" (default) or "measurements" (§5.5)
 measurement   = { point_separator = "." }  # optional: measurement naming in measurement output (§5.5)
 batch         = { group_by = "time" }      # optional: default grouping policy in measurement output (§5.5)
+max_inflight  = 4               # optional: requests in flight to one endpoint (§5.6)
+max_inflight_total = 32         # optional: requests in flight across all endpoints (§5.6)
 
 [mqtt]
 host = "127.0.0.1"
@@ -120,6 +122,7 @@ points_from   = []              # optional; point libraries to inherit points fr
 enabled       = true            # optional; false keeps the definition but leaves the device out (§3.3)
 report        = { on_change = true }  # optional: default reporting policy for this device's points (§5.3)
 batch         = { group_by = "frame", window = "500ms" }  # optional: this device's grouping policy (§5.5)
+max_inflight  = 2               # optional: requests in flight to this device's endpoint (§5.6)
 
   [[device.point]]
   id       = "<point-id>"       # unique within the device; appears in topics
@@ -977,6 +980,45 @@ The runtime lists each device's effective output and grouping policy in the capa
 descriptor (`outputs`, §7). Test vectors both SDKs run are in
 [test-vectors/measurements/](test-vectors/measurements/).
 
+### 5.6 Concurrent reads
+
+A connector reads its devices concurrently when its module allows it, and may send several
+requests to one device at once when the protocol allows it (OPC UA Reads). Throughput then
+follows the devices' round-trip times, not the sum of them. Writes, commands and method calls
+are not concurrent.
+
+**One read per device.** A device never has more than one read in flight. Its writes,
+commands and reconnects wait for its read in flight. The report policy (§5.3), measurement
+output (§5.5), the link status and publishing are applied in the order each device's results
+arrive. The results of one read call keep the order of the points requested, and the call's
+read time is stamped when it completes (§5.4).
+
+**Endpoints and budgets.** Every device has an **endpoint**, named by its module: the host and
+port it talks to (OPC UA, Modbus TCP, SNMP), the serial port (Modbus RTU), the CAN interface
+(CAN, CANopen) or the bus (PROFIBUS). Without one, the device is its own endpoint.
+
+| Key | Where | Type | Default | Meaning |
+| --- | --- | --- | --- | --- |
+| `max_inflight` | `[connector]`, `[[device]]` | positive integer | 4 | Requests in flight to one endpoint, counting every device on it and every pipelined request. Devices sharing an endpoint use the smallest value among them. |
+| `max_inflight_total` | `[connector]` | positive integer | 32 | Requests in flight across all endpoints. |
+
+A module caps an endpoint whatever the configuration says: a serial bus and a CAN interface
+carry 1. A read takes one request of its endpoint's budget, waiting if none is free, then as
+many more as are free, up to what it can use; every device on an endpoint therefore makes
+progress. `max_inflight = 1` sends one request at a time to each endpoint, while devices on
+different endpoints are still read in parallel.
+
+**Backoff.** An endpoint's budget in effect halves, to at least 1, when a request is answered
+with OPC UA `BadServerTooBusy` or `BadResourceUnavailable`, or times out while another request
+to the endpoint is in flight. After 20 successful requests at a reduced budget it grows by one,
+up to the configured budget. Each change is logged at `info`. A request refused as busy is
+sent again within the same call, at most 8 times and within `operation_timeout`; only then do
+its points fail. `BadTooManyOperations` is not a busy answer: a server returns it for a Read
+larger than it accepts. A timeout with no other request in flight is a link failure, as before.
+
+The capability descriptor lists each endpoint with its devices and its budget (`endpoints`,
+§7).
+
 ## 6. Command protocol
 
 Commands let external actors (cloud operations, other flows, operators) act on a connector —
@@ -1317,11 +1359,12 @@ same fields with its own values (and typically `"subscribe": true`):
 | `methods` | Every configured `"call_method"` point (§3.1), labelled or not, with its `name` / `description` when it declares them and its `address` exactly as configured: which methods a device has, what their arguments are (in the address, as the connector spec defines it) and which node each one calls. Methods never sample, so nothing else announces them. Absent when no point is a method. Like `point_labels`, this describes the configuration. |
 | `reports` | The reporting policies (§5.3): `default` is `[connector] report`, `devices` lists each device declaring a `report`, and `points` lists the **effective** (merged) policy of each point whose policy differs from its device's. A point's policy is its `points` entry if it has one, otherwise its device's entry merged over `default`. Absent when no `report` is configured. Like `point_labels`, this describes the configuration. |
 | `outputs` | Measurement output (§5.5): one entry per device, `{ device, output, batch }`, with the `output` (`"samples"` or `"measurements"`) and the device's merged `batch` table, `group_by` filled in. A point's own `batch` is in the configuration only. Absent for a connector in samples output that sets no `batch`. Like `point_labels`, this describes the configuration. |
+| `endpoints` | Concurrent reads (§5.6): one entry per endpoint, `{ endpoint, devices, max_inflight }`, with the devices on it and its budget of requests in flight after the module's cap. The budget in effect after a backoff is logged, not listed here. Like `point_labels`, this describes the configuration. |
 
 Tooling and the conformance suite use the descriptor to decide which tests apply.
 
 The descriptor is retained, so it MUST be republished whenever something it reports changes.
-Everything except `point_labels`, `parameter_keys`, `methods`, `reports` and `outputs` is a property of the connector build and so
+Everything except `point_labels`, `parameter_keys`, `methods`, `reports`, `outputs` and `endpoints` is a property of the connector build and so
 is published once at startup; those five follow the configuration, and a connector MUST therefore republish
 the descriptor after a management command (§6.3) changes it — a retained message describing the
 configuration as it was at startup is worse than none. Note also that labelling every point of

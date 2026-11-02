@@ -85,6 +85,13 @@ pub struct ConnectorSection {
     /// Default grouping policy for every point in measurement output (§5.5), as written.
     #[serde(default)]
     pub batch: Option<serde_json::Value>,
+    /// Requests in flight to one endpoint (§5.6), unless a device sets its own; see
+    /// [`crate::concurrency`].
+    #[serde(default)]
+    pub max_inflight: Option<i64>,
+    /// Requests in flight across all endpoints (§5.6).
+    #[serde(default)]
+    pub max_inflight_total: Option<i64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -142,6 +149,10 @@ pub struct DeviceConfig {
     /// Default grouping policy for this device's points in measurement output (§5.5).
     #[serde(default)]
     pub batch: Option<serde_json::Value>,
+    /// Requests in flight to this device's endpoint (§5.6); devices sharing an endpoint use the
+    /// smallest value among them.
+    #[serde(default)]
+    pub max_inflight: Option<i64>,
 }
 
 // The opaque protocol tables may hold credentials (an SNMP USM password, an OPC UA user

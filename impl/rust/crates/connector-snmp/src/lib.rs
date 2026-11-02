@@ -32,9 +32,14 @@ use snmp2::Value as SnmpValue;
 use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::{Arc, Mutex};
+use tedge_dot_sdk::concurrency::InFlight;
+
+/// A device's request session, shared with its reader (contract §5.6). `snmp2` answers into the
+/// session's own buffer, so the lock keeps one request at a time on it.
+type SharedSession = Arc<tokio::sync::Mutex<Session>>;
 use tedge_dot_sdk::{
     Access, Capabilities, CommandRequest, CommandResult, ConfigError, Connector, ConnectorConfig,
-    ConnectorError, DataType, DeviceId, LinkReport, LinkStatus, Mode, PointRef, Quality, Sample,
+    ConnectorError, DataType, DeviceId, DeviceReader, LinkReport, LinkStatus, Mode, PointRef, Quality, Sample,
     SampleSink, Value,
 };
 use time::OffsetDateTime;
@@ -53,9 +58,9 @@ pub struct SnmpConnector {
     /// Where each device was resolved to, once connected.
     resolved: HashMap<usize, SocketAddr>,
     /// Request sessions, created on first use and dropped on reconnect.
-    sessions: HashMap<usize, Session>,
+    sessions: HashMap<usize, SharedSession>,
     /// A second session for SET when the write community differs from the read community.
-    write_sessions: HashMap<usize, Session>,
+    write_sessions: HashMap<usize, SharedSession>,
     routes: Arc<Mutex<Routes>>,
     listener: Option<JoinHandle<()>>,
     /// Set by [`Connector::disable_push`]: a CLI read or write never binds the listen port.
@@ -63,6 +68,102 @@ pub struct SnmpConnector {
     /// This receiver's SNMP engine, authoritative for v3 informs. Kept across reconnects: its
     /// boots and time are what senders synchronise to.
     engine: Option<LocalEngine>,
+}
+
+/// What a poll read does after its requests, on either read path: pin the agent's engine for
+/// traps once a request authenticated with it, and return the samples in the order asked for.
+fn after_read(
+    routes: &Arc<Mutex<Routes>>,
+    index: usize,
+    model: &Device,
+    session: &Session,
+    samples: Vec<Sample>,
+    points: &[PointRef],
+) -> Vec<Sample> {
+    // §3.2: a v3 trap is only accepted from the device's engine once that engine is known --
+    // configured, learned from a successful request, or from the first authenticated trap.
+    // The request case was discovered but never used, so a device with no `engine_id` in its
+    // config accepted whatever engine a trap claimed even after a poll had established the
+    // real one.
+    //
+    // Only pin it once a request has actually AUTHENTICATED with it. `Session::discover`
+    // learns the engine ID from the RFC 3414 §4 probe, which carries no HMAC -- anything
+    // answering at the device's address can choose it. Pinning that would hand an attacker
+    // the same permanent trap rejection through the poll path that TEDGE-DOT-PATCH(8)
+    // closes on the listener path: every genuine trap would then fail `EngineIdMismatch`
+    // until the connector restarts.
+    //
+    // A good sample is that proof only from authNoPriv up, where the response carried an
+    // HMAC over keys localized to this engine. At `level = "noAuthNoPriv"` nothing is
+    // verified at all (`Security::need_auth` is false), so a good sample says only that
+    // something answered -- exactly the case this guard exists to exclude.
+    let authenticated = model
+        .v3
+        .as_ref()
+        .is_some_and(|v3| v3.level >= SecurityLevel::AuthNoPriv);
+    let verified = authenticated && samples.iter().any(|s| s.quality != Quality::Bad);
+    let discovered = verified.then(|| session.engine_id().map(<[u8]>::to_vec)).flatten();
+    if let Some(engine_id) = discovered {
+        let mut routes = listener::lock(routes);
+        if let Some(v3) = routes.devices.get_mut(index).and_then(|r| r.v3.as_mut()) {
+            // Re-pin when it CHANGES, not only when it is empty: an agent that reboots with
+            // a new engine ID (one derived from a MAC or a boot identity, so a redeployed
+            // container has a different one) would otherwise keep the old pin for the life
+            // of the process -- every trap failing `EngineIdMismatch` behind a link the
+            // runtime reports as connected, with no reconnect able to repair it, since
+            // `reconnect` re-attaches without rebuilding this state. An authenticated poll
+            // is as good a source for the new engine as it was for the first.
+            if v3.trap.engine_id() != engine_id.as_slice() {
+                match v3.trap.clone().with_engine_id(&engine_id) {
+                    Ok(mut localized) => {
+                        // The boots and time belong to the OLD engine. A rebooted agent
+                        // starts again from boots 1, which is BELOW what we learned from
+                        // its predecessor, so the replay check would refuse every trap it
+                        // sends -- swapping one permanent rejection for another. The
+                        // learning branch in `authenticate_non_authoritative` zeroes them
+                        // for exactly this reason; a re-pin is the same event.
+                        localized.reset_engine_counters();
+                        v3.trap = localized;
+                    }
+                    Err(e) => debug!(
+                        device = %model.name,
+                        "cannot localize the trap keys to the discovered engine: {e}"
+                    ),
+                }
+            }
+        }
+    }
+    let mut by_id: HashMap<String, Sample> =
+        samples.into_iter().map(|s| (s.point.clone(), s)).collect();
+    points.iter().filter_map(|r| by_id.remove(&r.id)).collect()
+}
+
+/// Reads one SNMP agent from a task of its own (contract §5.6). One session carries one request
+/// at a time, so reads of one agent never pipeline: agents are read concurrently.
+struct SnmpReader {
+    index: usize,
+    model: Device,
+    session: SharedSession,
+    routes: Arc<Mutex<Routes>>,
+}
+
+#[async_trait]
+impl DeviceReader for SnmpReader {
+    async fn read_points(&self, points: &[PointRef], _inflight: &InFlight) -> Result<Vec<Sample>, ConnectorError> {
+        let wanted: Vec<Point> = points
+            .iter()
+            .filter_map(|r| self.model.points.iter().find(|p| p.id == r.id))
+            .filter(|p| p.object_oid().is_some() && p.access != Access::Write)
+            .cloned()
+            .collect();
+        if wanted.is_empty() {
+            return Ok(Vec::new());
+        }
+        let ts = OffsetDateTime::now_utc();
+        let mut session = self.session.lock().await;
+        let samples = read_objects(&mut session, &self.model, &wanted, ts).await;
+        Ok(after_read(&self.routes, self.index, &self.model, &session, samples, points))
+    }
 }
 
 pub fn factory() -> Box<dyn Connector> {
@@ -202,6 +303,22 @@ impl Connector for SnmpConnector {
         Ok(reports)
     }
 
+    fn endpoint(&self, device: &DeviceId) -> Option<(String, Option<usize>)> {
+        let d = self.devices.iter().find(|d| &d.name == device)?;
+        Some((format!("{}:{}", d.host.to_ascii_lowercase(), d.port), None))
+    }
+
+    /// A reader once the device's session is open: the first read opens it on this path.
+    fn reader(&self, device: &DeviceId) -> Option<Arc<dyn DeviceReader>> {
+        let index = self.devices.iter().position(|d| &d.name == device)?;
+        Some(Arc::new(SnmpReader {
+            index,
+            model: self.devices[index].clone(),
+            session: self.sessions.get(&index)?.clone(),
+            routes: self.routes.clone(),
+        }))
+    }
+
     async fn read_points(
         &mut self,
         device: &DeviceId,
@@ -221,64 +338,10 @@ impl Connector for SnmpConnector {
             return Ok(Vec::new());
         }
         let ts = OffsetDateTime::now_utc();
-        let session = self.session(index).await?;
-        let samples = read_objects(session, &model, &wanted, ts).await;
-        // §3.2: a v3 trap is only accepted from the device's engine once that engine is known --
-        // configured, learned from a successful request, or from the first authenticated trap.
-        // The request case was discovered but never used, so a device with no `engine_id` in its
-        // config accepted whatever engine a trap claimed even after a poll had established the
-        // real one.
-        //
-        // Only pin it once a request has actually AUTHENTICATED with it. `Session::discover`
-        // learns the engine ID from the RFC 3414 §4 probe, which carries no HMAC -- anything
-        // answering at the device's address can choose it. Pinning that would hand an attacker
-        // the same permanent trap rejection through the poll path that TEDGE-DOT-PATCH(8)
-        // closes on the listener path: every genuine trap would then fail `EngineIdMismatch`
-        // until the connector restarts.
-        //
-        // A good sample is that proof only from authNoPriv up, where the response carried an
-        // HMAC over keys localized to this engine. At `level = "noAuthNoPriv"` nothing is
-        // verified at all (`Security::need_auth` is false), so a good sample says only that
-        // something answered -- exactly the case this guard exists to exclude.
-        let authenticated = model
-            .v3
-            .as_ref()
-            .is_some_and(|v3| v3.level >= SecurityLevel::AuthNoPriv);
-        let verified = authenticated && samples.iter().any(|s| s.quality != Quality::Bad);
-        let discovered = verified.then(|| session.engine_id().map(<[u8]>::to_vec)).flatten();
-        if let Some(engine_id) = discovered {
-            let mut routes = listener::lock(&self.routes);
-            if let Some(v3) = routes.devices.get_mut(index).and_then(|r| r.v3.as_mut()) {
-                // Re-pin when it CHANGES, not only when it is empty: an agent that reboots with
-                // a new engine ID (one derived from a MAC or a boot identity, so a redeployed
-                // container has a different one) would otherwise keep the old pin for the life
-                // of the process -- every trap failing `EngineIdMismatch` behind a link the
-                // runtime reports as connected, with no reconnect able to repair it, since
-                // `reconnect` re-attaches without rebuilding this state. An authenticated poll
-                // is as good a source for the new engine as it was for the first.
-                if v3.trap.engine_id() != engine_id.as_slice() {
-                    match v3.trap.clone().with_engine_id(&engine_id) {
-                        Ok(mut localized) => {
-                            // The boots and time belong to the OLD engine. A rebooted agent
-                            // starts again from boots 1, which is BELOW what we learned from
-                            // its predecessor, so the replay check would refuse every trap it
-                            // sends -- swapping one permanent rejection for another. The
-                            // learning branch in `authenticate_non_authoritative` zeroes them
-                            // for exactly this reason; a re-pin is the same event.
-                            localized.reset_engine_counters();
-                            v3.trap = localized;
-                        }
-                        Err(e) => debug!(
-                            device = %model.name,
-                            "cannot localize the trap keys to the discovered engine: {e}"
-                        ),
-                    }
-                }
-            }
-        }
-        let mut by_id: HashMap<String, Sample> =
-            samples.into_iter().map(|s| (s.point.clone(), s)).collect();
-        Ok(points.iter().filter_map(|r| by_id.remove(&r.id)).collect())
+        let shared = self.session(index).await?;
+        let mut session = shared.lock().await;
+        let samples = read_objects(&mut session, &model, &wanted, ts).await;
+        Ok(after_read(&self.routes, index, &model, &session, samples, points))
     }
 
     async fn subscribe(
@@ -387,7 +450,8 @@ impl Connector for SnmpConnector {
         let encoded = encode_write(snmp_type, point.datatype, request).map_err(ConnectorError::Decode)?;
         let name = oid.to_library();
 
-        let session = self.write_session(index).await?;
+        let shared = self.write_session(index).await?;
+        let mut session = shared.lock().await;
         let reply = session
             .set(&[(&name, encoded.value(snmp_type))])
             .await
@@ -515,7 +579,7 @@ impl SnmpConnector {
     }
 
     /// The request session of a device, opened on first use.
-    async fn session(&mut self, index: usize) -> Result<&mut Session, ConnectorError> {
+    async fn session(&mut self, index: usize) -> Result<SharedSession, ConnectorError> {
         let address = self.address(index)?;
         if !self.sessions.contains_key(&index) {
             let session = {
@@ -524,13 +588,13 @@ impl SnmpConnector {
                     .await
                     .map_err(ConnectorError::Transport)?
             };
-            self.sessions.insert(index, session);
+            self.sessions.insert(index, Arc::new(tokio::sync::Mutex::new(session)));
         }
-        Ok(self.sessions.get_mut(&index).expect("just inserted"))
+        Ok(self.sessions[&index].clone())
     }
 
     /// The session a SET goes through: the read session, unless a write community is configured.
-    async fn write_session(&mut self, index: usize) -> Result<&mut Session, ConnectorError> {
+    async fn write_session(&mut self, index: usize) -> Result<SharedSession, ConnectorError> {
         let separate = {
             let device = &self.devices[index];
             device.version != SnmpVersion::V3 && device.write_community != device.community
@@ -546,9 +610,9 @@ impl SnmpConnector {
                     .await
                     .map_err(ConnectorError::Transport)?
             };
-            self.write_sessions.insert(index, session);
+            self.write_sessions.insert(index, Arc::new(tokio::sync::Mutex::new(session)));
         }
-        Ok(self.write_sessions.get_mut(&index).expect("just inserted"))
+        Ok(self.write_sessions[&index].clone())
     }
 
     fn address(&self, index: usize) -> Result<SocketAddr, ConnectorError> {

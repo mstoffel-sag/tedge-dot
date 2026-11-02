@@ -48,4 +48,5 @@ async-opcua = { version = "0.18", default-features = false, features = ["server"
 
 [dev-dependencies]
 rumqttc = { version = "0.24", default-features = false }
+time = "0.3"
 tokio-modbus = { version = "0.16", default-features = false, features = ["tcp"] }

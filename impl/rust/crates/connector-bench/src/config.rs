@@ -16,6 +16,8 @@ const DEVICE_KEYS: &[&str] = &[
     "ts_jitter",
     "ts_resolution",
     "publish_interval",
+    "endpoint",
+    "server_inflight",
 ];
 const POINT_KEYS: &[&str] = &["model", "step", "change"];
 
@@ -31,6 +33,11 @@ pub struct DeviceSpec {
     pub ts_resolution: Duration,
     /// 0 delivers continuously.
     pub publish_interval: Duration,
+    /// The endpoint the device shares with others (contract §5.6); its own name when unset.
+    pub endpoint: Option<String>,
+    /// The most blocks the endpoint serves at once, counting every device on it; a block beyond
+    /// is refused as busy. `usize::MAX` when unset.
+    pub server_inflight: usize,
 }
 
 impl Default for DeviceSpec {
@@ -42,6 +49,8 @@ impl Default for DeviceSpec {
             ts_jitter: Duration::ZERO,
             ts_resolution: Duration::from_millis(1),
             publish_interval: Duration::ZERO,
+            endpoint: None,
+            server_inflight: usize::MAX,
         }
     }
 }
@@ -122,6 +131,21 @@ pub fn device_spec(device: &str, v: &Value) -> Result<DeviceSpec, String> {
     }
     if let Some(v) = m.get("publish_interval") {
         spec.publish_interval = duration(v, "publish_interval", &place)?;
+    }
+    if let Some(v) = m.get("endpoint") {
+        spec.endpoint = Some(
+            v.as_str()
+                .filter(|s| !s.is_empty())
+                .ok_or_else(|| format!("{place}: 'endpoint' must be a non-empty string"))?
+                .to_string(),
+        );
+    }
+    if let Some(v) = m.get("server_inflight") {
+        spec.server_inflight = v
+            .as_u64()
+            .filter(|n| *n >= 1)
+            .ok_or_else(|| format!("{place}: 'server_inflight' must be a positive integer"))?
+            as usize;
     }
     Ok(spec)
 }

@@ -29,10 +29,11 @@ use std::collections::HashMap;
 use std::str::FromStr;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
+use tedge_dot_sdk::concurrency::InFlight;
 use tedge_dot_sdk::runtime::CALL_METHOD_VERB;
 use tedge_dot_sdk::{
     Access, Capabilities, CommandRequest, CommandResult, ConfigError, Connector, ConnectorConfig,
-    ConnectorError, DataType, DeviceId, LinkReport, LinkStatus, Mode, PointRef, Quality, Sample,
+    ConnectorError, DataType, DeviceId, DeviceReader, LinkReport, LinkStatus, Mode, PointRef, Quality, Sample,
     SampleSink, Transform, Value,
 };
 use time::OffsetDateTime;
@@ -120,7 +121,8 @@ struct DeviceModel {
     security: DeviceSecurity,
     /// The X.509 user identity, loaded at configure.
     user_x509: Option<(X509, PrivateKey)>,
-    points: HashMap<String, OpcuaPoint>,
+    /// Shared with the device's readers (contract §5.6), so handing one out copies nothing.
+    points: Arc<HashMap<String, OpcuaPoint>>,
 }
 
 /// How long closing a session waits for the server to answer (see [`close_session`]).
@@ -787,7 +789,7 @@ impl Connector for OpcuaConnector {
                 );
             }
             self.devices
-                .insert(d.name.clone(), DeviceModel { endpoint, security, user_x509, points });
+                .insert(d.name.clone(), DeviceModel { endpoint, security, user_x509, points: Arc::new(points) });
         }
 
         // Only a configuration with a secured device needs (and may create) a certificate.
@@ -847,6 +849,28 @@ impl Connector for OpcuaConnector {
             reports.push(report);
         }
         Ok(reports)
+    }
+
+    fn endpoint(&self, device: &DeviceId) -> Option<(String, Option<usize>)> {
+        self.devices.get(device).map(|d| (endpoint_key(&d.endpoint.endpoint), None))
+    }
+
+    fn reader(&self, device: &DeviceId) -> Option<Arc<dyn DeviceReader>> {
+        let handle = self.sessions.get(device)?;
+        let dev = self.devices.get(device)?;
+        // A point whose namespace is not translated yet is retried on the module's own read
+        // path, which may re-translate (design D5 of opcua-namespace-table).
+        if lock(&handle.translation).has_failures(dev.points.keys().map(String::as_str)) {
+            return None;
+        }
+        Some(Arc::new(OpcuaReader {
+            points: dev.points.clone(),
+            session: handle.session.clone(),
+            types: handle.types.clone(),
+            translation: handle.translation.clone(),
+            block: handle.nodes_per_read,
+            request_timeout_s: self.conn.request_timeout_s,
+        }))
     }
 
     async fn read_points(
@@ -912,96 +936,7 @@ impl Connector for OpcuaConnector {
             }
         };
 
-        // Build the read request for the known points (skip unknown ones, reported separately).
-        // Points on the same node and element share one read (design D5).
-        let mut known: Vec<(String, OpcuaPoint, usize)> = Vec::new();
-        let mut reads: Vec<ReadValueId> = Vec::new();
-        let mut slots: HashMap<(NodeId, Option<u32>), usize> = HashMap::new();
-        let mut out: Vec<Sample> = Vec::new();
-        // Each known point as this session reads it, or with the reason it cannot be read.
-        let models: Vec<(String, Option<(OpcuaPoint, Option<String>)>)> = {
-            let translation = lock(&translation);
-            models
-                .into_iter()
-                .map(|(id, model)| {
-                    let model = model.map(|m| match effective(&id, &m, &translation) {
-                        _ if m.method.is_some() => {
-                            let reason = format!("point {id} is a method");
-                            (m, Some(reason))
-                        }
-                        Ok(translated) => (translated, None),
-                        Err(reason) => (m, Some(reason)),
-                    });
-                    (id, model)
-                })
-                .collect()
-        };
-        for (id, model) in models {
-            match model {
-                Some((m, Some(reason))) => out.push(bad_sample(&id, Some(&m), &reason)),
-                Some((m, None)) => {
-                    let slot = *slots.entry((m.node_id.clone(), m.index)).or_insert_with(|| {
-                        reads.push(ReadValueId {
-                            node_id: m.node_id.clone(),
-                            attribute_id: AttributeId::Value as u32,
-                            index_range: index_range(m.index),
-                            data_encoding: Default::default(),
-                        });
-                        reads.len() - 1
-                    });
-                    known.push((id, m, slot));
-                }
-                None => out.push(bad_sample(&id, None, "unknown point")),
-            }
-        }
-
-        if !reads.is_empty() {
-            // Bound each service call: while the transport is down the client queues requests
-            // waiting to resurrect the session, and an unbounded await here would wedge the
-            // runtime's poll loop instead of reporting the outage.
-            let timeout = Duration::from_secs(self.conn.request_timeout_s.max(1));
-            let (values, lost) = read_in_blocks(reads, block, |chunk| {
-                let session = session.clone();
-                async move {
-                    match tokio::time::timeout(
-                        timeout,
-                        session.read(&chunk, TimestampsToReturn::Neither, 0.0),
-                    )
-                    .await
-                    {
-                        Ok(Ok(values)) => Ok(values),
-                        Ok(Err(status)) => Err(BlockFailure {
-                            reason: format!("read failed: {status}"),
-                            link_lost: link_lost(status),
-                        }),
-                        Err(_) => Err(BlockFailure {
-                            reason: format!("read timed out after {}s (transport down?)", timeout.as_secs()),
-                            link_lost: true,
-                        }),
-                    }
-                }
-            })
-            .await;
-            for (id, model, slot) in &known {
-                match values.get(*slot) {
-                    // Not read: the link was lost before its block.
-                    None => {}
-                    Some(Ok(dv)) => {
-                        let mut sample = build_sample(id, model, dv, &types);
-                        // Contract §5: polled samples carry the read-completion time, which the
-                        // runtime sets. Servers may return a (stale) source timestamp even for
-                        // TimestampsToReturn::Neither; only the push path reports event time.
-                        sample.source_ts = None;
-                        out.push(sample);
-                    }
-                    Some(Err(reason)) => out.push(bad_sample(id, Some(model), reason)),
-                }
-            }
-            if let Some(reason) = lost {
-                return Err(ConnectorError::LinkLost { samples: out, reason });
-            }
-        }
-        Ok(out)
+        read_models(models, session, types, translation, block, self.conn.request_timeout_s, &InFlight::single()).await
     }
 
     async fn subscribe(
@@ -1040,7 +975,7 @@ impl Connector for OpcuaConnector {
             .ok_or_else(|| ConnectorError::NotConnected(device.clone()))?;
         let (session, types, translation) =
             (handle.session.clone(), handle.types.clone(), handle.translation.clone());
-        let points = self.devices[device].points.clone();
+        let points = (*self.devices[device].points).clone();
         // One subscription per device, publishing at the fastest requested sampling rate.
         let publishing_interval =
             publishing_interval_for(items.iter().map(|(_, _, interval)| *interval));
@@ -2152,6 +2087,161 @@ async fn read_limit(session: &Session, timeout: Duration) -> Option<u32> {
     }
 }
 
+/// A point as this session reads it, and why it cannot be read when it cannot.
+type Resolved = (OpcuaPoint, Option<String>);
+
+/// Read the known points of `models` from `session`, in blocks of at most `block` nodes with at
+/// most [`InFlight::current`] Reads in flight, and decode them: the shared part of
+/// [`Connector::read_points`] and [`OpcuaReader`].
+#[allow(clippy::too_many_arguments)]
+async fn read_models(
+    models: Vec<(String, Option<OpcuaPoint>)>,
+    session: Arc<Session>,
+    types: Arc<resolve::SessionTypes>,
+    translation: Arc<Mutex<namespaces::Translation>>,
+    block: usize,
+    request_timeout_s: u64,
+    inflight: &InFlight,
+) -> Result<Vec<Sample>, ConnectorError> {
+    // Build the read request for the known points (skip unknown ones, reported separately).
+    // Points on the same node and element share one read (design D5).
+    let mut known: Vec<(String, OpcuaPoint, usize)> = Vec::new();
+    let mut reads: Vec<ReadValueId> = Vec::new();
+    let mut slots: HashMap<(NodeId, Option<u32>), usize> = HashMap::new();
+    let mut out: Vec<Sample> = Vec::new();
+    // Each known point as this session reads it, or with the reason it cannot be read.
+    let models: Vec<(String, Option<Resolved>)> = {
+        let translation = lock(&translation);
+        models
+            .into_iter()
+            .map(|(id, model)| {
+                let model = model.map(|m| match effective(&id, &m, &translation) {
+                    _ if m.method.is_some() => {
+                        let reason = format!("point {id} is a method");
+                        (m, Some(reason))
+                    }
+                    Ok(translated) => (translated, None),
+                    Err(reason) => (m, Some(reason)),
+                });
+                (id, model)
+            })
+            .collect()
+    };
+    for (id, model) in models {
+        match model {
+            Some((m, Some(reason))) => out.push(bad_sample(&id, Some(&m), &reason)),
+            Some((m, None)) => {
+                let slot = *slots.entry((m.node_id.clone(), m.index)).or_insert_with(|| {
+                    reads.push(ReadValueId {
+                        node_id: m.node_id.clone(),
+                        attribute_id: AttributeId::Value as u32,
+                        index_range: index_range(m.index),
+                        data_encoding: Default::default(),
+                    });
+                    reads.len() - 1
+                });
+                known.push((id, m, slot));
+            }
+            None => out.push(bad_sample(&id, None, "unknown point")),
+        }
+    }
+
+    if !reads.is_empty() {
+        // Bound each service call: while the transport is down the client queues requests
+        // waiting to resurrect the session, and an unbounded await here would wedge the
+        // runtime's poll loop instead of reporting the outage.
+        let timeout = Duration::from_secs(request_timeout_s.max(1));
+        let (values, lost) = read_in_blocks_pipelined(reads, block, inflight, |chunk| {
+            let session = session.clone();
+            async move {
+                match tokio::time::timeout(
+                    timeout,
+                    session.read(&chunk, TimestampsToReturn::Neither, 0.0),
+                )
+                .await
+                {
+                    Ok(Ok(values)) => Ok(values),
+                    Ok(Err(status)) => Err(BlockFailure {
+                        reason: format!("read failed: {status}"),
+                        link_lost: link_lost(status),
+                        busy: busy(status),
+                        timed_out: false,
+                    }),
+                    Err(_) => Err(BlockFailure {
+                        reason: format!("read timed out after {}s (transport down?)", timeout.as_secs()),
+                        link_lost: true,
+                        busy: false,
+                        timed_out: true,
+                    }),
+                }
+            }
+        })
+        .await;
+        for (id, model, slot) in &known {
+            match values.get(*slot).and_then(Option::as_ref) {
+                // Not read: the link was lost before its block.
+                None => {}
+                Some(Ok(dv)) => {
+                    let mut sample = build_sample(id, model, dv, &types);
+                    // Contract §5: polled samples carry the read-completion time, which the
+                    // runtime sets. Servers may return a (stale) source timestamp even for
+                    // TimestampsToReturn::Neither; only the push path reports event time.
+                    sample.source_ts = None;
+                    out.push(sample);
+                }
+                Some(Err(reason)) => out.push(bad_sample(id, Some(model), reason)),
+            }
+        }
+        if let Some(reason) = lost {
+            return Err(ConnectorError::LinkLost { samples: out, reason });
+        }
+    }
+    Ok(out)
+}
+
+/// Reads one OPC UA device from a task of its own (contract §5.6), over the device's session.
+struct OpcuaReader {
+    points: Arc<HashMap<String, OpcuaPoint>>,
+    session: Arc<Session>,
+    types: Arc<resolve::SessionTypes>,
+    translation: Arc<Mutex<namespaces::Translation>>,
+    block: usize,
+    request_timeout_s: u64,
+}
+
+#[async_trait]
+impl DeviceReader for OpcuaReader {
+    fn wanted(&self, points: &[PointRef]) -> usize {
+        points.len().div_ceil(self.block.max(1)).max(1)
+    }
+
+    async fn read_points(&self, points: &[PointRef], inflight: &InFlight) -> Result<Vec<Sample>, ConnectorError> {
+        let models = points.iter().map(|p| (p.id.clone(), self.points.get(&p.id).cloned())).collect();
+        read_models(
+            models,
+            self.session.clone(),
+            self.types.clone(),
+            self.translation.clone(),
+            self.block,
+            self.request_timeout_s,
+            inflight,
+        )
+        .await
+    }
+}
+
+/// The endpoint key of an OPC UA endpoint URL (contract §5.6): its host and port, so devices on
+/// one server share its budget whatever path or case their URLs use.
+fn endpoint_key(url: &str) -> String {
+    let rest = url.split_once("://").map_or(url, |(_, r)| r);
+    let authority = rest.split('/').next().unwrap_or(rest).to_ascii_lowercase();
+    if authority.contains(':') && !authority.ends_with(']') {
+        authority
+    } else {
+        format!("{authority}:4840")
+    }
+}
+
 /// Why one block of a polling read failed.
 #[derive(Debug, Clone, PartialEq)]
 struct BlockFailure {
@@ -2159,7 +2249,22 @@ struct BlockFailure {
     reason: String,
     /// The link is gone: the blocks after this one would only wait for their own timeout.
     link_lost: bool,
+    /// The server refused it as busy: sent again once the endpoint's budget allows.
+    busy: bool,
+    /// It timed out, which with other Reads in flight means the server is behind, not gone.
+    timed_out: bool,
 }
+
+/// A status that means the server is busy, not that the request or the link is wrong
+/// (contract §5.6): the endpoint backs off and the request is sent again.
+fn busy(status: StatusCode) -> bool {
+    // Not BadTooManyOperations: a server answers that for a Read larger than it accepts, which
+    // sending again cannot fix.
+    matches!(status, StatusCode::BadServerTooBusy | StatusCode::BadResourceUnavailable)
+}
+
+/// How often one block is sent again after being refused as busy before its points fail.
+const BUSY_RETRIES: u32 = 8;
 
 /// A failed service call that means the link is gone, not that the server refused this request.
 /// The status codes the C module (connector_opcua.c `read_point`) takes the transport down for,
@@ -2179,44 +2284,98 @@ fn link_lost(status: StatusCode) -> bool {
     )
 }
 
-/// Read `items` through `read` in blocks of at most `block`, one after the other, and return one
-/// result per item, in order. A block the server refuses fails only its own items. A block
-/// answered with fewer values than it asked for fails the missing ones. A block that finds the
-/// link gone ends it, and nothing after it is sent: before any value was read, every item fails
-/// with its reason; after one was, the results end before that block and its reason is returned
-/// too (`read_points` then reports [`ConnectorError::LinkLost`]).
-async fn read_in_blocks<T, R, F, Fut>(
+/// Read `items` through `read` in blocks of at most `block`, with at most
+/// [`InFlight::current`] blocks in flight, and return one result per item, by index; `None` for an
+/// item that was not read. A block the server refuses fails only its own items. A block answered
+/// with fewer values than it asked for fails the missing ones. A block refused as busy, or that
+/// timed out while others were in flight, backs the endpoint off and is sent again, up to
+/// [`BUSY_RETRIES`] times. A block that
+/// finds the link gone ends the call: nothing more is sent, the blocks in flight are awaited, and
+/// before any value was read every item fails with its reason; after one was, the unread items
+/// stay `None` and the reason is returned too (`read_points` then reports
+/// [`ConnectorError::LinkLost`]).
+async fn read_in_blocks_pipelined<T, R, F, Fut>(
     items: Vec<T>,
     block: usize,
+    inflight: &InFlight,
     mut read: F,
-) -> (Vec<Result<R, String>>, Option<String>)
+) -> (Vec<Option<Result<R, String>>>, Option<String>)
 where
+    T: Clone,
     F: FnMut(Vec<T>) -> Fut,
     Fut: std::future::Future<Output = Result<Vec<R>, BlockFailure>>,
 {
     let total = items.len();
-    let mut results: Vec<Result<R, String>> = Vec::with_capacity(total);
-    let mut items = items.into_iter().peekable();
-    while items.peek().is_some() {
-        let chunk: Vec<T> = items.by_ref().take(block.max(1)).collect();
+    let mut results: Vec<Option<Result<R, String>>> = (0..total).map(|_| None).collect();
+    let mut blocks: std::collections::VecDeque<(usize, Vec<T>, u32)> = items
+        .chunks(block.max(1))
+        .enumerate()
+        .map(|(i, c)| (i * block.max(1), c.to_vec(), 0))
+        .collect();
+    let mut running = futures::stream::FuturesUnordered::new();
+    let mut lost: Option<String> = None;
+    let mut any_ok = false;
+    loop {
+        while lost.is_none() && running.len() < inflight.current() {
+            let Some((start, chunk, tries)) = blocks.pop_front() else { break };
+            let call = read(chunk.clone());
+            running.push(async move { (start, chunk, tries, call.await) });
+        }
+        let Some((start, chunk, tries, outcome)) = running.next().await else { break };
         let asked = chunk.len();
-        match read(chunk).await {
+        match outcome {
             Ok(values) => {
-                let got = values.len().min(asked);
-                results.extend(values.into_iter().take(asked).map(Ok));
-                results.extend((got..asked).map(|_| Err("no value returned".to_string())));
-            }
-            Err(failure) if failure.link_lost => {
-                if results.iter().any(Result::is_ok) {
-                    return (results, Some(failure.reason));
+                inflight.ok();
+                any_ok = true;
+                let mut values = values.into_iter();
+                for slot in &mut results[start..start + asked] {
+                    *slot = Some(values.next().ok_or_else(|| "no value returned".to_string()));
                 }
-                results.extend((results.len()..total).map(|_| Err(failure.reason.clone())));
-                break;
             }
-            Err(failure) => results.extend((0..asked).map(|_| Err(failure.reason.clone()))),
+            Err(f) if lost.is_none() && tries < BUSY_RETRIES && (f.busy || (f.timed_out && !running.is_empty())) => {
+                if f.busy {
+                    inflight.busy();
+                } else {
+                    inflight.timed_out(true);
+                }
+                blocks.push_front((start, chunk, tries + 1));
+            }
+            Err(f) if f.link_lost => {
+                lost.get_or_insert(f.reason);
+            }
+            Err(f) => {
+                for slot in &mut results[start..start + asked] {
+                    *slot = Some(Err(f.reason.clone()));
+                }
+            }
         }
     }
-    (results, None)
+    match lost {
+        Some(reason) if !any_ok => {
+            for slot in results.iter_mut().filter(|s| s.is_none()) {
+                *slot = Some(Err(reason.clone()));
+            }
+            (results, None)
+        }
+        lost => (results, lost),
+    }
+}
+
+/// [`read_in_blocks_pipelined`] one block at a time, as the module read before concurrent reads;
+/// the results end at the first item not read.
+#[cfg(test)]
+async fn read_in_blocks<T, R, F, Fut>(
+    items: Vec<T>,
+    block: usize,
+    read: F,
+) -> (Vec<Result<R, String>>, Option<String>)
+where
+    T: Clone,
+    F: FnMut(Vec<T>) -> Fut,
+    Fut: std::future::Future<Output = Result<Vec<R>, BlockFailure>>,
+{
+    let (results, lost) = read_in_blocks_pipelined(items, block, &InFlight::single(), read).await;
+    (results.into_iter().map_while(|r| r).collect(), lost)
 }
 
 fn revised(requested: Duration, revised_ms: f64) -> Option<Duration> {
@@ -2662,7 +2821,7 @@ mod tests {
             let n = calls;
             async move {
                 if n == 2 {
-                    Err(BlockFailure { reason: "read failed: BadTooManyOperations".into(), link_lost: false })
+                    Err(BlockFailure { reason: "read failed: BadTooManyOperations".into(), link_lost: false, busy: false, timed_out: false })
                 } else {
                     Ok(block)
                 }
@@ -2689,6 +2848,8 @@ mod tests {
                 Err::<Vec<u32>, _>(BlockFailure {
                     reason: "read timed out after 1s (transport down?)".into(),
                     link_lost: true,
+                    busy: false,
+                    timed_out: true,
                 })
             }
         })
@@ -2709,7 +2870,7 @@ mod tests {
             let n = calls;
             async move {
                 if n == 2 {
-                    Err(BlockFailure { reason: "read failed: BadConnectionClosed".into(), link_lost: true })
+                    Err(BlockFailure { reason: "read failed: BadConnectionClosed".into(), link_lost: true, busy: false, timed_out: false })
                 } else {
                     Ok(block)
                 }
@@ -2737,6 +2898,53 @@ mod tests {
         let expected: Vec<Result<u32, String>> =
             vec![Ok(0), Ok(1), Err("no value returned".into()), Ok(3), Ok(4), Ok(5)];
         assert_eq!(results, expected);
+    }
+
+    /// Pipelined (contract §5.6): up to the allowance in flight, results by index, a busy block
+    /// sent again and the endpoint backed off, a too-large Read not retried.
+    #[tokio::test]
+    async fn pipelined_blocks_overlap_and_retry_when_busy() {
+        let config = tedge_dot_sdk::resolve_config(
+            "[connector]\nprotocol = \"opcua\"\n[[device]]\nname = \"plc\"\nprotocol_address = { endpoint = \"opc.tcp://x:4840/\" }\n",
+            std::path::Path::new("."),
+        )
+        .unwrap();
+        let budgets = tedge_dot_sdk::concurrency::Budgets::new(&config, |_| None);
+        let inflight = budgets.acquire(0, 8).await;
+        assert_eq!(inflight.allowance(), 4);
+        let peak = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let now = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let refused = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let t = Instant::now();
+        let (results, lost) = read_in_blocks_pipelined((0..80u32).collect(), 10, &inflight, |block: Vec<u32>| {
+            let (peak, now, refused) = (peak.clone(), now.clone(), refused.clone());
+            async move {
+                use std::sync::atomic::Ordering::SeqCst;
+                let n = now.fetch_add(1, SeqCst) + 1;
+                peak.fetch_max(n, SeqCst);
+                tokio::time::sleep(Duration::from_millis(20)).await;
+                now.fetch_sub(1, SeqCst);
+                // Block 30..39 is refused once as busy; block 70..79 is too large for the server.
+                if block[0] == 30 && !refused.swap(true, SeqCst) {
+                    return Err(BlockFailure { reason: "read failed: BadServerTooBusy".into(), link_lost: false, busy: true, timed_out: false });
+                }
+                if block[0] == 70 {
+                    return Err(BlockFailure { reason: "read failed: BadTooManyOperations".into(), link_lost: false, busy: busy(StatusCode::BadTooManyOperations), timed_out: false });
+                }
+                Ok(block)
+            }
+        })
+        .await;
+        assert_eq!(lost, None);
+        assert_eq!(peak.load(std::sync::atomic::Ordering::SeqCst), 4);
+        assert!(t.elapsed() < Duration::from_millis(160), "eight blocks of 20 ms, four at a time: {:?}", t.elapsed());
+        for (i, r) in results.iter().enumerate() {
+            match i {
+                70..=79 => assert_eq!(r, &Some(Err("read failed: BadTooManyOperations".to_string()))),
+                _ => assert_eq!(r, &Some(Ok(i as u32))),
+            }
+        }
+        assert_eq!(budgets.endpoint(0).effective(), 2, "the busy block halved the endpoint's budget");
     }
 
     #[test]

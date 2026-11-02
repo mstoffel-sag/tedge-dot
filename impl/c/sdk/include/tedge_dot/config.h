@@ -208,6 +208,8 @@ typedef struct tdot_device {
     struct cJSON *report_table;
     /* The device's `batch` table (§5.5) as written; NULL when none. */
     struct cJSON *batch_table;
+    /* Concurrent reads (§5.6): the device's max_inflight; 0 when unset. */
+    long max_inflight;
 
     void *proto; /* connector per-device state (e.g. modbus_t*, UA_Client*) */
 
@@ -274,6 +276,10 @@ typedef struct tdot_config {
     bool include_boolean; /* default true */
     /* [connector] batch (§5.5) as written; NULL when none. */
     struct cJSON *batch_table;
+    /* Concurrent reads (§5.6): [connector] max_inflight and max_inflight_total;
+     * 0 when unset (the runtime's defaults apply, concurrency.h). */
+    long max_inflight;
+    long max_inflight_total;
 
     tdot_device_t *devices;
     size_t ndevices;

@@ -25,6 +25,7 @@
 #include <netdb.h>
 #include <netinet/in.h>
 #include <stdarg.h>
+#include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -2280,6 +2281,19 @@ static void destroy(tdot_connector_t *self) {
     free(self);
 }
 
+/* The agent's host and port (contract §5.6). */
+static int endpoint(tdot_connector_t *self, const tdot_device_t *dev, char *buf, size_t len) {
+    (void)self;
+    const snmpc_device_t *sd = dev->proto;
+    if (!sd)
+        return -1;
+    size_t i = 0;
+    for (; sd->host[i] && i + 1 < len; i++)
+        buf[i] = (char)tolower((unsigned char)sd->host[i]);
+    snprintf(buf + i, len - i, ":%d", sd->port);
+    return 0;
+}
+
 tdot_connector_t *tdot_connector_snmp_new(void) {
     tdot_connector_t *c = calloc(1, sizeof *c);
     snmpc_state_t *st = calloc(1, sizeof *st);
@@ -2299,6 +2313,11 @@ tdot_connector_t *tdot_connector_snmp_new(void) {
     c->configure = configure;
     c->connect_device = connect_device;
     c->read_point = read_point;
+    /* net-snmp runs under tsnmp_lock, released while a request waits on the
+     * network; the read path uses the device's own session and batch state,
+     * and none of the fields the trap path writes (contract §5.6). */
+    c->concurrent_reads = true;
+    c->endpoint = endpoint;
     c->write_point = write_point;
     c->subscribe_device = subscribe_device;
     c->drain_subscriptions = drain_subscriptions;

@@ -883,6 +883,15 @@ A Frame Publishes Each Value Of A Repeated Point In Its Own Layer
     [Tags]    requires:subscribe
     Wait Until Keyword Succeeds    30s    1s    A Whole Burst Should Arrive In Layers    ${FRAME_TOPIC}
 
+Capability Descriptor Lists The Endpoints And Their Budgets
+    [Documentation]    Concurrent reads (contract §5.6, openspec change concurrent-reads): devices on
+    ...                one OPC UA server share its endpoint and its budget of requests in flight.
+    ...                opcm and opca read the simulator, opcf the load simulator; each endpoint
+    ...                is the URL's host and port, with the default budget of 4.
+    ${payload}=    Wait For Retained    ${MEASURE_CAPS_TOPIC}    timeout=${READY_TIMEOUT}
+    ${endpoints}=    Evaluate    {e['endpoint']: (sorted(e['devices']), e['max_inflight']) for e in json.loads($payload)['endpoints']}    modules=json
+    Should Be Equal    ${endpoints}    ${{ {'simulator:4840': (['opca', 'opcm'], 4), 'load-simulator:4840': (['opcf'], 4)} }}
+
 An Aggregated Point Publishes Its Mean And Maximum With Their Units
     [Documentation]    opca polls Ticks (incremented every second) every 200 ms with
     ...                `aggregate = ["mean", "max"]` every 2 s (openspec change sample-aggregate):

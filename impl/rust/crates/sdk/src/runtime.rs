@@ -2,6 +2,7 @@
 //! scheduling, command routing, capability descriptor, health & link status) so protocol
 //! modules stay tiny.
 
+use crate::concurrency::Budgets;
 use crate::config::{parse_duration, ConnectorConfig};
 use crate::connector::{
     Access, Capabilities, ConfigError, CommandRequest, CommandResult, Connector, ConnectorError, LinkReport,
@@ -427,6 +428,18 @@ struct ScheduleEntry {
     next_due: Instant,
 }
 
+/// A point's next poll after the one due at `due`, read at `now`: on its interval's grid, so a
+/// tick handled a little late does not push every later poll back by a tick. A point that fell
+/// a whole interval behind starts again from `now`.
+fn next_due(due: Instant, interval: Duration, now: Instant) -> Instant {
+    let next = due + interval;
+    if next <= now {
+        now + interval
+    } else {
+        next
+    }
+}
+
 /// Run the connector under the SDK runtime until the process receives Ctrl-C or SIGTERM.
 ///
 /// `config_path` is the file the typed `config` was loaded from; the runtime keeps the raw
@@ -678,7 +691,8 @@ pub async fn run_until_reloadable(
     }
 
     // 3. Publish capability descriptor + service health (retained).
-    publish_retained(&client, &cap_topic, capability_payload(&caps, &config)).await?;
+    let endpoints = Budgets::new(&config, |d| connector.endpoint(&d.to_string())).describe();
+    publish_retained(&client, &cap_topic, capability_payload(&caps, &config, Some(endpoints))).await?;
     publish_health(&client, &health_topic, "up").await?;
     client.subscribe(&device_cmd_sub, QoS::AtLeastOnce).await?;
     client.subscribe(&service_cmd_sub, QoS::AtLeastOnce).await?;
@@ -710,6 +724,27 @@ pub async fn run_until_reloadable(
     }
     // Devices with polled points whose push delivery died (see `PushAction::Recover`).
     let mut push_recovery: HashMap<String, ReconnectEntry> = HashMap::new();
+    // Concurrent reads (§5.6): the budgets of the devices' endpoints, the devices with a read in
+    // flight, and where those reads hand back their results.
+    let mut budgets = Budgets::new(&config, |d| connector.endpoint(&d.to_string()));
+    let mut reading: HashSet<usize> = HashSet::new();
+    let (read_tx, mut read_rx) =
+        tokio::sync::mpsc::channel::<(usize, Result<Vec<Sample>, ConnectorError>)>(64);
+    // Wait for every read in flight and publish its result: before a command or a reload, which
+    // may write to a device or replace its connection, and before stopping.
+    macro_rules! drain_reads {
+        () => {
+            while !reading.is_empty() {
+                let Some((device_index, result)) = read_rx.recv().await else { break };
+                reading.remove(&device_index);
+                let device = config.devices[device_index].name.clone();
+                on_poll_result(
+                    &device, result, &client, &config, &mut links, &mut publisher, &mut reporter,
+                    &mut point_health, &mut reconnects, &meta_index,
+                ).await;
+            }
+        };
+    }
 
     // 6. Main loop: poll due points on a tick, route commands from the MQTT event-loop task.
     let mut tick = tokio::time::interval(Duration::from_millis(200));
@@ -724,64 +759,63 @@ pub async fn run_until_reloadable(
                 info!("shutdown requested");
                 break;
             }
+            Some((device_index, result)) = read_rx.recv() => {
+                reading.remove(&device_index);
+                let device = config.devices[device_index].name.clone();
+                on_poll_result(
+                    &device, result, &client, &config, &mut links, &mut publisher, &mut reporter,
+                    &mut point_health, &mut reconnects, &meta_index,
+                ).await;
+                // A read that took longer than its points' interval left them due: read them
+                // again now rather than at the next tick, which would stretch the interval to a
+                // whole number of ticks.
+                let now = Instant::now();
+                if schedule.iter().any(|e| e.device_index == device_index && e.next_due <= now) {
+                    tick.reset_immediately();
+                }
+                progress.mark();
+            }
             _ = tick.tick() => {
                 let now = Instant::now();
-                // Gather due points grouped by device.
+                // Gather due points grouped by device. A device still being read keeps its
+                // points due, so they are read as soon as its read returns.
                 let mut due: HashMap<usize, Vec<PointRef>> = HashMap::new();
                 for entry in schedule.iter_mut() {
-                    if entry.next_due <= now {
+                    if entry.next_due <= now && !reading.contains(&entry.device_index) {
                         due.entry(entry.device_index).or_default().push(entry.point.clone());
-                        entry.next_due = now + entry.interval;
+                        entry.next_due = next_due(entry.next_due, entry.interval, now);
                     }
                 }
                 for (device_index, points) in due {
+                    // One read per device: a device still being read skips this round.
+                    if reading.contains(&device_index) {
+                        continue;
+                    }
                     let device = config.devices[device_index].name.clone();
-                    let (mut samples, failure) =
-                        split_link_lost(stamped(bounded(limits, "read", connector.read_points(&device, &points)).await));
-                    for s in samples.iter_mut() {
-                        // The runtime owns the device identity for polled reads:
-                        // connectors routinely leave `device` empty, and the sample
-                        // topic + meta lookup are keyed by the configured name.
-                        s.device = device.clone();
-                    }
-                    let polled = !samples.is_empty();
-                    if polled {
-                        point_health.note(&device, &samples, true);
-                    }
-                    // A batch where every point failed means the device itself is
-                    // unreachable (a single bad point keeps the link healthy). Judged before
-                    // the samples are handed on, so they need not be copied.
-                    let healthy = samples.iter().any(|s| s.quality != crate::model::Quality::Bad);
-                    let reason = (!healthy)
-                        .then(|| samples.iter().find_map(|s| s.error.clone()))
-                        .flatten();
-                    for s in samples {
-                        if let Some(mut s) = reporter.offer(map_sample(s, &meta_index)) {
-                            publisher.reading(&client, &mut s, &meta_index).await;
+                    // A module that hands out a reader is read from a task of its own, within the
+                    // endpoint's budget (§5.6); the result comes back on `read_rx`.
+                    if let Some(reader) = connector.reader(&device) {
+                        // A device due to be reconnected is not read first: the reconnect below
+                        // needs it idle, and its transport is what failed.
+                        if reconnects.get(&device).is_some_and(|e| e.due <= now) {
+                            continue;
                         }
+                        reading.insert(device_index);
+                        let budgets = budgets.clone();
+                        let done = read_tx.clone();
+                        tokio::spawn(async move {
+                            let inflight = budgets.acquire(device_index, reader.wanted(&points)).await;
+                            let result = stamped(bounded(limits, "read", reader.read_points(&points, &inflight)).await);
+                            drop(inflight);
+                            let _ = done.send((device_index, result)).await;
+                        });
+                        continue;
                     }
-                    publisher.end_of_pass(&client).await;
-                    match failure {
-                        Ok(()) => {
-                            if polled {
-                                links.note_poll(&client, &device, healthy, reason, &config).await;
-                                publisher.set_stale(&device, !healthy);
-                                if healthy {
-                                    reconnects.remove(&device);
-                                } else {
-                                    reconnects.entry(device.clone()).or_insert_with(ReconnectEntry::new);
-                                }
-                            }
-                        }
-                        Err(e) => {
-                            warn!(%device, "read_points failed: {e}");
-                            links
-                                .note_poll(&client, &device, false, Some(e.to_string()), &config)
-                                .await;
-                            publisher.set_stale(&device, true);
-                            reconnects.entry(device.clone()).or_insert_with(ReconnectEntry::new);
-                        }
-                    }
+                    let result = stamped(bounded(limits, "read", connector.read_points(&device, &points)).await);
+                    on_poll_result(
+                        &device, result, &client, &config, &mut links, &mut publisher, &mut reporter,
+                        &mut point_health, &mut reconnects, &meta_index,
+                    ).await;
                 }
                 // Pushed points are off the schedule above, so no failing read reveals a dead
                 // session behind them: ask the connector whether push delivery is still live.
@@ -867,6 +901,8 @@ pub async fn run_until_reloadable(
                     .iter()
                     .chain(push_recovery.iter())
                     .filter(|(_, entry)| entry.due <= now)
+                    // A device being read is reconnected once its read has returned.
+                    .filter(|(device, _)| !reading.iter().any(|&i| config.devices[i].name == **device))
                     .map(|(device, _)| device.clone())
                     .collect();
                 for device in due {
@@ -948,13 +984,14 @@ pub async fn run_until_reloadable(
                 reporter.reset_all();
                 if let Err(e) = restore_mqtt_session(
                     &client, &[&device_cmd_sub, &service_cmd_sub], &health_topic, &cap_topic,
-                    &caps, &config, &links,
+                    &caps, &config, &links, budgets.describe(),
                 ).await {
                     warn!("failed to restore the MQTT session after reconnecting: {e}");
                 }
                 progress.mark();
             }
             _ = reload.notified() => {
+                drain_reads!();
                 match reload_from_file(
                     &mut connector, &client, &mut links, &mut config, &mut config_doc,
                     &config_path, &cap_topic, limits,
@@ -977,6 +1014,11 @@ pub async fn run_until_reloadable(
                 // counts, not the transitions this connector publishes on the same topic.
                 let is_request = serde_json::from_slice::<serde_json::Value>(&p.payload)
                     .is_ok_and(|j| j["status"] == "init");
+                // A device is never read and written at once, and a management command may
+                // replace the configuration under the reads.
+                if is_request {
+                    drain_reads!();
+                }
                 let written = match route_command(&p.topic, &protocol, &service, &config) {
                     CommandRoute::Device { device, .. } if is_request => Some(device.to_string()),
                     _ => None,
@@ -1015,6 +1057,7 @@ pub async fn run_until_reloadable(
             // applying the configuration already reconnected every device
             reconnects.clear();
             push_recovery.clear();
+            budgets = Budgets::new(&config, |d| connector.endpoint(&d.to_string()));
             // ...except one whose subscribe just failed: its pushed points have nothing
             // delivering them, and polling may not be able to cover them.
             for device in failed {
@@ -1023,6 +1066,7 @@ pub async fn run_until_reloadable(
         }
     }
 
+    drain_reads!();
     publisher.flush_all(&client).await;
     // 7. Clean shutdown: the final health "down", then a DISCONNECT, given a moment to reach the
     // broker (the event loop ends once the DISCONNECT is written). With the broker unreachable
@@ -1037,6 +1081,69 @@ pub async fn run_until_reloadable(
         let _ = tokio::time::timeout(MQTT_FLUSH_TIMEOUT, flush).await;
     }
     Ok(exit)
+}
+
+/// Publish what a poll read returned and judge the device's link by it: the samples through the
+/// report policy and the publisher, then the link status, staleness and reconnect schedule.
+#[allow(clippy::too_many_arguments)]
+async fn on_poll_result(
+    device: &str,
+    result: Result<Vec<Sample>, ConnectorError>,
+    client: &Mqtt,
+    config: &ConnectorConfig,
+    links: &mut LinkTracker,
+    publisher: &mut Publisher,
+    reporter: &mut Reporter,
+    point_health: &mut PointHealth,
+    reconnects: &mut HashMap<String, ReconnectEntry>,
+    meta_index: &MetaIndex,
+) {
+    let device = device.to_string();
+    let (mut samples, failure) = split_link_lost(result);
+    for s in samples.iter_mut() {
+        // The runtime owns the device identity for polled reads:
+        // connectors routinely leave `device` empty, and the sample
+        // topic + meta lookup are keyed by the configured name.
+        s.device = device.clone();
+    }
+    let polled = !samples.is_empty();
+    if polled {
+        point_health.note(&device, &samples, true);
+    }
+    // A batch where every point failed means the device itself is
+    // unreachable (a single bad point keeps the link healthy). Judged before
+    // the samples are handed on, so they need not be copied.
+    let healthy = samples.iter().any(|s| s.quality != crate::model::Quality::Bad);
+    let reason = (!healthy)
+        .then(|| samples.iter().find_map(|s| s.error.clone()))
+        .flatten();
+    for s in samples {
+        if let Some(mut s) = reporter.offer(map_sample(s, meta_index)) {
+            publisher.reading(client, &mut s, meta_index).await;
+        }
+    }
+    publisher.end_of_pass(client).await;
+    match failure {
+        Ok(()) => {
+            if polled {
+                links.note_poll(client, &device, healthy, reason, config).await;
+                publisher.set_stale(&device, !healthy);
+                if healthy {
+                    reconnects.remove(&device);
+                } else {
+                    reconnects.entry(device.clone()).or_insert_with(ReconnectEntry::new);
+                }
+            }
+        }
+        Err(e) => {
+            warn!(%device, "read_points failed: {e}");
+            links
+                .note_poll(client, &device, false, Some(e.to_string()), config)
+                .await;
+            publisher.set_stale(&device, true);
+            reconnects.entry(device.clone()).or_insert_with(ReconnectEntry::new);
+        }
+    }
 }
 
 /// Run the connector without a broker until `shutdown` resolves: every sample is printed to
@@ -1095,7 +1202,7 @@ pub async fn run_stdout_until(
                 for entry in schedule.iter_mut() {
                     if entry.next_due <= now {
                         due.entry(entry.device_index).or_default().push(entry.point.clone());
-                        entry.next_due = now + entry.interval;
+                        entry.next_due = next_due(entry.next_due, entry.interval, now);
                     }
                 }
                 for (device_index, points) in due {
@@ -2463,7 +2570,11 @@ fn augment_management_caps(caps: &mut Capabilities) {
 /// Both are static per point, so they belong in this one retained message rather than in every
 /// sample — but they come from the *configuration*, unlike everything else here, so this has to
 /// be rebuilt and republished whenever a management command changes it.
-fn capability_payload(caps: &Capabilities, config: &ConnectorConfig) -> String {
+fn capability_payload(
+    caps: &Capabilities,
+    config: &ConnectorConfig,
+    endpoints: Option<serde_json::Value>,
+) -> String {
     let mut json = caps.to_json();
     let labels = crate::descriptor::point_labels(config);
     if !labels.is_empty() {
@@ -2482,6 +2593,10 @@ fn capability_payload(caps: &Capabilities, config: &ConnectorConfig) -> String {
     }
     if let Some(outputs) = crate::measure::describe(config) {
         json["outputs"] = outputs;
+    }
+    // Concurrent reads (§5.6): each endpoint with its devices and its budget.
+    if let Some(endpoints) = endpoints {
+        json["endpoints"] = endpoints;
     }
     json.to_string()
 }
@@ -2610,7 +2725,8 @@ async fn commit_config(
     let mut caps = connector.capabilities();
     augment_management_caps(&mut caps);
     augment_batch_caps(&mut caps);
-    publish_retained(client, cap_topic, capability_payload(&caps, config)).await?;
+    let endpoints = Budgets::new(config, |d| connector.endpoint(&d.to_string())).describe();
+    publish_retained(client, cap_topic, capability_payload(&caps, config, Some(endpoints))).await?;
 
     // Reconnect with the new configuration and republish link status.
     let _ = bounded(limits, "disconnect", connector.disconnect()).await;
@@ -3016,6 +3132,7 @@ fn link_payload(
 
 /// Restore what a clean MQTT session loses when the broker drops the connection: the command
 /// subscriptions, and the retained service health, capability descriptor and link statuses.
+#[allow(clippy::too_many_arguments)]
 async fn restore_mqtt_session(
     client: &Mqtt,
     subscriptions: &[&str],
@@ -3024,12 +3141,13 @@ async fn restore_mqtt_session(
     caps: &Capabilities,
     config: &ConnectorConfig,
     links: &LinkTracker,
+    endpoints: serde_json::Value,
 ) -> Result<(), BoxError> {
     for filter in subscriptions {
         client.subscribe(*filter, QoS::AtLeastOnce).await?;
     }
     publish_health(client, health_topic, "up").await?;
-    publish_retained(client, cap_topic, capability_payload(caps, config)).await?;
+    publish_retained(client, cap_topic, capability_payload(caps, config, Some(endpoints))).await?;
     links.republish(client, config).await
 }
 
@@ -4296,7 +4414,7 @@ protocol_address = {}
 "#,
         )
         .unwrap();
-        let json: serde_json::Value = serde_json::from_str(&capability_payload(&caps, &config)).unwrap();
+        let json: serde_json::Value = serde_json::from_str(&capability_payload(&caps, &config, None)).unwrap();
         assert_eq!(
             json["reports"],
             serde_json::json!({
@@ -4308,7 +4426,7 @@ protocol_address = {}
         );
 
         let bare: ConnectorConfig = toml::from_str("[connector]\nprotocol = \"modbus\"\n").unwrap();
-        let json: serde_json::Value = serde_json::from_str(&capability_payload(&caps, &bare)).unwrap();
+        let json: serde_json::Value = serde_json::from_str(&capability_payload(&caps, &bare, None)).unwrap();
         assert!(json.get("reports").is_none());
 
         // An empty table declares nothing (the C build agrees).
@@ -4316,7 +4434,7 @@ protocol_address = {}
             "[connector]\nprotocol = \"modbus\"\nreport = {}\n[[device]]\nname = \"d\"\nprotocol_address = {}\nreport = {}\n",
         )
         .unwrap();
-        let json: serde_json::Value = serde_json::from_str(&capability_payload(&caps, &empty)).unwrap();
+        let json: serde_json::Value = serde_json::from_str(&capability_payload(&caps, &empty, None)).unwrap();
         assert!(json.get("reports").is_none());
     }
 
@@ -4361,7 +4479,7 @@ protocol_address = {}
         )
         .unwrap();
         let payload: serde_json::Value =
-            serde_json::from_str(&capability_payload(&caps, &config)).unwrap();
+            serde_json::from_str(&capability_payload(&caps, &config, None)).unwrap();
         assert_eq!(
             payload["methods"],
             serde_json::json!([
@@ -4374,7 +4492,7 @@ protocol_address = {}
         );
         let plain: ConnectorConfig = toml::from_str(BASE).unwrap();
         let payload: serde_json::Value =
-            serde_json::from_str(&capability_payload(&caps, &plain)).unwrap();
+            serde_json::from_str(&capability_payload(&caps, &plain, None)).unwrap();
         assert!(payload.get("methods").is_none());
     }
 
@@ -4407,7 +4525,7 @@ protocol_address = { transport = "tcp", host = "127.0.0.1", port = 502, unit_id 
         )
         .unwrap();
         let payload: serde_json::Value =
-            serde_json::from_str(&capability_payload(&caps, &keyed)).unwrap();
+            serde_json::from_str(&capability_payload(&caps, &keyed, None)).unwrap();
         assert_eq!(
             payload["parameter_keys"],
             serde_json::json!([
@@ -4416,7 +4534,7 @@ protocol_address = { transport = "tcp", host = "127.0.0.1", port = 502, unit_id 
         );
         let plain: ConnectorConfig = toml::from_str(BASE).unwrap();
         let payload: serde_json::Value =
-            serde_json::from_str(&capability_payload(&caps, &plain)).unwrap();
+            serde_json::from_str(&capability_payload(&caps, &plain, None)).unwrap();
         assert!(payload.get("parameter_keys").is_none());
     }
 

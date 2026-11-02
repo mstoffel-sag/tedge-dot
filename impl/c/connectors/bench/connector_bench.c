@@ -6,6 +6,10 @@
  *
  * - Polled: one good sample per point, after a blocking `latency` per block of
  *   `batch` points, the way a blocking protocol call holds up the serial loop.
+ *   Read on the runtime's workers (contract §5.6), blocks within the call's
+ *   allowance wait their latency at the same time, as pipelined requests do,
+ *   and an `endpoint` shared by several devices serves at most
+ *   `server_inflight` blocks at once, refusing the others as busy.
  * - Pushed: on a device with `push_rate` above 0, every readable point not set
  *   `subscribe = false` is pushed. The C runtime drains push once per loop
  *   tick, so drain_subscriptions() delivers what is owed since the previous
@@ -17,6 +21,8 @@
  *   `ts_jitter` and down to a multiple of `ts_resolution`, as the Rust module's.
  */
 #include <math.h>
+#include <stdatomic.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
@@ -36,7 +42,16 @@ static const char CAPABILITIES[] =
 
 static const char *const DEVICE_KEYS[] = {"latency",   "batch",         "push_rate",
                                           "ts_jitter", "ts_resolution", "publish_interval",
-                                          NULL};
+                                          "endpoint",  "server_inflight", NULL};
+
+/* A simulated endpoint: how many blocks it is serving now, and how many it
+ * serves at once. Shared by the devices that name it; owned by the connector. */
+typedef struct server {
+    char name[128];
+    size_t limit;
+    _Atomic size_t serving;
+    struct server *next;
+} server_t;
 static const char *const POINT_KEYS[] = {"model", "step", "change", NULL};
 
 /* Per point (pt->proto, flat, freed by the config). */
@@ -49,6 +64,9 @@ typedef struct {
 typedef struct {
     double latency_s;
     size_t batch;
+    char endpoint[128];     /* "" when unset: the device is its own endpoint */
+    size_t server_inflight; /* (size_t)-1 when unset */
+    server_t *server;
     double push_rate;
     double ts_jitter_s;
     double ts_resolution_ms; /* default 1 */
@@ -129,6 +147,26 @@ static int device_spec(tdot_device_t *dev, bench_device_t *bd, char *err, size_t
             return -1;
         }
         bd->batch = (size_t)d.u.i;
+    }
+    if (tab && toml_key_exists(tab, "endpoint")) {
+        toml_datum_t d = toml_string_in(tab, "endpoint");
+        bool ok = d.ok && d.u.s[0];
+        if (ok)
+            snprintf(bd->endpoint, sizeof bd->endpoint, "%s", d.u.s);
+        if (d.ok)
+            free(d.u.s);
+        if (!ok) {
+            snprintf(err, errlen, "%s: 'endpoint' must be a non-empty string", place);
+            return -1;
+        }
+    }
+    if (tab && toml_key_exists(tab, "server_inflight")) {
+        toml_datum_t d = toml_int_in(tab, "server_inflight");
+        if (!d.ok || d.u.i < 1) {
+            snprintf(err, errlen, "%s: 'server_inflight' must be a positive integer", place);
+            return -1;
+        }
+        bd->server_inflight = (size_t)d.u.i;
     }
     if (tab && toml_key_exists(tab, "push_rate")) {
         double r;
@@ -234,8 +272,44 @@ fail:
     return -1;
 }
 
+static void free_servers(tdot_connector_t *self) {
+    for (server_t *sv = self->state; sv;) {
+        server_t *next = sv->next;
+        free(sv);
+        sv = next;
+    }
+    self->state = NULL;
+}
+
+/* Devices naming the same endpoint share one server; it serves the smallest
+ * server_inflight among them. */
+static int build_servers(tdot_connector_t *self, tdot_config_t *cfg) {
+    free_servers(self);
+    for (size_t i = 0; i < cfg->ndevices; i++) {
+        tdot_device_t *dev = &cfg->devices[i];
+        bench_device_t *bd = dev->proto;
+        const char *name = bd->endpoint[0] ? bd->endpoint : dev->name;
+        server_t *sv = self->state;
+        while (sv && strcmp(sv->name, name) != 0)
+            sv = sv->next;
+        if (!sv) {
+            sv = calloc(1, sizeof *sv);
+            if (!sv)
+                return -1;
+            snprintf(sv->name, sizeof sv->name, "%s", name);
+            sv->limit = (size_t)-1;
+            atomic_init(&sv->serving, 0);
+            sv->next = self->state;
+            self->state = sv;
+        }
+        if (bd->server_inflight < sv->limit)
+            sv->limit = bd->server_inflight;
+        bd->server = sv;
+    }
+    return 0;
+}
+
 static int configure(tdot_connector_t *self, tdot_config_t *cfg, char *err, size_t errlen) {
-    (void)self;
     for (size_t i = 0; i < cfg->ndevices; i++) {
         tdot_device_t *dev = &cfg->devices[i];
         bench_device_t *bd = calloc(1, sizeof *bd + dev->npoints * sizeof bd->pushed[0]);
@@ -245,6 +319,7 @@ static int configure(tdot_connector_t *self, tdot_config_t *cfg, char *err, size
         }
         dev->proto = bd;
         bd->batch = (size_t)-1;
+        bd->server_inflight = (size_t)-1;
         if (device_spec(dev, bd, err, errlen) != 0)
             return -1;
         for (size_t j = 0; j < dev->npoints; j++) {
@@ -272,6 +347,10 @@ static int configure(tdot_connector_t *self, tdot_config_t *cfg, char *err, size
             if (point_spec(dev, pt, bp, err, errlen) != 0)
                 return -1;
         }
+    }
+    if (build_servers(self, cfg) != 0) {
+        snprintf(err, errlen, "out of memory");
+        return -1;
     }
     return 0;
 }
@@ -351,6 +430,75 @@ static size_t read_points(tdot_connector_t *self, tdot_device_t *dev, tdot_point
     return n;
 }
 
+static int endpoint(tdot_connector_t *self, const tdot_device_t *dev, char *buf, size_t len) {
+    (void)self;
+    const bench_device_t *bd = dev->proto;
+    if (!bd || !bd->endpoint[0])
+        return -1;
+    snprintf(buf, len, "%s", bd->endpoint);
+    return 0;
+}
+
+static size_t blocks_of(const bench_device_t *bd, size_t n) {
+    if (bd->batch == (size_t)-1 || n == 0)
+        return 1;
+    return (n + bd->batch - 1) / bd->batch;
+}
+
+static size_t read_wanted(tdot_connector_t *self, tdot_device_t *dev, size_t n) {
+    (void)self;
+    return blocks_of(dev->proto, n);
+}
+
+static bool server_enter(server_t *sv) {
+    size_t n = atomic_load(&sv->serving);
+    while (n < sv->limit)
+        if (atomic_compare_exchange_weak(&sv->serving, &n, n + 1))
+            return true;
+    return false;
+}
+
+static void sleep_s(double s) {
+    if (s <= 0)
+        return;
+    struct timespec ts = {(time_t)s, (long)((s - floor(s)) * 1e9)};
+    while (nanosleep(&ts, &ts) != 0) {
+    }
+}
+
+/* Blocks in flight wait their latency at the same time, up to the call's
+ * allowance per round; a block the endpoint refuses as busy is answered after
+ * its latency too, and sent again. */
+static size_t read_points_inflight(tdot_connector_t *self, tdot_device_t *dev,
+                                   tdot_point_t *const *pts, size_t n, tdot_sample_t *out,
+                                   int *rc, tdot_inflight_t *inflight) {
+    (void)self;
+    bench_device_t *bd = dev->proto;
+    size_t pending = blocks_of(bd, n);
+    while (pending > 0) {
+        size_t window = tdot_inflight_current(inflight);
+        size_t round = pending < window ? pending : window;
+        size_t served = 0;
+        for (size_t i = 0; i < round; i++)
+            served += server_enter(bd->server);
+        sleep_s(bd->latency_s);
+        for (size_t i = 0; i < round; i++) {
+            if (i < served) {
+                atomic_fetch_sub(&bd->server->serving, 1);
+                tdot_inflight_ok(inflight);
+            } else {
+                tdot_inflight_busy(inflight);
+            }
+        }
+        pending -= served;
+    }
+    for (size_t k = 0; k < n; k++) {
+        fill(pts[k], &out[k]);
+        rc[k] = 0;
+    }
+    return n;
+}
+
 static int subscribe_device(tdot_connector_t *self, tdot_device_t *dev, char *err,
                             size_t errlen) {
     (void)err;
@@ -408,6 +556,7 @@ static int drain_subscriptions(tdot_connector_t *self, tdot_device_t *dev,
 }
 
 static void destroy(tdot_connector_t *self) {
+    free_servers(self);
     free(self);
 }
 
@@ -421,6 +570,11 @@ tdot_connector_t *tdot_connector_bench_new(void) {
     c->connect_device = connect_device;
     c->read_point = read_point;
     c->read_points = read_points;
+    /* Each device's state is its own; the servers count with atomics. */
+    c->concurrent_reads = true;
+    c->endpoint = endpoint;
+    c->read_wanted = read_wanted;
+    c->read_points_inflight = read_points_inflight;
     c->subscribe_device = subscribe_device;
     c->drain_subscriptions = drain_subscriptions;
     c->disconnect_device = disconnect_device;

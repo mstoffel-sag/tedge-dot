@@ -95,7 +95,7 @@ reported separately and SHALL NOT be included in the connector, broker or mapper
 ### Requirement: Named scenarios and baseline
 `bench/scenarios.toml` SHALL define the scenarios `samples-flows`, `samples-noflows`,
 `samples-push`, `samples-push-jitter`, `samples-latency`, `opcua-polled`, `native-polled`,
-`native-flows` and `native-push-jitter`, each with its connector setup, whether the `ot-*` flows
+`native-flows`, `native-push-jitter`, `polled-latency` and `opcua-latency`, each with its connector setup, whether the `ot-*` flows
 are installed in the mapper's flows directory, rates and window. A scenario MAY set
 `output = "measurements"`, a list of `group_by` policies (`"time"`, `"frame:<window>"`,
 `"sample:<every>"` or `"sample:<every>:<aggregate>,..."` for a `batch.aggregate` list, one run
@@ -132,6 +132,14 @@ message, and SHALL report as missing the values that did not reach Cumulocity.
 #### Scenario: Aggregated sample run
 - **WHEN** a scenario's `group_by` lists `"sample:1s:mean,min,max"`
 - **THEN** that run's connector configuration sets `batch = { group_by = "sample", every = "1s", aggregate = ["mean", "min", "max"] }`
+
+#### Scenario: Latency-bound polling
+- **WHEN** `polled-latency` runs
+- **THEN** 64 bench devices on separate endpoints are polled every second with 20 ms per 500-point block in measurement output, and the result line records the connector's `max_inflight` and `max_inflight_total`
+
+#### Scenario: Latency-bound OPC UA device
+- **WHEN** `opcua-latency` runs
+- **THEN** one OPC UA device with 20,000 polled nodes is read from the standalone simulator started with `--latency 20ms`, which delays each direction of every connection by half the round trip
 
 ### Requirement: Standalone OPC UA simulator
 `ot-conformance serve opcua --points N` SHALL run the embedded OPC UA simulator with N `Double`

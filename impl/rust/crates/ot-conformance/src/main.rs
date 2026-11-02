@@ -61,6 +61,11 @@ struct ServeOpcuaArgs {
     /// Port to listen on; 0 picks a free one.
     #[arg(long, default_value_t = 4840)]
     port: u16,
+    /// A round trip added to every exchange, e.g. `20ms`: clients reach the server through a
+    /// proxy that delays each direction by half of it, as a network would. Requests in flight
+    /// overlap their delay (concurrent reads, contract §5.6).
+    #[arg(long)]
+    latency: Option<String>,
 }
 
 #[derive(Args)]
@@ -110,16 +115,36 @@ async fn main() -> ExitCode {
         },
         #[cfg(feature = "opcua")]
         Command::Serve(Serve::Opcua(args)) => {
+            let latency = match args.latency.as_deref().map(tedge_dot_sdk::parse_duration) {
+                None => None,
+                Some(Some(d)) => Some(d),
+                Some(None) => {
+                    eprintln!("error: --latency must be a duration such as 20ms");
+                    return ExitCode::from(2);
+                }
+            };
+            // Behind a proxy the server listens on a port of its own, and clients get the proxy's.
+            let port = if latency.is_some() { 0 } else { args.port };
             match ot_conformance::sim::bulk::BulkServer::start(
                 args.points,
                 args.change_rate,
                 &args.host,
-                args.port,
+                port,
             )
             .await
             {
                 Ok(server) => {
-                    println!("{}", server.endpoint);
+                    let endpoint = match latency {
+                        None => server.endpoint.clone(),
+                        Some(rtt) => match delay_proxy(&server.endpoint, &args.host, args.port, rtt).await {
+                            Ok(endpoint) => endpoint,
+                            Err(e) => {
+                                eprintln!("error: {e}");
+                                return ExitCode::from(2);
+                            }
+                        },
+                    };
+                    println!("{endpoint}");
                     let _ = tokio::signal::ctrl_c().await;
                     drop(server);
                     ExitCode::SUCCESS
@@ -131,6 +156,56 @@ async fn main() -> ExitCode {
             }
         }
     }
+}
+
+/// Listen on `host:port` and forward every connection to the OPC UA server at `upstream`,
+/// delaying each direction by half of `rtt` without limiting throughput: bytes are released in
+/// order once their delay has passed, so requests in flight overlap it. Returns the proxy's
+/// endpoint.
+#[cfg(feature = "opcua")]
+async fn delay_proxy(upstream: &str, host: &str, port: u16, rtt: std::time::Duration) -> Result<String, String> {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let target = upstream
+        .trim_start_matches("opc.tcp://")
+        .trim_end_matches('/')
+        .to_string();
+    let listener = tokio::net::TcpListener::bind((host, port))
+        .await
+        .map_err(|e| format!("cannot listen on {host}:{port}: {e}"))?;
+    let local = listener.local_addr().map_err(|e| e.to_string())?;
+    let one_way = rtt / 2;
+    async fn pipe(
+        mut from: tokio::net::tcp::OwnedReadHalf,
+        mut to: tokio::net::tcp::OwnedWriteHalf,
+        delay: std::time::Duration,
+    ) {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<(tokio::time::Instant, Vec<u8>)>();
+        tokio::spawn(async move {
+            while let Some((at, bytes)) = rx.recv().await {
+                tokio::time::sleep_until(at).await;
+                if to.write_all(&bytes).await.is_err() {
+                    break;
+                }
+            }
+        });
+        let mut buf = vec![0u8; 64 * 1024];
+        while let Ok(n) = from.read(&mut buf).await {
+            if n == 0 || tx.send((tokio::time::Instant::now() + delay, buf[..n].to_vec())).is_err() {
+                break;
+            }
+        }
+    }
+    tokio::spawn(async move {
+        while let Ok((client, _)) = listener.accept().await {
+            let Ok(server) = tokio::net::TcpStream::connect(&target).await else { continue };
+            let _ = (client.set_nodelay(true), server.set_nodelay(true));
+            let (cr, cw) = client.into_split();
+            let (sr, sw) = server.into_split();
+            tokio::spawn(pipe(cr, sw, one_way));
+            tokio::spawn(pipe(sr, cw, one_way));
+        }
+    });
+    Ok(format!("opc.tcp://{}:{}/", host, local.port()))
 }
 
 async fn check(args: CheckArgs) -> Result<bool, String> {

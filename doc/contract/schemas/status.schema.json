@@ -144,6 +144,20 @@
             }
           }
         },
+        "endpoints": {
+          "type": "array",
+          "description": "Concurrent reads (§5.6): each endpoint with the devices on it and its budget of requests in flight, after the module's cap.",
+          "items": {
+            "type": "object",
+            "required": ["endpoint", "devices", "max_inflight"],
+            "additionalProperties": false,
+            "properties": {
+              "endpoint": { "type": "string" },
+              "devices": { "type": "array", "items": { "type": "string" } },
+              "max_inflight": { "type": "integer", "minimum": 1 }
+            }
+          }
+        },
         "outputs": {
           "type": "array",
           "description": "Measurement output (§5.5): each device's output and its merged batch table ([connector], then the device), group_by filled in. Absent for a connector in samples output that sets no batch.",

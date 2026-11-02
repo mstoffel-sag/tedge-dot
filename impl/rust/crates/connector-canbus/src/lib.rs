@@ -136,6 +136,11 @@ impl Connector for CanbusConnector {
         Ok(())
     }
 
+    fn endpoint(&self, device: &DeviceId) -> Option<(String, Option<usize>)> {
+        // A CAN interface is one bus (contract §5.6).
+        self.devices.get(device).map(|d| (d.interface.interface.clone(), Some(1)))
+    }
+
     fn capabilities(&self) -> Capabilities {
         let mut features = vec!["subscribe".into(), "management".into()];
         #[cfg(feature = "canbus-fd")]

@@ -284,6 +284,12 @@ impl Connector for CanopenConnector {
         Ok(())
     }
 
+    fn endpoint(&self, device: &DeviceId) -> Option<(String, Option<usize>)> {
+        // Every node is on the connector's one CAN interface (contract §5.6).
+        let _ = self.devices.get(device)?;
+        Some((self.interface.clone().unwrap_or_default(), Some(1)))
+    }
+
     fn capabilities(&self) -> Capabilities {
         Capabilities {
             protocol: PROTOCOL,

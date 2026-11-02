@@ -448,6 +448,16 @@ static void destroy(tdot_connector_t *self) {
     free(self);
 }
 
+/* Every node is on the connector's one CAN interface (contract §5.6). */
+static int endpoint(tdot_connector_t *self, const tdot_device_t *dev, char *buf, size_t len) {
+    (void)dev;
+    const co_state_t *st = self->state;
+    if (!st)
+        return -1;
+    snprintf(buf, len, "%s", st->interface);
+    return 1;
+}
+
 tdot_connector_t *tdot_connector_canopen_new(void) {
     tdot_connector_t *c = calloc(1, sizeof *c);
     c->protocol = "canopen";
@@ -458,6 +468,7 @@ tdot_connector_t *tdot_connector_canopen_new(void) {
     c->configure = configure;
     c->connect_device = connect_device;
     c->read_point = read_point;
+    c->endpoint = endpoint;
     c->write_point = write_point;
     c->disconnect_device = disconnect_device;
     c->destroy = destroy;

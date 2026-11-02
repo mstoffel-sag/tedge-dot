@@ -53,6 +53,26 @@ instances = [1, 4]
 rates = [50000]
 
 [[scenario]]
+name = "polled-latency"
+description = "64 polled bench devices on separate endpoints, 20 ms per 500-point block, measurement output: bound by round trips unless devices are read concurrently (contract §5.6)"
+output = "measurements"
+devices = 64
+poll_interval = "1s"
+latency = "20ms"
+batch = 500
+rates = [64000]
+
+[[scenario]]
+name = "opcua-latency"
+description = "One OPC UA device with 20,000 polled nodes behind a 20 ms round trip (the simulator's --latency), measurement output: bound by round trips unless Reads are pipelined (contract §5.6)"
+module = "opcua"
+output = "measurements"
+devices = 1
+points = 20000
+latency = "20ms"
+rates = [20000, 80000]
+
+[[scenario]]
 name = "opcua-polled"
 description = "One OPC UA device with 20,000 polled nodes on the standalone simulator (ot-conformance serve opcua)"
 module = "opcua"

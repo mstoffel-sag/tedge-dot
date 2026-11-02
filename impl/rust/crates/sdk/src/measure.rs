@@ -1235,6 +1235,12 @@ mod tests {
             load("measurement = { grup = \"x\" }").unwrap_err(),
             "unknown key 'grup' in the measurement of [connector] (did you mean 'group'?)"
         );
+        // Concurrent reads (§5.6), the same cases as tests/config.c.
+        assert_eq!(load("max_inflight = 0").unwrap_err(), "[connector] max_inflight must be a positive integer");
+        assert_eq!(
+            load("max_inflight_total = \"many\"").unwrap_err(),
+            "[connector] max_inflight_total must be a positive integer"
+        );
         // The same cases as the C loader's tests/config.c
         // check_measurement_settings_are_validated, with the same messages.
         let point = |table: &str| {

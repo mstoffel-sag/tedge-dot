@@ -14,6 +14,7 @@
 
 #include "cjson/cJSON.h"
 #include "mosquitto.h"
+#include "tedge_dot/concurrency.h"
 #include "tedge_dot/health.h"
 #include "tedge_dot/measure.h"
 #include "tedge_dot/schedule.h"
@@ -105,7 +106,21 @@ typedef struct {
     /* This pass's wait for the broker: the tick, or less when a frame or a
      * sample is due sooner. */
     int wait_ms;
+    /* Concurrent reads (contract §5.6), for a module with concurrent_reads:
+     * the worker pool, the budgets of the devices' endpoints, and which
+     * devices (by index) have a read in flight. NULL otherwise. */
+    struct pool *pool;
+    tdot_budgets_t *budgets;
+    bool *busy;
+    /* When each device next has a point due (monotonic seconds), set when its
+     * read returns, so the loop does not scan its points until then. */
+    double *due_at;
 } rt_t;
+
+static void wait_idle(rt_t *rt);
+static int conn_endpoint(void *ctx, const tdot_device_t *dev, char *buf, size_t len);
+static void rebuild_concurrency(rt_t *rt);
+static bool is_busy(const rt_t *rt, size_t index);
 
 static void logmsg(const char *level, const char *fmt, ...) {
     char ts[40];
@@ -486,6 +501,7 @@ static void add_origin(cJSON *out, const cJSON *req) {
 /* `write`: {"status":"init","point":...,"value":...} -> executing -> successful|failed */
 static void handle_write(rt_t *rt, const char *topic, const char *dev_name,
                          tdot_device_t *dev, const cJSON *req) {
+    wait_idle(rt); /* a device is never read and written at once (§5.6) */
     const cJSON *jpoint = cJSON_GetObjectItem(req, "point");
     const char *point_id = cJSON_IsString(jpoint) ? jpoint->valuestring : NULL;
     const cJSON *jv = cJSON_GetObjectItem(req, "value");
@@ -527,6 +543,7 @@ static void handle_write(rt_t *rt, const char *topic, const char *dev_name,
  * values, so no transform or map applies. */
 static void handle_call_method(rt_t *rt, const char *topic, const char *dev_name,
                                tdot_device_t *dev, const cJSON *req) {
+    wait_idle(rt); /* a device is never read and written at once (§5.6) */
     const cJSON *jpoint = cJSON_GetObjectItem(req, "point");
     const char *point_id = cJSON_IsString(jpoint) ? jpoint->valuestring : NULL;
     const cJSON *args = cJSON_GetObjectItem(req, "arguments");
@@ -593,6 +610,7 @@ static void handle_call_method(rt_t *rt, const char *topic, const char *dev_name
 static void handle_write_batch(rt_t *rt, const char *topic,
                                const char *dev_name, tdot_device_t *dev,
                                const cJSON *req) {
+    wait_idle(rt); /* a device is never read and written at once (§5.6) */
     const cJSON *writes = cJSON_GetObjectItem(req, "writes");
     cJSON *results = cJSON_CreateArray();
     char reason[TDOT_ERR_MAX] = "";
@@ -958,6 +976,19 @@ static void publish_capabilities(rt_t *rt) {
     snprintf(cap_topic, sizeof cap_topic,
              "te/device/main/service/%s/ot/capabilities", rt->cfg->service_name);
     char *caps = augmented_capabilities(rt->conn->capabilities_json, rt->cfg);
+    /* Concurrent reads (§5.6): each endpoint with its devices and its budget. */
+    cJSON *doc = cJSON_Parse(caps ? caps : rt->conn->capabilities_json);
+    tdot_budgets_t *b = tdot_budgets_new(rt->cfg, conn_endpoint, rt->conn);
+    if (doc && b) {
+        cJSON_AddItemToObject(doc, "endpoints", tdot_budgets_describe(b));
+        char *with = cJSON_PrintUnformatted(doc);
+        if (with) {
+            free(caps);
+            caps = with;
+        }
+    }
+    tdot_budgets_free(b);
+    cJSON_Delete(doc);
     publish(rt, cap_topic, caps ? caps : rt->conn->capabilities_json, true);
     free(caps);
 }
@@ -1565,6 +1596,7 @@ static void commit_config(rt_t *rt, tdot_config_t *candidate) {
         tdot_batcher_flush_all(rt->batcher, publish_measurement, rt);
     tdot_config_replace(rt->cfg, candidate);
     rebuild_batcher(rt);
+    rebuild_concurrency(rt);
     publish_capabilities(rt);
     for (size_t i = 0; i < rt->cfg->ndevices; i++)
         connect_device(rt, &rt->cfg->devices[i]);
@@ -1575,6 +1607,7 @@ static void commit_config(rt_t *rt, tdot_config_t *candidate) {
  * failure the running configuration is kept (and re-configured). */
 static void handle_management(rt_t *rt, const char *topic, const char *verb,
                               const cJSON *req) {
+    wait_idle(rt); /* a device is never read and written at once (§5.6) */
     publish_status(rt, topic, "executing", NULL, req);
     char reason[TDOT_ERR_MAX] = "";
     tdot_config_t *cfg = rt->cfg;
@@ -1671,6 +1704,7 @@ static bool needs_restart(const tdot_config_t *running,
  * same documents, point libraries included -- is left alone entirely, so a
  * reload for another connector's file does not reconnect this one's devices. */
 static reload_t reload_from_file(rt_t *rt, bool can_restart) {
+    wait_idle(rt); /* a device is never read and written at once (§5.6) */
     tdot_config_t *cfg = rt->cfg;
     if (!cfg->path)
         return RELOAD_UNCHANGED;
@@ -1816,6 +1850,8 @@ static void report_pass(rt_t *rt, const run_ctl_t *ctl) {
     int64_t now = mono_ns();
     for (size_t i = 0; i < rt->cfg->ndevices && !stop_requested(ctl); i++) {
         tdot_device_t *dev = &rt->cfg->devices[i];
+        if (is_busy(rt, i))
+            continue; /* its points are the worker's until the read returns */
         bool transport_down = false;
         size_t bad = 0, read = 0;
         /* Only the points with a policy (schedule.h): the others publish every
@@ -1884,7 +1920,11 @@ typedef struct {
 static void take_reading(rt_t *rt, tdot_device_t *dev, tdot_point_t *pt,
                          tdot_sample_t *s, int rc, double now, double read_ms,
                          poll_pass_t *pass) {
-    pt->next_due = now + pt->poll_interval_s;
+    /* On the interval's grid, so a pass handled a little late does not push
+     * every later poll back; a point a whole interval behind starts again. */
+    pt->next_due += pt->poll_interval_s;
+    if (pt->next_due <= now)
+        pt->next_due = now + pt->poll_interval_s;
     /* Nothing new to publish (a CAN frame not received again): not a reading,
      * so it says nothing about the link either. */
     if (rc == TDOT_READ_NO_DATA)
@@ -1950,6 +1990,359 @@ static bool poll_batched(rt_t *rt, tdot_device_t *dev, double now, poll_pass_t *
                          now, read_ms, pass);
     }
     return true;
+}
+
+
+/* ---- concurrent reads (contract §5.6) ----------------------------------------
+ * A module with concurrent_reads has its device reads run on a pool of worker
+ * threads, at most max_inflight_total of them, created on demand. A worker
+ * only calls the module's read hook, within the endpoint's budget; the result
+ * comes back here and is published from this thread exactly as a read made
+ * here would be, so the report policy, the batcher, the link status and MQTT
+ * stay on one thread. A device with a read in flight is skipped by the poll
+ * loop, its drain and reconnect, and by the heartbeat pass; a command or a
+ * reload waits for every read in flight first (wait_idle). */
+
+typedef struct job {
+    size_t index; /* the device's */
+    double now;   /* the pass's start */
+    size_t n, got;
+    tdot_point_t **pts;
+    tdot_sample_t *out;
+    int *rc;
+    double *read_ms; /* each point's read time: its call's completion */
+    struct job *next;
+} job_t;
+
+typedef struct pool {
+    pthread_mutex_t mu;
+    pthread_cond_t work, done;
+    job_t *todo, *todo_tail;
+    job_t *finished, *finished_tail;
+    size_t inflight; /* submitted, not yet handed back to the loop */
+    size_t queued;   /* submitted, not yet taken by a worker */
+    size_t threads, idle, max;
+    pthread_t *tids;
+    bool stop;
+    tdot_connector_t *conn;
+    tdot_config_t *cfg;
+    tdot_budgets_t *budgets;
+} pool_t;
+
+static int conn_endpoint(void *ctx, const tdot_device_t *dev, char *buf, size_t len) {
+    tdot_connector_t *conn = ctx;
+    return conn->endpoint ? conn->endpoint(conn, dev, buf, len) : -1;
+}
+
+static void job_free(job_t *j) {
+    if (!j)
+        return;
+    free(j->pts);
+    free(j->out);
+    free(j->rc);
+    free(j->read_ms);
+    free(j);
+}
+
+/* Read a job's points through the module, on a worker thread. */
+static void run_job(pool_t *p, job_t *j) {
+    tdot_connector_t *conn = p->conn;
+    tdot_device_t *dev = &p->cfg->devices[j->index];
+    size_t wanted = conn->read_wanted ? conn->read_wanted(conn, dev, j->n) : 1;
+    tdot_inflight_t f;
+    tdot_budgets_acquire(p->budgets, j->index, wanted, &f);
+    for (size_t k = 0; k < j->n; k++)
+        tdot_sample_init(&j->out[k]);
+    if (conn->read_points_inflight) {
+        size_t got = conn->read_points_inflight(conn, dev, j->pts, j->n, j->out, j->rc, &f);
+        j->got = got > j->n ? j->n : got;
+        double ms = tdot_now_ms();
+        for (size_t k = 0; k < j->got; k++)
+            j->read_ms[k] = ms;
+    } else if (conn->read_points) {
+        /* One read time per call (contract §5.4), TDOT_READ_POINTS_MAX at a time. */
+        size_t k = 0;
+        while (k < j->n) {
+            size_t m = j->n - k < TDOT_READ_POINTS_MAX ? j->n - k : TDOT_READ_POINTS_MAX;
+            size_t got = conn->read_points(conn, dev, j->pts + k, m, j->out + k, j->rc + k);
+            if (got > m)
+                got = m;
+            double ms = tdot_now_ms();
+            for (size_t i = k; i < k + got; i++)
+                j->read_ms[i] = ms;
+            j->got = k + got;
+            if (got < m || (got > 0 && j->rc[k + got - 1] == -1))
+                break;
+            k += m;
+        }
+    } else {
+        /* One point per call: the pass is the read call, timed at its first
+         * read's completion, as on the loop. */
+        double ms = 0;
+        for (size_t k = 0; k < j->n; k++) {
+            j->rc[k] = conn->read_point(conn, dev, j->pts[k], &j->out[k]);
+            if (ms == 0)
+                ms = tdot_now_ms();
+            j->read_ms[k] = ms;
+            j->got = k + 1;
+            if (j->rc[k] == -1)
+                break;
+        }
+    }
+    tdot_inflight_release(&f);
+}
+
+static void *worker(void *arg) {
+    pool_t *p = arg;
+    pthread_mutex_lock(&p->mu);
+    for (;;) {
+        while (!p->stop && !p->todo)
+            pthread_cond_wait(&p->work, &p->mu);
+        if (p->stop)
+            break;
+        job_t *j = p->todo;
+        p->todo = j->next;
+        if (!p->todo)
+            p->todo_tail = NULL;
+        p->queued--;
+        p->idle--;
+        pthread_mutex_unlock(&p->mu);
+        run_job(p, j);
+        pthread_mutex_lock(&p->mu);
+        j->next = NULL;
+        if (p->finished_tail)
+            p->finished_tail->next = j;
+        else
+            p->finished = j;
+        p->finished_tail = j;
+        p->idle++;
+        pthread_cond_broadcast(&p->done);
+    }
+    pthread_mutex_unlock(&p->mu);
+    return NULL;
+}
+
+static pool_t *pool_new(tdot_connector_t *conn, tdot_config_t *cfg, tdot_budgets_t *budgets) {
+    pool_t *p = calloc(1, sizeof *p);
+    size_t max = cfg->max_inflight_total > 0 ? (size_t)cfg->max_inflight_total
+                                             : TDOT_DEFAULT_MAX_INFLIGHT_TOTAL;
+    if (!p || !(p->tids = calloc(max, sizeof *p->tids))) {
+        free(p);
+        return NULL;
+    }
+    pthread_mutex_init(&p->mu, NULL);
+    pthread_cond_init(&p->work, NULL);
+    pthread_cond_init(&p->done, NULL);
+    p->max = max;
+    p->conn = conn;
+    p->cfg = cfg;
+    p->budgets = budgets;
+    return p;
+}
+
+/* Stop and join the workers. Every job must have been handed back. */
+static void pool_free(pool_t *p) {
+    if (!p)
+        return;
+    pthread_mutex_lock(&p->mu);
+    p->stop = true;
+    pthread_cond_broadcast(&p->work);
+    pthread_mutex_unlock(&p->mu);
+    for (size_t i = 0; i < p->threads; i++)
+        pthread_join(p->tids[i], NULL);
+    pthread_mutex_destroy(&p->mu);
+    pthread_cond_destroy(&p->work);
+    pthread_cond_destroy(&p->done);
+    free(p->tids);
+    free(p);
+}
+
+static bool pool_submit(pool_t *p, job_t *j) {
+    pthread_mutex_lock(&p->mu);
+    /* A worker for every job waiting, up to the cap: an idle worker that has
+     * not yet taken the job before this one is no worker for this one. */
+    if (p->idle <= p->queued && p->threads < p->max) {
+        if (pthread_create(&p->tids[p->threads], NULL, worker, p) == 0) {
+            p->threads++;
+            p->idle++;
+        }
+    }
+    if (p->threads == 0) {
+        pthread_mutex_unlock(&p->mu);
+        return false;
+    }
+    j->next = NULL;
+    if (p->todo_tail)
+        p->todo_tail->next = j;
+    else
+        p->todo = j;
+    p->todo_tail = j;
+    p->queued++;
+    p->inflight++;
+    pthread_cond_signal(&p->work);
+    pthread_mutex_unlock(&p->mu);
+    return true;
+}
+
+/* Hand a device's due points to a worker. False when none is due or the job
+ * cannot be made: the loop then reads the device itself. */
+static bool submit_due(rt_t *rt, size_t index, double now) {
+    tdot_device_t *dev = &rt->cfg->devices[index];
+    size_t n = dev->polled ? dev->npolled : dev->npoints, due = 0;
+    for (size_t k = 0; k < n; k++)
+        if (poll_due(&dev->points[dev->polled ? dev->polled[k] : k], now))
+            due++;
+    if (due == 0)
+        return false;
+    job_t *j = calloc(1, sizeof *j);
+    if (j) {
+        j->pts = calloc(due, sizeof *j->pts);
+        j->out = calloc(due, sizeof *j->out);
+        j->rc = calloc(due, sizeof *j->rc);
+        j->read_ms = calloc(due, sizeof *j->read_ms);
+    }
+    if (!j || !j->pts || !j->out || !j->rc || !j->read_ms) {
+        job_free(j);
+        return false;
+    }
+    j->index = index;
+    j->now = now;
+    for (size_t k = 0; k < n; k++) {
+        tdot_point_t *pt = &dev->points[dev->polled ? dev->polled[k] : k];
+        if (poll_due(pt, now))
+            j->pts[j->n++] = pt;
+    }
+    rt->busy[index] = true;
+    if (!pool_submit(rt->pool, j)) {
+        rt->busy[index] = false;
+        job_free(j);
+        return false;
+    }
+    return true;
+}
+
+static void finish_pass(rt_t *rt, tdot_device_t *dev, const poll_pass_t *pass, size_t n);
+
+/* Publish a finished read as the loop publishes its own, and free the device. */
+static void finish_job(rt_t *rt, job_t *j) {
+    tdot_device_t *dev = &rt->cfg->devices[j->index];
+    poll_pass_t pass = {0};
+    for (size_t k = 0; k < j->got && !pass.transport_down; k++)
+        take_reading(rt, dev, j->pts[k], &j->out[k], j->rc[k], j->now, j->read_ms[k], &pass);
+    size_t n = dev->polled ? dev->npolled : dev->npoints;
+    finish_pass(rt, dev, &pass, n);
+    double due = 0;
+    for (size_t k = 0; k < n; k++) {
+        const tdot_point_t *pt = &dev->points[dev->polled ? dev->polled[k] : k];
+        if (!pt->subscribed && (pt->access & TDOT_ACCESS_READ) && (due == 0 || pt->next_due < due))
+            due = pt->next_due;
+    }
+    rt->due_at[j->index] = due;
+    rt->busy[j->index] = false;
+    job_free(j);
+}
+
+/* Publish the reads the workers have finished; with `all`, wait until no read
+ * is in flight. */
+static void collect_reads(rt_t *rt, bool all) {
+    pool_t *p = rt->pool;
+    if (!p)
+        return;
+    for (;;) {
+        pthread_mutex_lock(&p->mu);
+        while (all && !p->finished && p->inflight > 0)
+            pthread_cond_wait(&p->done, &p->mu);
+        job_t *done = p->finished;
+        p->finished = p->finished_tail = NULL;
+        size_t taken = 0;
+        for (job_t *j = done; j; j = j->next)
+            taken++;
+        p->inflight -= taken;
+        bool more = all && p->inflight > 0;
+        pthread_mutex_unlock(&p->mu);
+        while (done) {
+            job_t *next = done->next;
+            finish_job(rt, done);
+            done = next;
+        }
+        if (!more)
+            break;
+    }
+}
+
+/* Wait up to `ms` for a read in flight to return. True when reads were in
+ * flight: the caller then services the broker without waiting. */
+static bool pool_wait(pool_t *p, int ms) {
+    if (!p)
+        return false;
+    pthread_mutex_lock(&p->mu);
+    bool waiting = p->inflight > 0;
+    if (waiting && !p->finished && ms > 0) {
+        struct timespec until;
+        clock_gettime(CLOCK_REALTIME, &until);
+        until.tv_nsec += (long)ms * 1000000L;
+        until.tv_sec += until.tv_nsec / 1000000000L;
+        until.tv_nsec %= 1000000000L;
+        pthread_cond_timedwait(&p->done, &p->mu, &until);
+    }
+    pthread_mutex_unlock(&p->mu);
+    return waiting;
+}
+
+/* Wait for every read in flight and publish it: before a command writes to a
+ * device, a reload replaces the configuration, or the connector stops. */
+static void wait_idle(rt_t *rt) { collect_reads(rt, true); }
+
+/* (Re)build the budgets and the busy flags for the running configuration. No
+ * read may be in flight. */
+static void rebuild_concurrency(rt_t *rt) {
+    if (!rt->conn->concurrent_reads)
+        return;
+    tdot_budgets_free(rt->budgets);
+    free(rt->busy);
+    free(rt->due_at);
+    rt->budgets = tdot_budgets_new(rt->cfg, conn_endpoint, rt->conn);
+    rt->busy = calloc(rt->cfg->ndevices ? rt->cfg->ndevices : 1, sizeof *rt->busy);
+    rt->due_at = calloc(rt->cfg->ndevices ? rt->cfg->ndevices : 1, sizeof *rt->due_at);
+    if (rt->pool)
+        rt->pool->budgets = rt->budgets;
+    if (!rt->budgets || !rt->busy || !rt->due_at) {
+        logmsg("warn", "out of memory for concurrent reads: devices are read one at a time");
+        pool_free(rt->pool);
+        rt->pool = NULL;
+        tdot_budgets_free(rt->budgets);
+        rt->budgets = NULL;
+        free(rt->busy);
+        rt->busy = NULL;
+        free(rt->due_at);
+        rt->due_at = NULL;
+        return;
+    }
+    if (!rt->pool) {
+        rt->pool = pool_new(rt->conn, rt->cfg, rt->budgets);
+        if (!rt->pool)
+            logmsg("warn", "cannot start the read workers: devices are read one at a time");
+    }
+}
+
+/* Whether device `index` has a read in flight. */
+static bool is_busy(const rt_t *rt, size_t index) { return rt->busy && rt->busy[index]; }
+
+/* After a device's poll pass: close the measurements, judge the points, and
+ * set the link from what the pass saw. */
+static void finish_pass(rt_t *rt, tdot_device_t *dev, const poll_pass_t *pass, size_t n) {
+    end_of_pass(rt);
+    if (pass->polled > 0)
+        judge_pass(dev, dev->polled, n, !pass->transport_down && pass->bad < pass->polled);
+    if (pass->transport_down) {
+        mark_transport_down(rt, dev);
+        return;
+    }
+    if (pass->polled > 0) {
+        /* whole batch failing degrades the link; any success is connected */
+        publish_link(rt, dev,
+                     pass->bad == pass->polled ? TDOT_LINK_DEGRADED : TDOT_LINK_CONNECTED);
+    }
 }
 
 /* Run one connector to completion. Assumes the mosquitto library is already
@@ -2030,6 +2423,7 @@ static int run_connector(tdot_connector_t *conn, tdot_config_t *cfg,
     /* Initial connect for all devices. */
     for (size_t i = 0; i < cfg->ndevices; i++)
         connect_device(&rt, &cfg->devices[i]);
+    rebuild_concurrency(&rt);
 
     double deadline =
         opts->duration_s > 0 ? tdot_mono() + opts->duration_s : 0;
@@ -2055,8 +2449,12 @@ static int run_connector(tdot_connector_t *conn, tdot_config_t *cfg,
 
         beat(&rt);
 
+        collect_reads(&rt, false);
         for (size_t i = 0; i < cfg->ndevices && !stop_requested(ctl); i++) {
             tdot_device_t *dev = &cfg->devices[i];
+            /* A read in flight: its result is published when it returns. */
+            if (is_busy(&rt, i))
+                continue;
             if (dev->link == TDOT_LINK_DISCONNECTED) {
                 if (now < dev->reconnect_at)
                     continue;
@@ -2064,10 +2462,15 @@ static int run_connector(tdot_connector_t *conn, tdot_config_t *cfg,
                 if (dev->link != TDOT_LINK_CONNECTED)
                     continue;
             }
+            /* A worker reads it (§5.6); its drain waits for the next pass. */
+            if (rt.pool && now >= rt.due_at[i] && submit_due(&rt, i, now))
+                continue;
             poll_pass_t pass = {0};
             /* Only the polled points (schedule.h), not every point. */
             size_t n = dev->polled ? dev->npolled : dev->npoints;
-            if (!conn->read_points || !poll_batched(&rt, dev, now, &pass)) {
+            if (rt.pool) {
+                /* Read by the workers: nothing is due here until due_at. */
+            } else if (!conn->read_points || !poll_batched(&rt, dev, now, &pass)) {
                 /* A module that reads one point per call: the pass over the device is
                  * its read call (contract §5.4), timed at its first read's completion,
                  * so the pass batches into one measurement as a read_points call does. */
@@ -2085,21 +2488,9 @@ static int run_connector(tdot_connector_t *conn, tdot_config_t *cfg,
                     take_reading(&rt, dev, pt, &s, rc, now, read_ms, &pass);
                 }
             }
-            end_of_pass(&rt);
-            if (pass.polled > 0)
-                judge_pass(dev, dev->polled, n,
-                           !pass.transport_down && pass.bad < pass.polled);
-            if (pass.transport_down) {
-                mark_transport_down(&rt, dev);
+            finish_pass(&rt, dev, &pass, n);
+            if (pass.transport_down)
                 continue;
-            }
-            if (pass.polled > 0) {
-                /* whole batch failing degrades the link; any success is
-                 * connected */
-                publish_link(&rt, dev,
-                             pass.bad == pass.polled ? TDOT_LINK_DEGRADED
-                                                     : TDOT_LINK_CONNECTED);
-            }
 
             /* Hand over whatever the module received by push since the last
              * tick. Only the drain's transport verdict feeds the link state:
@@ -2117,11 +2508,17 @@ static int run_connector(tdot_connector_t *conn, tdot_config_t *cfg,
             }
         }
 
+        collect_reads(&rt, false);
         report_pass(&rt, ctl);
 
         /* Measurement output: the frames that ended and the samples due, and a
          * wait no longer than until the next of them. */
         rt.wait_ms = rt.tick_ms;
+        /* With reads in flight, wait for the first of them to return rather
+         * than on the broker's socket alone (pool_wait), in slices short
+         * enough that a command is still handled promptly. */
+        if (pool_wait(rt.pool, rt.wait_ms < 20 ? rt.wait_ms : 20))
+            rt.wait_ms = 0;
         if (rt.batcher) {
             tdot_batcher_due(rt.batcher, mono_ns(), tdot_now_ms(), publish_measurement, &rt);
             long long next = tdot_batcher_next_deadline(rt.batcher);
@@ -2141,6 +2538,11 @@ static int run_connector(tdot_connector_t *conn, tdot_config_t *cfg,
     }
 
     logmsg("info", "shutting down");
+    wait_idle(&rt);
+    pool_free(rt.pool);
+    tdot_budgets_free(rt.budgets);
+    free(rt.busy);
+    free(rt.due_at);
     if (rt.batcher)
         tdot_batcher_flush_all(rt.batcher, publish_measurement, &rt);
     for (size_t i = 0; i < cfg->ndevices; i++)

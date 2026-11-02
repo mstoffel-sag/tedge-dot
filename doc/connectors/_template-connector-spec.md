@@ -12,7 +12,7 @@
 | Protocol id | `<protocol>` |
 | Crate | `connector-<protocol>` (feature `<protocol>`) |
 | Builds on | `<rust crate(s) used>`, [Connector SDK](../sdk/connector-sdk.md) |
-| Implements | [OT Connector Contract](../contract/ot-connector-contract.md) v0.3.0 |
+| Implements | [OT Connector Contract](../contract/ot-connector-contract.md) v0.4.0 |
 
 ## 1. Scope
 

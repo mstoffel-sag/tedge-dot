@@ -11,10 +11,12 @@ pub use config::{ModbusAddress, ModbusConnection, ProtocolAddress, SerialDefault
 
 use async_trait::async_trait;
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::time::Duration;
+use tedge_dot_sdk::concurrency::InFlight;
 use tedge_dot_sdk::{
     decode_primitive, encode_primitive, extract_bitfield, Access, Capabilities, CommandRequest,
-    CommandResult, ConfigError, Connector, ConnectorConfig, ConnectorError, DataType, DeviceId,
+    CommandResult, ConfigError, Connector, ConnectorConfig, ConnectorError, DataType, DeviceId, DeviceReader,
     Endianness, LinkReport, LinkStatus, Mode, PointRef, Quality, Sample, Transform, Value,
     WordOrder,
 };
@@ -41,8 +43,13 @@ struct ModbusPoint {
 
 struct DeviceModel {
     address: ProtocolAddress,
-    points: HashMap<String, ModbusPoint>,
+    /// Shared with the device's readers (contract §5.6).
+    points: Arc<HashMap<String, ModbusPoint>>,
 }
+
+/// A device's connection, shared with its reader (contract §5.6). The lock keeps one request at a
+/// time on it: a read and a write never interleave.
+type Shared = Arc<tokio::sync::Mutex<Context>>;
 
 /// The Modbus connector. One instance manages all configured Modbus devices.
 #[derive(Default)]
@@ -51,7 +58,7 @@ pub struct ModbusConnector {
     /// Per-request bound; see [`ModbusConnection::request_timeout_s`].
     request_timeout: Duration,
     devices: HashMap<String, DeviceModel>,
-    contexts: HashMap<String, Context>,
+    contexts: HashMap<String, Shared>,
 }
 
 /// Factory used by the binary to instantiate the module behind its feature flag.
@@ -125,7 +132,7 @@ impl Connector for ModbusConnector {
                 );
             }
             self.devices
-                .insert(d.name.clone(), DeviceModel { address, points });
+                .insert(d.name.clone(), DeviceModel { address, points: Arc::new(points) });
         }
         Ok(())
     }
@@ -165,7 +172,7 @@ impl Connector for ModbusConnector {
             let address = self.devices[&name].address.clone();
             match build_context(&address, &self.serial).await {
                 Ok(ctx) => {
-                    self.contexts.insert(name.clone(), ctx);
+                    self.contexts.insert(name.clone(), Arc::new(tokio::sync::Mutex::new(ctx)));
                     reports.push(LinkReport {
                         device: name,
                         status: LinkStatus::Connected,
@@ -184,6 +191,24 @@ impl Connector for ModbusConnector {
             }
         }
         Ok(reports)
+    }
+
+    fn endpoint(&self, device: &DeviceId) -> Option<(String, Option<usize>)> {
+        // A TCP device's host and port; a serial bus carries one request at a time.
+        self.devices.get(device).map(|d| match &d.address {
+            ProtocolAddress::Tcp { host, port, .. } => (format!("{}:{port}", host.to_ascii_lowercase()), None),
+            ProtocolAddress::Rtu { serial_port, .. } => (serial_port.clone(), Some(1)),
+        })
+    }
+
+    fn reader(&self, device: &DeviceId) -> Option<Arc<dyn DeviceReader>> {
+        let dev = self.devices.get(device)?;
+        Some(Arc::new(ModbusReader {
+            ctx: self.contexts.get(device)?.clone(),
+            points: dev.points.clone(),
+            unit_id: dev.address.unit_id(),
+            timeout: self.request_timeout(),
+        }))
     }
 
     async fn read_points(
@@ -206,51 +231,11 @@ impl Connector for ModbusConnector {
                 None => (0, points.iter().map(|p| (p.id.clone(), None)).collect()),
             };
 
-        let ctx = match self.contexts.get_mut(device) {
-            Some(c) => c,
-            None => {
-                return Ok(models
-                    .into_iter()
-                    .map(|(id, model)| {
-                        let group = model
-                            .as_ref()
-                            .map(|m| if m.address.table.is_bit() { 1 } else { 2 })
-                            .unwrap_or(2);
-                        bad_sample(&id, model.as_ref(), unit_id, group, "device not connected")
-                    })
-                    .collect());
-            }
+        let Some(shared) = self.contexts.get(device).cloned() else {
+            return Ok(not_connected(models, unit_id));
         };
-
-        // Set once a request times out: every remaining point of this batch is reported
-        // without retrying, so one dead device cannot stretch a poll cycle by N timeouts.
-        let mut dead = false;
-        let mut out = Vec::with_capacity(models.len());
-        for (id, model) in models {
-            let model = match model {
-                Some(m) => m,
-                None => {
-                    out.push(bad_sample(&id, None, unit_id, 2, "unknown point"));
-                    continue;
-                }
-            };
-            if dead {
-                // The peer already stopped answering this cycle: report the rest without
-                // waiting for another timeout each.
-                out.push(bad_sample(
-                    &id,
-                    Some(&model),
-                    unit_id,
-                    if model.address.table.is_bit() { 1 } else { 2 },
-                    "skipped: device stopped answering",
-                ));
-                continue;
-            }
-            let (sample, timed_out) = read_one(ctx, &id, &model, unit_id, timeout).await;
-            dead = timed_out;
-            out.push(sample);
-        }
-        Ok(out)
+        let mut ctx = shared.lock().await;
+        Ok(read_models(&mut ctx, unit_id, models, timeout).await)
     }
 
     async fn reconnect(&mut self, device: &DeviceId) -> Result<LinkReport, ConnectorError> {
@@ -264,7 +249,7 @@ impl Connector for ModbusConnector {
         self.contexts.remove(device);
         match build_context(&address, &self.serial).await {
             Ok(ctx) => {
-                self.contexts.insert(device.clone(), ctx);
+                self.contexts.insert(device.clone(), Arc::new(tokio::sync::Mutex::new(ctx)));
                 Ok(LinkReport {
                     device: device.clone(),
                     status: LinkStatus::Connected,
@@ -307,12 +292,14 @@ impl Connector for ModbusConnector {
         }
         let timeout = self.request_timeout();
 
-        let ctx = self
+        let shared = self
             .contexts
-            .get_mut(device)
+            .get(device)
+            .cloned()
             .ok_or_else(|| ConnectorError::NotConnected(device.clone()))?;
+        let mut ctx = shared.lock().await;
 
-        match tokio::time::timeout(timeout, write_point(ctx, &model, request)).await {
+        match tokio::time::timeout(timeout, write_point(&mut ctx, &model, request)).await {
             Ok(result) => result?,
             Err(_) => {
                 return Err(ConnectorError::Transport(format!(
@@ -509,6 +496,77 @@ async fn write_point(
         flatten_write(ctx.write_single_register(addr.address, regs[0]).await)
     } else {
         flatten_write(ctx.write_multiple_registers(addr.address, &regs).await)
+    }
+}
+
+/// The samples of `models` when the device has no connection.
+fn not_connected(models: Vec<(String, Option<ModbusPoint>)>, unit_id: u8) -> Vec<Sample> {
+    models
+        .into_iter()
+        .map(|(id, model)| {
+            let group = model
+                .as_ref()
+                .map(|m| if m.address.table.is_bit() { 1 } else { 2 })
+                .unwrap_or(2);
+            bad_sample(&id, model.as_ref(), unit_id, group, "device not connected")
+        })
+        .collect()
+}
+
+/// Read `models` one request at a time on `ctx`: the shared part of [`Connector::read_points`]
+/// and [`ModbusReader`].
+async fn read_models(
+    ctx: &mut Context,
+    unit_id: u8,
+    models: Vec<(String, Option<ModbusPoint>)>,
+    timeout: Duration,
+) -> Vec<Sample> {
+    // Set once a request times out: every remaining point of this batch is reported
+    // without retrying, so one dead device cannot stretch a poll cycle by N timeouts.
+    let mut dead = false;
+    let mut out = Vec::with_capacity(models.len());
+    for (id, model) in models {
+        let model = match model {
+            Some(m) => m,
+            None => {
+                out.push(bad_sample(&id, None, unit_id, 2, "unknown point"));
+                continue;
+            }
+        };
+        if dead {
+            // The peer already stopped answering this cycle: report the rest without
+            // waiting for another timeout each.
+            out.push(bad_sample(
+                &id,
+                Some(&model),
+                unit_id,
+                if model.address.table.is_bit() { 1 } else { 2 },
+                "skipped: device stopped answering",
+            ));
+            continue;
+        }
+        let (sample, timed_out) = read_one(ctx, &id, &model, unit_id, timeout).await;
+        dead = timed_out;
+        out.push(sample);
+    }
+    out
+}
+
+/// Reads one Modbus device from a task of its own (contract §5.6). Modbus serves one request at
+/// a time, so its reads never pipeline: devices on different endpoints run concurrently.
+struct ModbusReader {
+    ctx: Shared,
+    points: Arc<HashMap<String, ModbusPoint>>,
+    unit_id: u8,
+    timeout: Duration,
+}
+
+#[async_trait]
+impl DeviceReader for ModbusReader {
+    async fn read_points(&self, points: &[PointRef], _inflight: &InFlight) -> Result<Vec<Sample>, ConnectorError> {
+        let models = points.iter().map(|p| (p.id.clone(), self.points.get(&p.id).cloned())).collect();
+        let mut ctx = self.ctx.lock().await;
+        Ok(read_models(&mut ctx, self.unit_id, models, self.timeout).await)
     }
 }
 
