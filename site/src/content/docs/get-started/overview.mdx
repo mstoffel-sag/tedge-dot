@@ -33,6 +33,12 @@ parameters in the digital twin, and carry writes from the cloud back to the conn
 every connector speaks the same [OT Connector Contract](/tedge-dot/reference/contract/ot-connector-contract/),
 the same flows work for every protocol.
 
+For many points at a high rate, a connector can publish the measurements itself, hundreds of
+readings per message (`output = "measurements"`), and keep samples only for the points that a
+flow still reads. It reads its devices in parallel, within a per-endpoint budget of requests in
+flight. See [measurement output](/tedge-dot/reference/configuration/measurement-output/) and
+[concurrent reads](/tedge-dot/reference/configuration/concurrent-reads/).
+
 Writes never open a second protocol session. A write, or an edit in the Cumulocity
 *Parameters* tab, becomes a thin-edge.io command that the connector carries out and acknowledges.
 
@@ -48,7 +54,7 @@ A connector is one TOML file per protocol in `/etc/tedge/plugins/ot/`:
 
 The service applies a changed file within a few seconds, without a restart. Every key is listed in
 the [configuration reference](/tedge-dot/reference/configuration/config-file/), and the
-[config builder](/tedge-dot/tools/config-builder/) writes a file for you.
+[config workbench](/tedge-dot/tools/workbench/) writes a file for you.
 
 ## Two packages, one contract
 

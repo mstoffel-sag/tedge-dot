@@ -23,3 +23,8 @@ rules:
     - For a user-visible change, include a task to add a release highlight in
       changes/<change-name>.md (see changes/README.md); never edit packaging/release-notes.md
       for a feature, it is the fixed header of every release.
+    - For a user-visible change, include a task to update the documentation site in the same
+      change (site/, see openspec/changes/docs-site/specs/docs-site/spec.md "The site keeps up
+      with the product"): place any new doc/ file in site/docs-map.yaml (pages or github_only),
+      update the guides and overview that cover the area, and extend the tools (config builder,
+      playgrounds) when their subject changed.

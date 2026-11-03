@@ -4,6 +4,8 @@
 
 import { useState } from 'preact/hooks';
 import { recommend, type Answers, type PackageData } from '../../lib/picker';
+import { HELP } from '../../lib/help';
+import Help from './Help';
 import './package-picker.css';
 
 const ARCHITECTURES = [
@@ -29,19 +31,19 @@ export default function PackagePicker({ data }: { data: PackageData }) {
     <div class="td-tool not-content pp">
       <form class="td-panel pp-form" onSubmit={(e) => e.preventDefault()}>
         <label class="td-field">
-          <span>CPU architecture</span>
+          <span>CPU architecture<Help text={HELP['picker.architecture']} label="CPU architecture" /></span>
           <select value={a.architecture} onChange={(e) => setA({ ...a, architecture: (e.currentTarget as HTMLSelectElement).value })}>
             {ARCHITECTURES.map((x) => <option value={x.id}>{x.label}</option>)}
           </select>
         </label>
         <label class="td-field">
-          <span>Operating system</span>
+          <span>Operating system<Help text={HELP['picker.distribution']} label="Operating system" /></span>
           <select value={a.distribution} onChange={(e) => setA({ ...a, distribution: (e.currentTarget as HTMLSelectElement).value })}>
             {data.distributions.map((d) => <option value={d.id}>{d.label}</option>)}
           </select>
         </label>
         <fieldset class="pp-set">
-          <legend>Protocols</legend>
+          <legend>Protocols<Help text={HELP['picker.protocols']} label="Protocols" /></legend>
           {Object.entries(data.protocols).map(([id, label]) => (
             <label class="pp-check">
               <input type="checkbox" checked={a.protocols.includes(id)} onChange={() => toggle('protocols', id)} />
@@ -51,7 +53,7 @@ export default function PackagePicker({ data }: { data: PackageData }) {
           ))}
         </fieldset>
         <fieldset class="pp-set">
-          <legend>Do you need any of these?</legend>
+          <legend>Do you need any of these?<Help text={HELP['picker.features']} label="features" /></legend>
           {rustOnly.map((id) => (
             <label class="pp-check">
               <input type="checkbox" checked={a.features.includes(id)} onChange={() => toggle('features', id)} />
@@ -61,7 +63,7 @@ export default function PackagePicker({ data }: { data: PackageData }) {
         </fieldset>
         <label class="pp-check">
           <input type="checkbox" checked={a.smallFootprint} onChange={() => setA({ ...a, smallFootprint: !a.smallFootprint })} />
-          Storage or memory is tight (a few MB to spare)
+          Storage or memory is tight (a few MB to spare)<Help text={HELP['picker.footprint']} label="footprint" />
         </label>
       </form>
 

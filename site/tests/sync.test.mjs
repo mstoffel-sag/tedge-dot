@@ -10,7 +10,7 @@ import {
   renderPackageTable,
   rewriteLinks,
 } from '../scripts/lib/sync.mjs';
-import { loadMap } from '../scripts/sync-docs.mjs';
+import { loadMap, unplacedDocs } from '../scripts/sync-docs.mjs';
 
 const ctx = {
   repository: 'thin-edge/tedge-dot',
@@ -148,6 +148,17 @@ describe('the repository', () => {
     for (const page of map.pages) {
       expect(() => readFileSync(new URL(`../../${page.source}`, import.meta.url))).not.toThrow();
     }
+  });
+
+  it('places every document under doc/ on the site or in github_only', () => {
+    expect(unplacedDocs(loadMap()), 'add each to docs-map.yaml: pages or github_only').toEqual([]);
+  });
+
+  it('reports a document that is neither published nor github_only', () => {
+    const map = loadMap();
+    const without = { ...map, pages: map.pages.filter((p) => p.source !== 'doc/measurement-output.md') };
+    expect(unplacedDocs(without)).toEqual(['doc/measurement-output.md']);
+    expect(unplacedDocs({ ...map, github_only: [] })).toContain('doc/upstream/snmp2-varbind-truncation.md');
   });
 
   it('keeps the package table in doc/install.md equal to site/src/data/packages.yaml', () => {

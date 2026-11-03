@@ -4,8 +4,8 @@
 // Runs before every `astro dev` and `astro build`. The generated pages are git-ignored: the
 // repository file is the only source, and this script is how the site renders it.
 
-import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync, copyFileSync } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync, copyFileSync } from 'node:fs';
+import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import YAML from 'yaml';
 import { betweenMarkers, convertPage, renderPackageTable, replaceBetweenMarkers } from './lib/sync.mjs';
@@ -40,6 +40,33 @@ export function loadMap() {
   return map;
 }
 
+/** A `github_only` pattern as a regular expression: `*` within a path segment, `**` across them. */
+function globToRegExp(glob) {
+  const re = glob
+    .split('**')
+    .map((part) => part.split('*').map((t) => t.replace(/[.+?^${}()|[\]\\]/g, '\\$&')).join('[^/]*'))
+    .join('.*');
+  return new RegExp(`^${re}$`);
+}
+
+/**
+ * Markdown files under `doc/` that are neither published (in `pages`) nor declared GitHub-only
+ * (in `github_only`). The site has to keep up with the docs: a new document is placed on the
+ * site, or explicitly kept off it, in the change that adds it.
+ */
+export function unplacedDocs(map, root = repo) {
+  const mapped = new Set(map.pages.map((p) => p.source));
+  const githubOnly = (map.github_only ?? []).map(globToRegExp);
+  const walk = (dir) =>
+    readdirSync(dir, { withFileTypes: true }).flatMap((e) =>
+      e.isDirectory() ? walk(join(dir, e.name)) : e.name.endsWith('.md') ? [relative(root, join(dir, e.name))] : [],
+    );
+  return walk(join(root, 'doc'))
+    .map((p) => p.split('\\').join('/'))
+    .filter((p) => !mapped.has(p) && !githubOnly.some((re) => re.test(p)))
+    .sort();
+}
+
 /** Repository files whose content the site rewrites before publishing. */
 const TRANSFORMS = {
   'doc/install.md': (markdown) => {
@@ -56,6 +83,13 @@ const TRANSFORMS = {
 
 async function main() {
   const map = loadMap();
+  const unplaced = unplacedDocs(map);
+  if (unplaced.length) {
+    throw new Error(
+      `docs-map.yaml: not on the site and not in github_only: ${unplaced.join(', ')}. ` +
+        'Add each to `pages` (with a section) or, if it is not for users, to `github_only`.',
+    );
+  }
   const slugs = new Map(map.pages.map((p) => [p.source, p.slug]));
   const ctx = {
     slugs,

@@ -5,7 +5,9 @@
 .cb-import summary { list-style: none; }
 .cb-import summary::-webkit-details-marker { display: none; }
 /* Opens below the toolbar, across its full width, without moving the button. */
-.cb-import[open] .td-panel { position: absolute; left: 0; right: 0; top: calc(100% + 0.5rem); z-index: 5; display: grid; gap: 0.5rem; box-shadow: var(--sl-shadow-lg); background: var(--td-surface-raised); }
+/* Opens in place, on its own row, so it never covers the form. */
+.cb-import[open] { flex: 1 0 100%; }
+.cb-import[open] .td-panel { margin-top: 0.5rem; display: grid; gap: 0.5rem; background: var(--td-surface-raised); }
 .cb-import .td-panel .td-btn { justify-self: start; }
 .cb-import textarea { width: 100%; box-sizing: border-box; }
 .cb-import textarea { font-family: var(--sl-font-mono); font-size: var(--sl-text-xs); }
@@ -14,7 +16,7 @@
 .cb-form { display: grid; gap: 1rem; }
 .cb-form fieldset { margin: 0; min-width: 0; display: grid; gap: 0.75rem; }
 .cb-form legend { font-family: var(--sl-font-mono); font-size: var(--sl-text-sm); font-weight: 700; color: var(--sl-color-accent); padding: 0 0.35rem; }
-.cb-form > *, .cb-form fieldset > *, .cb-point > * { margin: 0 !important; }
+.cb-form > *, .cb-form fieldset > *, .cb-point > :not(summary) { margin: 0 !important; }
 .cb-row { display: grid; gap: 0.6rem 0.75rem; grid-template-columns: repeat(auto-fill, minmax(min(100%, 9.5rem), 1fr)); align-items: start; }
 .cb-row > * { margin: 0 !important; }
 .cb-check { display: flex; gap: 0.4rem; align-items: center; font-size: var(--sl-text-sm); align-self: end; min-height: 2.25rem; }
@@ -27,8 +29,6 @@
 .cb-point { display: grid; gap: 0.6rem; padding: 0.75rem; border: 1px dashed var(--td-border); border-radius: 0.5rem; }
 .cb-remove { justify-self: start; font-size: var(--sl-text-xs); padding: 0.2rem 0.6rem; }
 .cb-actions { display: flex; flex-wrap: wrap; gap: 0.5rem; }
-.cb-report summary { cursor: pointer; font-size: var(--sl-text-sm); }
-.cb-report[open] .cb-row { margin-top: 0.6rem; }
 .cb-out { position: sticky; top: calc(var(--sl-nav-height) + 1rem); display: grid; gap: 0.6rem; min-width: 0; }
 .cb-out > * { margin: 0 !important; }
 .cb-status { font-weight: 700; font-size: var(--sl-text-sm); padding: 0.4rem 0.75rem; border-radius: 0.5rem; }
@@ -41,3 +41,13 @@
 .cb-toml code { background: none; padding: 0; }
 .cb-notice { font-size: var(--sl-text-sm); }
 .cb-hint { font-size: var(--sl-text-xs); color: var(--td-muted); }
+.cb-bound { margin: 0; font-size: var(--sl-text-sm); color: var(--td-muted); }
+.cb-check { min-width: 0; } .cb-check code { overflow-wrap: anywhere; }
+.cb-point { display: block; }
+.cb-point[open] { display: grid; }
+.cb-point > summary, .cb-section > summary, .cb-sub > summary, .cb-report > summary { font-size: var(--sl-text-sm); }
+.cb-point > summary small, .cb-section > summary small, .cb-sub > summary small, .cb-report > summary small { color: var(--td-muted); font-size: var(--sl-text-xs); }
+.cb-section { display: grid; gap: 0.6rem; }
+.cb-section > :not(summary), .cb-sub > :not(summary) { margin: 0 !important; }
+.cb-sub { display: grid; gap: 0.6rem; }
+.cb-sub:not([open]), .cb-section:not([open]) { display: block; }

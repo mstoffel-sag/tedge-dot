@@ -1,0 +1,27 @@
+.td-help { position: relative; display: inline-flex; vertical-align: middle; margin-inline-start: 0.1rem; }
+/* A 24px touch target around an 18px circle. */
+.td-help { margin-block: -0.2rem; }
+.td-help-btn {
+  position: relative; isolation: isolate; display: inline-grid; place-items: center; width: 1.5rem; height: 1.5rem;
+  padding: 0; border: 0; background: none; color: var(--td-muted);
+  font: 700 0.7rem/1 var(--sl-font, sans-serif); cursor: help;
+}
+.td-help-btn::before {
+  content: ''; position: absolute; inset: 0.2rem; z-index: -1; border-radius: 50%;
+  border: 1px solid var(--td-border); background: var(--td-surface);
+}
+.td-help-btn:hover, .td-help.open .td-help-btn { color: var(--sl-color-white); }
+.td-help-btn:hover::before, .td-help.open .td-help-btn::before { border-color: var(--sl-color-accent); }
+.td-help-btn:focus-visible { outline: 2px solid var(--sl-color-accent); outline-offset: 1px; }
+/* Hidden popups take no space, so they never widen the page. A shown one lets the pointer
+   through, so it never covers the next field or keeps itself open. */
+.td-help-tip {
+  display: none; position: absolute; z-index: 30; pointer-events: none; top: calc(100% + 0.15rem); left: -0.3rem;
+  transform: translateX(var(--shift, 0px));
+  width: max-content; max-width: min(18rem, calc(100vw - 2rem));
+  padding: 0.45rem 0.6rem; border-radius: 0.5rem; border: 1px solid var(--td-border);
+  background: var(--td-surface-raised); box-shadow: var(--sl-shadow-md);
+  color: var(--sl-color-gray-2); font-size: var(--sl-text-xs); font-weight: 400; line-height: 1.4;
+  white-space: normal; text-align: left; text-transform: none; letter-spacing: normal;
+}
+.td-help:hover .td-help-tip, .td-help-btn:focus-visible + .td-help-tip, .td-help.open .td-help-tip { display: block; }

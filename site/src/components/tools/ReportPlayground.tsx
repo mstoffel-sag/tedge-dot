@@ -1,47 +1,40 @@
 /** @jsxImportSource preact */
-// The report-policy playground: pick a signal, set a `report` table, and see which readings
-// the SDK's policy would publish. The engine is src/lib/report.ts, which runs the contract's
+// The config workbench's first outcome: for each point that reads a simulated signal, its
+// readings and what its effective `report` policy publishes. Signals and configuration are the
+// page's shared state (src/lib/signals-store.ts); the batching view below
+// batches what these points publish. The engine is src/lib/report.ts, which runs the contract's
 // test vectors in CI.
 
 import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
+import { fmtTime, timeTicks } from '../../lib/chart';
+import { getAt, setAt } from '../../lib/config-builder';
+import { resolve, reunitPoint } from '../../lib/gateway';
 import { checkTable, type ReportTable } from '../../lib/report';
-import { SIGNALS, simulate, tableToToml, type SignalId } from '../../lib/playground';
+import { DURATIONS, outageWindow, SIGNALS, simulateSignal, tableToToml, type SignalId } from '../../lib/playground';
+import { usePlayground } from '../../lib/signals-store';
+import { HELP } from '../../lib/help';
+import Help from './Help';
 import './report-playground.css';
 
-interface Form {
-  on_change: boolean;
-  deadband: string;
-  min_interval: string;
-  max_interval: string;
-  debounce: string;
-}
-
-const PRESETS: { label: string; signal: SignalId; form: Form }[] = [
-  { label: 'Deadband on a noisy signal', signal: 'noisy', form: { on_change: false, deadband: '0.5', min_interval: '', max_interval: '', debounce: '' } },
-  { label: 'Heartbeat on a flat signal', signal: 'flat', form: { on_change: true, deadband: '', min_interval: '', max_interval: '2m', debounce: '' } },
-  { label: 'Rate limit a sine', signal: 'sine', form: { on_change: true, deadband: '', min_interval: '30s', max_interval: '', debounce: '' } },
-  { label: 'Debounce a flapping switch', signal: 'flapping', form: { on_change: true, deadband: '', min_interval: '', max_interval: '', debounce: '5s' } },
-  { label: 'Percent deadband + heartbeat', signal: 'step', form: { on_change: false, deadband: '2%', min_interval: '', max_interval: '3m', debounce: '' } },
+/** Presets set the selected signal's behaviour and its point's own `report` table. */
+const PRESETS: { label: string; shape: SignalId; report: ReportTable }[] = [
+  { label: 'Deadband on a noisy signal', shape: 'noisy', report: { deadband: 0.5 } },
+  { label: 'Heartbeat on a flat signal', shape: 'flat', report: { on_change: true, max_interval: '2m' } },
+  { label: 'Rate limit a sine', shape: 'sine', report: { on_change: true, min_interval: '30s' } },
+  { label: 'Debounce a flapping switch', shape: 'flapping', report: { on_change: true, debounce: '5s' } },
+  { label: 'Percent deadband + heartbeat', shape: 'step', report: { deadband: '2%', max_interval: '3m' } },
 ];
-
-function toTable(form: Form): Record<string, unknown> {
-  const table: Record<string, unknown> = {};
-  if (form.on_change) table.on_change = true;
-  const db = form.deadband.trim();
-  if (db) table.deadband = db.endsWith('%') ? db : /^-?[0-9.]+$/.test(db) ? Number(db) : db;
-  for (const key of ['min_interval', 'max_interval', 'debounce'] as const) {
-    if (form[key].trim()) table[key] = form[key].trim();
-  }
-  return table;
-}
 
 // The chart is drawn at its real pixel width (measured), so its labels keep their size on a
 // phone instead of shrinking with a scaled-down picture.
 const PAD = { top: 16, right: 24, bottom: 28, left: 44 };
 
 export default function ReportPlayground() {
-  const [signal, setSignal] = useState<SignalId>(PRESETS[0].signal);
-  const [form, setForm] = useState<Form>(PRESETS[0].form);
+  const [state, setState] = usePlayground();
+  const { sims, config, durationMs } = state;
+  const resolved = resolve(config, sims);
+  const k = Math.max(0, resolved.specs.findIndex((x) => x.id === state.selected));
+  const spec = resolved.specs[k];
   const [hover, setHover] = useState<number | null>(null);
   const svgRef = useRef<SVGSVGElement>(null);
   const chartRef = useRef<HTMLDivElement>(null);
@@ -49,27 +42,42 @@ export default function ReportPlayground() {
   useEffect(() => {
     const el = chartRef.current;
     if (!el) return;
-    const ro = new ResizeObserver(([entry]) => setW(Math.max(280, Math.round(entry.contentRect.width))));
+    const ro = new ResizeObserver(([e]) => setW(Math.max(280, Math.round(e.contentRect.width))));
     ro.observe(el);
     return () => ro.disconnect();
   }, []);
   const H = W < 500 ? 220 : 260;
 
-  const table = toTable(form);
-  const error = checkTable(table);
-  const run = useMemo(
-    () => (error ? null : simulate(signal, table as ReportTable)),
-    [signal, JSON.stringify(table), error],
-  );
-  const unit = SIGNALS.find((s) => s.id === signal)!.unit;
+  const table = spec?.report ?? {};
+  const error = checkTable(table as Record<string, unknown>);
+  const run = useMemo(() => (error || !spec ? null : simulateSignal(spec, durationMs)), [JSON.stringify(spec), durationMs, error]);
+  const unit = spec ? SIGNALS.find((s) => s.id === spec.shape)!.unit : '';
+  // A point from a library gets an inline patch with its own `report` (contract §3.4).
+  const points: any[] = config.device?.[0]?.point ?? [];
+  const inline = points.findIndex((p) => p.id === spec?.id);
+  const pointIndex = inline >= 0 ? inline : points.length;
+  const own = inline >= 0 ? getAt(config, `/device/0/point/${inline}/report`) : undefined;
 
-  const set = (key: keyof Form) => (e: Event) => {
-    const t = e.currentTarget as HTMLInputElement;
-    setForm({ ...form, [key]: t.type === 'checkbox' ? t.checked : t.value });
-  };
+  const applyPreset = (p: (typeof PRESETS)[number]) =>
+    setState((s) => {
+      const sims = s.sims.map((e) => (e.id === spec.id ? { ...e, shape: p.shape } : e));
+      const signal = sims.find((e) => e.id === spec.id)!;
+      const patched = inline >= 0 ? s.config : setAt(s.config, `/device/0/point/${pointIndex}`, { id: spec.id });
+      const config = reunitPoint(setAt(patched, `/device/0/point/${pointIndex}/report`, p.report), signal);
+      return { ...s, sims, config };
+    });
+
+  if (!spec) {
+    return (
+      <div class="td-tool not-content rp">
+        <p class="td-panel">No point of the configuration reads a signal, so there is nothing to show. Give a point the id of a signal.</p>
+      </div>
+    );
+  }
 
   // Scales
-  const values = run?.readings.map((r) => r.value) ?? [0, 1];
+  const good = run?.readings.filter((r) => r.quality === 'good') ?? [];
+  const values = good.length ? good.map((r) => r.value) : [0, 1];
   let lo = Math.min(...values);
   let hi = Math.max(...values);
   if (hi - lo < 1) {
@@ -84,84 +92,102 @@ export default function ReportPlayground() {
   lo = Math.floor(lo / step) * step;
   hi = Math.ceil(hi / step) * step;
   const decimals = Math.max(0, -Math.floor(Math.log10(step) + 1e-9));
-  const tMax = run?.readings.at(-1)?.t ?? 1;
+  const tMax = durationMs;
   const x = (t: number) => PAD.left + (t / tMax) * (W - PAD.left - PAD.right);
   const y = (v: number) => PAD.top + (1 - (v - lo) / (hi - lo)) * (H - PAD.top - PAD.bottom);
   const yTicks = niceTicks(lo, hi, step);
-  const xTicks = (W < 500 ? [0, 5, 10] : [0, 2, 4, 6, 8, 10]).map((m) => m * 60_000).filter((t) => t <= tMax);
+  const xTicks = timeTicks(tMax, W < 500 ? 3 : 6);
+  const outage = outageWindow(spec.outage, durationMs);
 
-  const publishedSet = new Map(run?.published.map((p) => [p.index, p]) ?? []);
+  const publishedMap = new Map(run?.published.map((p) => [p.index, p]) ?? []);
+  const shown = run?.published.filter((p) => run.readings[p.index].quality === 'good') ?? [];
   const heartbeats = run?.published.filter((p) => p.heartbeat).length ?? 0;
   const held = run?.published.filter((p) => p.at > run.readings[p.index].t).length ?? 0;
   const readings = run?.readings.length ?? 0;
   const published = run?.published.length ?? 0;
   const saved = readings ? Math.round((1 - published / readings) * 100) : 0;
-  const toml = tableToToml(table as ReportTable);
+  const toml = tableToToml(table);
 
+  const nearest = (t: number) => {
+    if (!run || !run.readings.length) return null;
+    let a = 0;
+    let b = run.readings.length - 1;
+    while (b - a > 1) {
+      const m = (a + b) >> 1;
+      if (run.readings[m].t < t) a = m;
+      else b = m;
+    }
+    return Math.abs(run.readings[a].t - t) <= Math.abs(run.readings[b].t - t) ? a : b;
+  };
   const onPointer = (e: PointerEvent) => {
-    if (!run || !svgRef.current) return;
+    if (!svgRef.current) return;
     const rect = svgRef.current.getBoundingClientRect();
     const px = ((e.clientX - rect.left) / rect.width) * W;
-    const t = ((px - PAD.left) / (W - PAD.left - PAD.right)) * tMax;
-    const i = Math.round((t / tMax) * (run.readings.length - 1));
-    setHover(Math.max(0, Math.min(run.readings.length - 1, i)));
+    setHover(nearest(((px - PAD.left) / (W - PAD.left - PAD.right)) * tMax));
   };
   const onKey = (e: KeyboardEvent) => {
     if (!run) return;
-    const step = e.shiftKey ? 10 : 1;
-    if (e.key === 'ArrowRight') setHover(Math.min(run.readings.length - 1, (hover ?? -1) + step));
-    else if (e.key === 'ArrowLeft') setHover(Math.max(0, (hover ?? 1) - step));
+    const n = e.shiftKey ? 10 : 1;
+    if (e.key === 'ArrowRight') setHover(Math.min(run.readings.length - 1, (hover ?? -1) + n));
+    else if (e.key === 'ArrowLeft') setHover(Math.max(0, (hover ?? 1) - n));
     else return;
     e.preventDefault();
   };
 
-  const linePath = run?.readings.map((r, i) => `${i ? 'L' : 'M'}${x(r.t).toFixed(1)},${y(r.value).toFixed(1)}`).join('') ?? '';
+  // The line breaks where reads fail. A pushed signal reports changes only: it holds its value
+  // until the next one (or the outage), so it is drawn as steps.
+  const stepped = spec.source === 'pushed';
+  let linePath = '';
+  let pen: number | null = null;
+  for (const r of run?.readings ?? []) {
+    if (r.quality !== 'good') {
+      if (stepped && pen !== null) linePath += `H${x(r.t).toFixed(1)}`;
+      pen = null;
+      continue;
+    }
+    if (pen === null) linePath += `M${x(r.t).toFixed(1)},${y(r.value).toFixed(1)}`;
+    else if (stepped) linePath += `H${x(r.t).toFixed(1)}V${y(r.value).toFixed(1)}`;
+    else linePath += `L${x(r.t).toFixed(1)},${y(r.value).toFixed(1)}`;
+    pen = r.value;
+  }
+  if (stepped && pen !== null) linePath += `H${x(tMax).toFixed(1)}`;
   const hovered = hover !== null && run ? run.readings[hover] : null;
-  const hoveredPub = hover !== null ? publishedSet.get(hover) : undefined;
+  const hoveredPub = hover !== null ? publishedMap.get(hover) : undefined;
 
   return (
     <div class="td-tool not-content rp">
-      <div class="rp-presets" role="group" aria-label="Presets">
+      <div class="rp-signals">
+        <div class="rp-tabs" role="tablist" aria-label="Points that read a signal">
+        {resolved.specs.map((x) => (
+          <button type="button" role="tab" aria-selected={x.id === spec.id} class="td-btn rp-signal" onClick={() => setState((st) => ({ ...st, selected: x.id }))}>
+            <code>{x.id}</code>
+            <small>{x.source} {x.interval}{x.outage !== 'none' ? ', outage' : ''}</small>
+          </button>
+        ))}
+        </div>
+        <label class="td-field rp-duration">
+          <span>Run length<Help text={HELP['workbench.duration']} label="Run length" /></span>
+          <select value={String(durationMs)} onChange={(e) => setState((s) => ({ ...s, durationMs: Number((e.currentTarget as HTMLSelectElement).value) }))}>
+            {DURATIONS.map((d) => <option value={String(d.ms)}>{d.label}</option>)}
+          </select>
+        </label>
+      </div>
+
+      <div class="rp-presets" role="group" aria-label={`Presets for ${spec.id}`}>
         {PRESETS.map((p) => (
-          <button
-            type="button"
-            class="td-btn"
-            aria-pressed={p.signal === signal && JSON.stringify(p.form) === JSON.stringify(form)}
-            onClick={() => {
-              setSignal(p.signal);
-              setForm(p.form);
-            }}
-          >
+          <button type="button" class="td-btn" aria-pressed={p.shape === spec.shape && JSON.stringify(p.report) === JSON.stringify(own ?? null)} onClick={() => applyPreset(p)}>
             {p.label}
           </button>
         ))}
       </div>
 
       <div class="rp-grid">
-        <form class="td-panel rp-form" onSubmit={(e) => e.preventDefault()}>
-          <label class="td-field">
-            <span>Signal</span>
-            <select value={signal} onChange={(e) => setSignal((e.currentTarget as HTMLSelectElement).value as SignalId)}>
-              {SIGNALS.map((s) => (
-                <option value={s.id}>{s.label}</option>
-              ))}
-            </select>
-            <small>Polled every second for 10 minutes.</small>
-          </label>
-          <label class="rp-check">
-            <input type="checkbox" checked={form.on_change} onChange={set('on_change')} />
-            <code>on_change</code>
-          </label>
-          <Field label="deadband" hint='A number, or a percentage like "2%"' value={form.deadband} onInput={set('deadband')} />
-          <Field label="min_interval" hint='At most once per interval, e.g. "30s"' value={form.min_interval} onInput={set('min_interval')} />
-          <Field label="max_interval" hint='Heartbeat, e.g. "30m"' value={form.max_interval} onInput={set('max_interval')} />
-          <Field label="debounce" hint='Publish once settled, e.g. "5s"' value={form.debounce} onInput={set('debounce')} />
-          {error ? (
-            <p class="td-error" role="alert">{error}</p>
-          ) : (
-            <pre class="rp-toml" aria-label="The report table in TOML"><code>{toml}</code></pre>
-          )}
-        </form>
+        <div class="td-panel rp-form rp-policy" aria-label={`Effective policy of ${spec.id}`}>
+          <p>Effective <code>report</code> of <code>{spec.id}</code>{resolved.origins[k].report.length ? `, merged from ${resolved.origins[k].report.join(', ')}` : ' (none set: every reading is published)'}:</p>
+          {error ? <p class="td-error" role="alert">{error}</p> : <pre class="rp-toml" aria-label="The effective report table in TOML"><code>{tableToToml(table)}</code></pre>}
+          <p>{spec.source === 'pushed' ? 'Subscribed' : 'Polled'} every {spec.interval}, from {resolved.origins[k].interval}.</p>
+          <p>Change either in the <a href="#2-configuration">configuration</a>; a preset sets this point's own <code>report</code> and the signal's behaviour.</p>
+        </div>
 
         <div class="rp-out">
           <dl class="rp-stats">
@@ -176,6 +202,7 @@ export default function ReportPlayground() {
             <li><svg width="12" height="12" aria-hidden="true"><circle cx="6" cy="6" r="4.5" class="rp-pub" /></svg>Published</li>
             <li><svg width="12" height="12" aria-hidden="true"><rect x="2" y="2" width="8" height="8" class="rp-hb" transform="rotate(45 6 6)" /></svg>Heartbeat</li>
             <li><svg width="22" height="10" aria-hidden="true"><line x1="0" y1="5" x2="22" y2="5" class="rp-delay" /></svg>Held, published later</li>
+            {outage && <li><svg width="16" height="12" aria-hidden="true"><rect width="16" height="12" class="rp-outage" /></svg>Outage: reads fail</li>}
           </ul>
 
           <div class="rp-chart" ref={chartRef}>
@@ -183,13 +210,14 @@ export default function ReportPlayground() {
               ref={svgRef}
               viewBox={`0 0 ${W} ${H}`}
               role="img"
-              aria-label={`Chart: ${readings} readings, ${published} published, ${heartbeats} heartbeats. Use the arrow keys to inspect readings.`}
+              aria-label={`Chart of ${spec.id}: ${readings} readings, ${published} published, ${heartbeats} heartbeats. Use the arrow keys to inspect readings.`}
               tabIndex={0}
               onPointerMove={onPointer as any}
               onPointerLeave={() => setHover(null)}
               onKeyDown={onKey as any}
               onBlur={() => setHover(null)}
             >
+              {outage && <rect x={x(outage.from)} width={x(outage.to) - x(outage.from)} y={PAD.top} height={H - PAD.top - PAD.bottom} class="rp-outage" />}
               {yTicks.map((v) => (
                 <g>
                   <line x1={PAD.left} x2={W - PAD.right} y1={y(v)} y2={y(v)} class="rp-grid-line" />
@@ -197,15 +225,15 @@ export default function ReportPlayground() {
                 </g>
               ))}
               {xTicks.map((t) => (
-                <text x={x(t)} y={H - 8} class="rp-axis" text-anchor={t === 0 ? 'start' : t === tMax ? 'end' : 'middle'}>{t / 60_000} min</text>
+                <text x={x(t)} y={H - 8} class="rp-axis" text-anchor={t === 0 ? 'start' : t === tMax ? 'end' : 'middle'}>{fmtTime(t)}</text>
               ))}
               <path d={linePath} class="rp-line" />
-              {run?.published.map((p) => {
-                const r = run.readings[p.index];
+              {shown.map((p) => {
+                const r = run!.readings[p.index];
                 return p.at > r.t ? <line x1={x(r.t)} x2={x(p.at)} y1={y(r.value)} y2={y(r.value)} class="rp-delay" /> : null;
               })}
-              {run?.published.map((p) => {
-                const r = run.readings[p.index];
+              {shown.map((p) => {
+                const r = run!.readings[p.index];
                 return p.heartbeat ? (
                   <rect x={x(r.t) - 4} y={y(r.value) - 4} width="8" height="8" class="rp-hb" transform={`rotate(45 ${x(r.t)} ${y(r.value)})`} />
                 ) : (
@@ -222,21 +250,28 @@ export default function ReportPlayground() {
                 style={{ left: `${(x(hovered.t) / W) * 100}%`, top: `${PAD.top + 4}px` }}
                 aria-live="polite"
               >
-                <strong>{fmt(hovered.value)}{unit && ` ${unit}`}</strong>
-                <span>at {fmtTime(hovered.t)}</span>
+                <strong>{hovered.quality === 'good' ? `${fmt(hovered.value)}${unit ? ` ${unit}` : ''}` : 'read failed'}</strong>
+                <span>at {fmtTime(hovered.t, true)}</span>
                 <span>
                   {hoveredPub
-                    ? hoveredPub.heartbeat
-                      ? 'Published: heartbeat'
-                      : hoveredPub.at > hovered.t
-                        ? `Published at ${fmtTime(hoveredPub.at)} (held back)`
-                        : 'Published'
+                    ? hovered.quality !== 'good'
+                      ? 'Published: quality changed to bad'
+                      : hoveredPub.heartbeat
+                        ? 'Published: heartbeat'
+                        : hoveredPub.at > hovered.t
+                          ? `Published at ${fmtTime(hoveredPub.at, true)} (held back)`
+                          : 'Published'
                     : 'Not published'}
                 </span>
               </div>
             )}
           </div>
-          {held > 0 && <p class="rp-note">{held} reading{held === 1 ? ' was' : 's were'} held back and published once the interval ended, with {held === 1 ? 'its' : 'their'} own timestamp.</p>}
+          <p class="rp-note">
+            {spec.source === 'pushed'
+              ? `The server samples ${spec.id} every ${spec.interval} and pushes a value only when it changed.`
+              : `Polled every ${spec.interval}. A heartbeat on a polled point is its next poll after max_interval.`}
+            {held > 0 && ` ${held} reading${held === 1 ? ' was' : 's were'} held back and published once the interval ended, with ${held === 1 ? 'its' : 'their'} own timestamp.`}
+          </p>
 
           <details class="rp-table">
             <summary>Published samples as a table</summary>
@@ -244,14 +279,14 @@ export default function ReportPlayground() {
               <table>
                 <thead><tr><th>Reading time</th><th>Value</th><th>Published at</th><th>Why</th></tr></thead>
                 <tbody>
-                  {run?.published.map((p) => {
+                  {run?.published.slice(0, 500).map((p) => {
                     const r = run.readings[p.index];
                     return (
                       <tr>
-                        <td>{fmtTime(r.t)}</td>
-                        <td>{fmt(r.value)}</td>
-                        <td>{fmtTime(p.at)}</td>
-                        <td>{p.heartbeat ? 'heartbeat' : p.at > r.t ? 'held, then published' : 'change'}</td>
+                        <td>{fmtTime(r.t, true)}</td>
+                        <td>{r.quality === 'good' ? fmt(r.value) : r.quality}</td>
+                        <td>{fmtTime(p.at, true)}</td>
+                        <td>{r.quality !== 'good' ? 'quality changed' : p.heartbeat ? 'heartbeat' : p.at > r.t ? 'held, then published' : 'change'}</td>
                       </tr>
                     );
                   })}
@@ -262,16 +297,6 @@ export default function ReportPlayground() {
         </div>
       </div>
     </div>
-  );
-}
-
-function Field(props: { label: string; hint: string; value: string; onInput: (e: Event) => void }) {
-  return (
-    <label class="td-field">
-      <span><code>{props.label}</code></span>
-      <input type="text" value={props.value} onInput={props.onInput} placeholder="off" spellcheck={false} />
-      <small>{props.hint}</small>
-    </label>
   );
 }
 
@@ -289,9 +314,4 @@ function niceTicks(lo: number, hi: number, step: number): number[] {
 
 function fmt(v: number): string {
   return Number.isInteger(v) ? String(v) : v.toFixed(2);
-}
-
-function fmtTime(ms: number): string {
-  const s = Math.round(ms / 1000);
-  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
 }

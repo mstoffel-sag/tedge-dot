@@ -1,7 +1,7 @@
 {
   "ci": {
     "collect": {
-      "url": ["http://localhost:4321/tedge-dot/", "http://localhost:4321/tedge-dot/tools/report-playground/"],
+      "url": ["http://localhost:4321/tedge-dot/", "http://localhost:4321/tedge-dot/tools/workbench/"],
       "numberOfRuns": 3,
       "settings": { "chromeFlags": "--no-sandbox --headless=new" }
     },

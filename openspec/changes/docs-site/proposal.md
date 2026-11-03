@@ -20,11 +20,15 @@ navigate, task-oriented, and good enough to make tedge-dot stand out.
   identical devices with point libraries, cutting data volume on a metered link, writing to
   devices from the cloud, and running on an old or small gateway with `tedge-dot-c`.
 - Interactive tools that run entirely in the browser:
-  - a **config builder** that produces a valid connector TOML for a chosen protocol, validated
-    live against `doc/contract/schemas/config.schema.json`;
-  - a **package picker** that recommends `tedge-dot-rs` or `tedge-dot-c` from a few questions;
-  - a **report-policy playground** that shows which samples of a signal `report` (on_change,
-    deadband, min/max interval, debounce) would publish.
+  - a **config workbench** that builds a connector TOML for a chosen protocol, validated live
+    against `doc/contract/schemas/config.schema.json`, and runs it on simulated signals: which
+    samples `report` (on_change, deadband, min/max interval, debounce) publishes, and how
+    measurement output's `batch` policy (time, frame, sample, aggregates) groups them into
+    Cumulocity measurements;
+  - a **package picker** that recommends `tedge-dot-rs` or `tedge-dot-c` from a few questions.
+- The site keeps up with the product: a user-visible change updates the site in the same
+  change, and CI fails on a document in `doc/` that is neither on the site nor declared
+  GitHub-only, or on a schema policy value the tools do not offer.
 - Reference sections generated from the existing in-repo docs (contract, connector specs, SDK,
   flows, RFCs, migration), so each fact keeps a single source: the site renders what is in
   `doc/`, it does not copy it.

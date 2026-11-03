@@ -34,6 +34,11 @@ export default defineConfig({
   trailingSlash: 'ignore',
   // Load a page when the pointer rests on its link, so a click usually shows it at once.
   prefetch: { prefetchAll: true, defaultStrategy: 'hover' },
+  // The config builder and the report-policy playground became the config workbench.
+  redirects: {
+    '/tools/config-builder': '/tedge-dot/tools/workbench/',
+    '/tools/report-playground': '/tedge-dot/tools/workbench/',
+  },
   markdown: { rehypePlugins: [rehypeInlineCodeNowrap, rehypeTableScroll] },
   // The tools import the contract schemas and test vectors from the repository (../doc).
   vite: { server: { fs: { allow: ['..'] } } },
@@ -77,9 +82,8 @@ export default defineConfig({
         {
           label: 'Tools',
           items: [
-            { label: 'Config builder', slug: 'tools/config-builder' },
+            { label: 'Config workbench', slug: 'tools/workbench' },
             { label: 'Package picker', slug: 'tools/package-picker' },
-            { label: 'Report-policy playground', slug: 'tools/report-playground' },
           ],
         },
         { label: 'Reference', items: reference },

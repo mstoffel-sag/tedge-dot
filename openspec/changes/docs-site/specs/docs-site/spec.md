@@ -78,3 +78,26 @@ least 90 for performance and 95 for accessibility in Lighthouse.
 #### Scenario: Lighthouse budget enforced
 - **WHEN** the landing page is audited in CI
 - **THEN** the performance score is at least 90 and the accessibility score at least 95, or the check fails
+
+### Requirement: The site keeps up with the product
+The site SHALL describe every user-visible feature on `main`. A change that adds or changes a
+user-visible feature (a configuration key, a policy, an output mode, a command, a connector)
+SHALL update the site in the same change: its reference document in `doc/` placed in the page
+map, the guides and the overview that cover the area, and the interactive tools whose subject it
+is. Every Markdown file under `doc/` SHALL be either a page in `site/docs-map.yaml` or match an
+entry of its `github_only` list, and the site build and the docs check SHALL fail, naming the
+file, when one is neither. A change's tasks SHALL include the site update (`openspec/config.yaml`
+rule), so a feature is not done while the site describes the product without it.
+
+#### Scenario: New document left off the site
+- **WHEN** a pull request adds `doc/concurrent-reads.md` without adding it to `pages` or `github_only`
+- **THEN** the docs check fails and names `doc/concurrent-reads.md`
+
+#### Scenario: Contributor document kept off the site on purpose
+- **WHEN** a pull request adds `doc/upstream/async-opcua-new-bug.md` and `github_only` lists `doc/upstream/**`
+- **THEN** the docs check passes, and a published link to that file points to GitHub
+
+#### Scenario: Feature lands with its pages
+- **WHEN** a change adds `output = "measurements"` to the connector configuration
+- **THEN** the same change places `doc/measurement-output.md` in the page map, mentions the mode where the overview and the data-volume guide describe what the connector publishes, and lets the config builder set it
+

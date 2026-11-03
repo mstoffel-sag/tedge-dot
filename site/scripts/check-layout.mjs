@@ -138,18 +138,20 @@ async function scrollThrough(page) {
   await page.waitForTimeout(200);
 }
 
-async function clickEverything(page, path) {
+async function clickEverything(page, path, errors) {
   const problems = [];
   const sel = 'main button, main summary, main [role=tab]';
   const n = await page.locator(sel).count();
   for (let i = 0; i < n; i++) {
     const el = page.locator(sel).nth(i);
     if (!(await el.isVisible().catch(() => false))) continue;
-    // Selected tabs and pressed toggles do nothing on purpose.
-    if ((await el.getAttribute('aria-selected')) === 'true' || (await el.getAttribute('aria-pressed')) === 'true') continue;
+    // Selected tabs, pressed toggles and checked radios do nothing on purpose.
+    const on = await Promise.all(['aria-selected', 'aria-pressed', 'aria-checked'].map((a) => el.getAttribute(a)));
+    if (on.includes('true')) continue;
     const label = ((await el.innerText().catch(() => '')) || (await el.getAttribute('aria-label')) || '?').trim().replace(/\s+/g, ' ').slice(0, 40);
     const before = await page.evaluate(() => document.querySelector('main').innerHTML);
     const url = page.url();
+    const errorsBefore = errors.length;
     let downloaded = false;
     page.once('download', () => (downloaded = true));
     await page.evaluate(() => navigator.clipboard.writeText('')).catch(() => {});
@@ -163,7 +165,12 @@ async function clickEverything(page, path) {
     const copied = await page.evaluate(() => navigator.clipboard.readText()).catch(() => '');
     const after = await page.evaluate(() => document.querySelector('main')?.innerHTML ?? '');
     if (page.url() === url && !downloaded && !copied && after === before) problems.push(`/${path}: "${label}" does nothing`);
-    if (page.url() !== url) await page.goto(url, { waitUntil: 'networkidle' });
+    if (page.url() !== url) {
+      // A button that navigates. Chrome rejects the cross-document view transition's promise
+      // when leaving, as on any link: that is not the page's error.
+      for (let k = errors.length - 1; k >= errorsBefore; k--) if (/^Transition was (aborted|skipped)/.test(errors[k])) errors.splice(k, 1);
+      await page.goto(url, { waitUntil: 'networkidle' });
+    }
   }
   return problems;
 }
@@ -189,7 +196,7 @@ try {
       await page.evaluate(() => document.fonts.ready);
       await scrollThrough(page);
       for (const p of await page.evaluate(inspect, GLUE_ALLOWED.map((r) => r.source))) problems.push(`/${path} at ${width}px: ${p}`);
-      if (width === 1280) problems.push(...(await clickEverything(page, path)));
+      if (width === 1280) problems.push(...(await clickEverything(page, path, errors)));
       for (const e of errors) problems.push(`/${path} at ${width}px: script error: ${e}`);
     }
     await context.close();
