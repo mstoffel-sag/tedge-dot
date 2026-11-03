@@ -1,0 +1,169 @@
+---
+title: Config workbench
+tableOfContents: false
+description: Build a tedge-dot connector configuration, checked live against the contract schema, and see what it publishes on simulated signals and which measurements Cumulocity stores.
+---
+
+import { readFileSync, readdirSync } from 'node:fs';
+import YAML from 'yaml';
+import Signals from '../../../components/tools/Signals.tsx';
+import ConfigBuilder from '../../../components/tools/ConfigBuilder.tsx';
+import PackageNote from '../../../components/tools/PackageNote.tsx';
+import ReportPlayground from '../../../components/tools/ReportPlayground.tsx';
+import BatchPlayground from '../../../components/tools/BatchPlayground.tsx';
+
+export const demos = Object.fromEntries(
+  readdirSync('../demo/config')
+    .filter((f) => f.endsWith('.toml'))
+    .map((f) => [f.replace(/\.toml$/, ''), readFileSync(`../demo/config/${f}`, 'utf8')]),
+);
+// Point libraries, by "<protocol>/<name>": the demo configs take their points from them.
+export const libraries = Object.fromEntries(
+  readdirSync('../demo/points.d', { withFileTypes: true })
+    .filter((d) => d.isDirectory())
+    .flatMap((d) =>
+      readdirSync(`../demo/points.d/${d.name}`)
+        .filter((f) => f.endsWith('.toml'))
+        .map((f) => [`${d.name}/${f.replace(/\.toml$/, '')}`, readFileSync(`../demo/points.d/${d.name}/${f}`, 'utf8')]),
+    ),
+);
+export const packages = YAML.parse(readFileSync('src/data/packages.yaml', 'utf8'));
+
+Build a connector configuration and try it before you deploy it: describe the signals the
+connector reads, configure it, and see what it publishes and what reaches Cumulocity. The three
+steps share one state, so a change in one shows in the others. Copy or download the TOML when it
+does what you want, and put it in `/etc/tedge/plugins/ot/` on the gateway.
+
+## 1. Signals
+
+What the connector reads: up to four signals, each with a behaviour and an optional outage, in
+which every read of it fails. The point in step 2 with the same `id` reads a signal; the line
+under each signal says how. Or start from an example, which sets the configuration too.
+
+<Signals client:load />
+
+## 2. Configuration
+
+Pick a protocol, or start from one of the
+[demo configs](https://github.com/thin-edge/tedge-dot/tree/main/demo/config), which are wired to
+the demo simulators. Loading a configuration gives it a signal per point (up to four), including
+the points a device takes from a point library (`points_from`). Set the
+reporting policy (`report`) and the grouping in measurement output (`batch`) on `[connector]` or
+on a point; a point's own table is merged key by key over `[connector]`'s, as on the gateway.
+Select a point to open it.
+
+<ConfigBuilder client:load demos={demos} libraries={libraries} />
+
+<details>
+<summary>What is checked, and what the simulation reads</summary>
+
+As you type, the configuration is validated against the contract's
+[configuration schema](/tedge-dot/reference/configuration/config-file/), the same schema the
+connectors are tested against. The protocol-specific tables (`protocol_address`, a point's
+`address`, `[connection]`) are checked for the types of the keys the
+[connector references](/tedge-dot/reference/connectors/modbus/) describe; other keys are kept
+as they are.
+
+A schema checks structure, not everything the connector does: it cannot open the point
+libraries a device names in `points_from`, for example. On the gateway,
+`tedge-dot describe -c <file>` loads the configuration exactly as the service would and reports
+what is wrong with it. Every config in `demo/config/` and `packaging/config/` passes this
+builder in CI, and survives being loaded and written back unchanged.
+
+The simulation reads the first device, with the points of the libraries it names in `points_from` collected first and its own points applied over them, as the connector does. A point is polled every `poll_interval` (its own, its
+device's or `[connector]`'s), except an OPC UA point the connector subscribes to (the default,
+unless the point sets `subscribe = false`): the server samples it every `sampling_interval` and
+sends only changes. The protocol and the addresses do not change how a signal is read otherwise.
+
+</details>
+
+## 3. Outcome
+
+<PackageNote client:visible data={packages} />
+
+### What each point publishes
+
+Each point's readings, and what its effective `report` policy publishes. Choose a point, and
+the run length for the whole outcome.
+
+<ReportPlayground client:visible />
+
+<details>
+<summary>How to read the chart</summary>
+
+The workbench runs the reporting policy of the connector SDK in your browser. Its engine is a
+port of the Rust SDK's state machine, and the docs build runs it against every case in the
+contract's [report-policy test vectors](/tedge-dot/reference/contract/report-vectors/), the same
+vectors the Rust and C SDKs run. So the chart shows what `tedge-dot` does, not an
+approximation of it.
+
+- A **polled** point is read every `poll_interval`; its heartbeat is its next poll after
+  `max_interval`. A **subscribed** OPC UA point (a monitored item) is sampled by the server every
+  `sampling_interval` and delivered only when it changed, with a source time a few milliseconds
+  after the sampling time; its heartbeat is an on-demand read.
+- A reading held back by `min_interval` is published when the interval ends, **with its own
+  timestamp** (the dashed line shows the wait).
+- During an **outage** every read fails. The change of quality is always published at once, in
+  both directions; the line breaks where reads fail.
+
+For the full rules, inheritance between connector, device and point, and per-connector notes,
+see [Reducing data volume](/tedge-dot/reference/configuration/reducing-data-volume/).
+
+</details>
+
+### Batching: from readings to Cumulocity measurements
+
+With [measurement output](/tedge-dot/reference/configuration/measurement-output/)
+(`output = "measurements"` in `[connector]`), the connector publishes the thin-edge measurements
+itself, many readings per message. The `batch` policy decides which readings share a message and
+which time it carries. The form here is `[connector] batch` of the configuration. The strip runs
+the same samples through all three policies; the chart below it shows the configured one. Each
+measurement has **one cell per signal**: a hollow cell is a signal missing from it. Select a
+measurement to see the message the connector publishes and the measurement Cumulocity stores.
+
+<BatchPlayground client:visible />
+
+<details>
+<summary>Why a signal is missing from a measurement</summary>
+
+A measurement carries only the series it has values for, and Cumulocity stores nothing for a
+missing one at that time. Which signals a measurement holds depends on the policy:
+
+| | Under `time` and `frame` | Under `sample` |
+| --- | --- | --- |
+| The `report` policy held a reading back (deadband, `on_change`) | Missing: nothing was published | Present: the value it holds is sent again |
+| The signal is polled less often, or pushed only on change | Missing from the measurements in between | Present, with the value it holds |
+| The signal's reads fail (an outage) | Missing until it recovers | Missing until its next good reading |
+| The signal has not been read yet | Missing | Missing |
+
+So `time` and `frame` send each value once, when it was read, and a dashboard sees a series
+only at its own times. `sample` sends every signal at every period, so each measurement is
+complete, at the price of the readings between two samples (unless you aggregate them).
+
+</details>
+
+<details>
+<summary>What to try with the examples</summary>
+
+- **Three polled points, filtered** with `time`: one poll is one measurement, but `temperature`
+  (deadband) and `setpoint` (on change) are missing whenever their policy held the reading, and
+  `outdoor` is polled every 5 s, so it is in one measurement out of five. Switch to `sample`:
+  every measurement holds all three.
+- **Pushed points, times ms apart** with `time`, then `frame`: under `time` every sample is its
+  own measurement, because no two source times match. A 100 ms `frame` puts the samples of one
+  burst together and moves a time by a few milliseconds.
+- **A signal drops out**: `outlet` fails for a quarter of the run. Under every policy it is
+  missing during the outage; under `sample` with an aggregate, its mean counts only the good
+  time.
+- **A spike between samples** with `sample`, then with `aggregate = ["mean", "min", "max"]`:
+  sample-and-hold sends the value held at each sample time and misses the spike;
+  `pressure_max` keeps it.
+
+The batching engine is a port of the Rust SDK's measurement batcher, and the docs build runs it
+against every case in the contract's
+[measurement-output test vectors](/tedge-dot/reference/contract/measurement-vectors/), the same
+vectors the Rust and C SDKs run. The thin-edge.io mapper turns each message into one Cumulocity
+measurement of type `Process` (the message's group) and takes the units from the connector's
+retained `meta` message.
+
+</details>

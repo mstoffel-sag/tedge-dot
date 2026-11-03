@@ -7,7 +7,7 @@ const SECTIONS = [
   { heading: '`[connection]`', path: ['properties', 'connection'], intro: null },
   { heading: '`[[device]]`', path: ['$defs', 'device'], intro: 'One per device. The address is protocol-specific; see the connector reference for its shape.' },
   { heading: '`[[device.point]]`', path: ['$defs', 'point'], intro: 'One per data point, on a device or in a point library.' },
-  { heading: '`report` (reporting policy)', path: ['$defs', 'report'], intro: null, link: 'See [Reducing data volume](/tedge-dot/reference/configuration/reducing-data-volume/) and try it in the [report-policy playground](/tedge-dot/tools/report-playground/).' },
+  { heading: '`report` (reporting policy)', path: ['$defs', 'report'], intro: null, link: 'See [Reducing data volume](/tedge-dot/reference/configuration/reducing-data-volume/) and try it in the [config workbench](/tedge-dot/tools/workbench/).' },
   { heading: '`map` (value mapping)', path: ['$defs', 'map'], intro: null, link: 'See [Mapping values](/tedge-dot/reference/configuration/mapping-values/).' },
 ];
 
@@ -26,7 +26,7 @@ export function renderConfigReference(schema) {
     '`protocol_address`, a point\'s `address`) are described in each [connector reference](/tedge-dot/reference/connectors/modbus/).',
     '',
     ':::tip',
-    'The [config builder](/tedge-dot/tools/config-builder/) fills these in for you and checks the result against the same schema.',
+    'The [config workbench](/tedge-dot/tools/workbench/) fills these in for you and checks the result against the same schema.',
     ':::',
     '',
   ];

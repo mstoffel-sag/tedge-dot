@@ -116,7 +116,7 @@ Add a `[[device]]` for each PLC to `/etc/tedge/plugins/ot/modbus.toml`, with its
 A Modbus RTU device uses the serial settings in `[connection.serial]`. The address and point
 fields of both transports are in the [Modbus connector reference](/tedge-dot/reference/connectors/modbus/),
 and every other key in the [configuration reference](/tedge-dot/reference/configuration/config-file/).
-The [config builder](/tedge-dot/tools/config-builder/) writes and checks a file for you.
+The [config workbench](/tedge-dot/tools/workbench/) writes and checks a file for you.
 
 Before you put a device into the service, check the connection and the points from the gateway
 with the CLI, which needs no broker:

@@ -9,9 +9,19 @@
 #   section: the Reference sidebar group (one of `sections`), or omitted for a page that an
 #            authored sidebar entry places elsewhere (the install guide under Get started)
 #   label:   the sidebar label, when the page title is too long for it (optional)
+#
+# Every Markdown file under doc/ is either a page here or matches `github_only`; the sync fails
+# otherwise, so a new document is placed on the site (or kept off it on purpose) in the change
+# that adds it. `*` matches within a path segment, `**` across segments.
 
 repository: thin-edge/tedge-dot
 branch: main
+
+# Documents for contributors, not users: they stay on GitHub, and a link to one goes there.
+github_only:
+  - doc/upstream/**                       # bug reports for upstream libraries
+  - doc/flows/*/TEST.md                   # manual test notes of the example flows
+  - doc/contract/test-vectors/bench/README.md   # the bench module's vectors (performance harness)
 
 # Reference sidebar groups, in order.
 sections:

@@ -46,6 +46,15 @@
   --td-chart-heartbeat: #3f86de;
   --td-chart-reading: #7a79a8;
   --td-chart-grid: #2a2860;
+  --td-chart-window: rgb(106 168 255 / 0.1);
+  --td-chart-outage: rgb(255 107 107 / 0.14);
+  /* One colour per measurement in the batching playground, cycled. */
+  --td-chart-msg-0: #c98200;
+  --td-chart-msg-1: #3f86de;
+  --td-chart-msg-2: #2fa37a;
+  --td-chart-msg-3: #b25ec9;
+  --td-chart-msg-4: #d9594c;
+  --td-chart-msg-5: #1a9fb3;
 }
 
 :root[data-theme='light'] {
@@ -78,6 +87,14 @@
   --td-chart-heartbeat: #2e63b8;
   --td-chart-reading: #8e8db0;
   --td-chart-grid: #e2e2ee;
+  --td-chart-window: rgb(46 99 184 / 0.08);
+  --td-chart-outage: rgb(192 57 43 / 0.1);
+  --td-chart-msg-0: #c47200;
+  --td-chart-msg-1: #2e63b8;
+  --td-chart-msg-2: #13875a;
+  --td-chart-msg-3: #8e44a8;
+  --td-chart-msg-4: #c0392b;
+  --td-chart-msg-5: #0e7f91;
 }
 
 /* Dark mode: links, the current sidebar entry and primary buttons in full amber, as on the
@@ -434,4 +451,61 @@ starlight-tabs [role='tablist'] {
 }
 starlight-tabs [role='tab'] {
   white-space: nowrap;
+}
+
+/*
+ * Collapsible sections: the tools' folded parts (points, [mqtt], device settings, policies,
+ * tables) and a page's <details>. A panel with an accent edge and a chevron, so a folded part
+ * reads as something to open, and its summary row reacts to the pointer.
+ */
+:is(.td-tool details:is(.cb-point, .cb-section, .cb-sub, .cb-report, .rp-table, .bp-table), .sl-markdown-content details) {
+  padding: 0 0.75rem;
+  border: 1px solid var(--td-border);
+  border-inline-start: 3px solid var(--sl-color-accent);
+  border-radius: var(--td-radius);
+  background: var(--td-surface);
+}
+:is(.td-tool details:is(.cb-point, .cb-section, .cb-sub, .cb-report, .rp-table, .bp-table), .sl-markdown-content details) > summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.25rem 0.6rem;
+  margin: 0 -0.75rem;
+  padding: 0.55rem 0.75rem;
+  list-style: none;
+  cursor: pointer;
+  font-weight: 600;
+  color: var(--sl-color-white);
+  border-radius: var(--td-radius);
+}
+:is(.td-tool details:is(.cb-point, .cb-section, .cb-sub, .cb-report, .rp-table, .bp-table), .sl-markdown-content details) > summary::-webkit-details-marker {
+  display: none;
+}
+:is(.td-tool details:is(.cb-point, .cb-section, .cb-sub, .cb-report, .rp-table, .bp-table), .sl-markdown-content details) > summary::before {
+  content: '';
+  flex: none;
+  align-self: center;
+  width: 0.45rem;
+  height: 0.45rem;
+  border-right: 2px solid var(--sl-color-accent);
+  border-bottom: 2px solid var(--sl-color-accent);
+  transform: rotate(-45deg);
+  transition: transform 120ms;
+}
+:is(.td-tool details:is(.cb-point, .cb-section, .cb-sub, .cb-report, .rp-table, .bp-table), .sl-markdown-content details)[open] > summary::before {
+  transform: rotate(45deg);
+}
+:is(.td-tool details:is(.cb-point, .cb-section, .cb-sub, .cb-report, .rp-table, .bp-table), .sl-markdown-content details) > summary:hover {
+  background: var(--sl-color-accent-low);
+}
+:is(.td-tool details:is(.cb-point, .cb-section, .cb-sub, .cb-report, .rp-table, .bp-table), .sl-markdown-content details)[open] {
+  padding-bottom: 0.75rem;
+}
+:is(.td-tool details:is(.cb-point, .cb-section, .cb-sub, .cb-report, .rp-table, .bp-table), .sl-markdown-content details)[open] > summary {
+  margin-bottom: 0.5rem;
+  border-bottom: 1px solid var(--td-border);
+  border-radius: var(--td-radius) var(--td-radius) 0 0;
+}
+@media (prefers-reduced-motion: reduce) {
+  :is(.td-tool details, .sl-markdown-content details) > summary::before { transition: none; }
 }

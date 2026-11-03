@@ -73,3 +73,24 @@
 - [ ] 9.1 Ask a repository admin to enable GitHub Pages with the "GitHub Actions" source; run the deploy
 - [ ] 9.2 Point `packaging/release-notes.md` and the README's top section at the site; set the repository homepage URL
 - [x] 9.3 Add a release highlight in `changes/docs-site.md` announcing the site
+
+## 10. Keeping up with the product
+
+- [x] 10.1 `github_only` in `docs-map.yaml`; the sync and a test fail on a `doc/` file that is neither published nor GitHub-only
+- [x] 10.2 `openspec/config.yaml` rule: a user-visible change includes a task to update the site
+- [x] 10.3 Batching engine in TypeScript (port of the Rust SDK's `Batcher`); test that runs every case in `measurements/vectors.json`
+- [x] 10.4 Batching playground on the report-policy playground page: `batch` form, the three policies side by side, timeline of samples and measurements, thin-edge and Cumulocity JSON
+- [x] 10.5 Test: the playgrounds offer every `report` key, `group_by` and aggregate in the schema
+- [x] 10.6 Catch up with measurement output and concurrent reads: overview, data-volume guide, landing card, config builder (`output`, `max_inflight`, `max_inflight_total`, `batch`)
+- [x] 10.7 Release highlight in `changes/docs-batching-playground.md`
+- [x] 10.8 One device, up to four signals, as the page's shared input: shape, polled or pushed on change, interval, outage and `report` per signal; run length
+- [x] 10.9 Batching from the signals' published samples, with a view window; one cell per signal on each measurement and a per-signal table, so a missing signal shows
+- [x] 10.10 Gateway playground: the page in four steps (equipment, configuration, package, outcome) over one shared state; equipment editor with protocol, signals and examples
+- [x] 10.11 Config builder bound to the playground (protocol from the equipment, a point per signal); point `poll_interval`, `sampling_interval`, `subscribe`, `report` and `batch`, and `batch.aggregate`, in the builder on every page
+- [x] 10.12 Package line in the outcome from the configuration's features, linking the package picker (which stays its own page)
+- [x] 10.13 Outcome resolved from the configuration (interval and `report` inheritance, the configuration's `batch` tables); tests for the resolution and the examples' round trip
+- [x] 10.14 Paste or load a configuration with the signals following (superseded the page-to-page handoff once the pages merged)
+- [x] 10.15 Config workbench: the config builder and the playground merged into one page (`tools/workbench`), the old URLs redirected and every link moved; the signals step replaces the equipment step, the protocol is chosen in the builder
+- [x] 10.16 Point libraries resolved for the simulation (`points_from` against `demo/points.d`, inline points patching them), so the demo configs run
+- [x] 10.17 Collapsible points, `[mqtt]`, `[connection]`, device settings, the measurement table and the page's explanations
+- [x] 10.18 Help popups on every input field (texts in `src/lib/help.ts`, test for coverage); collapsed sections styled as panels with a chevron; the Paste TOML panel opens in place
