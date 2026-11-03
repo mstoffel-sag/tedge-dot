@@ -156,13 +156,15 @@ export default function ReportPlayground() {
 
   return (
     <div class="td-tool not-content rp">
-      <div class="rp-signals" role="tablist" aria-label="Points that read a signal">
+      <div class="rp-signals">
+        <div class="rp-tabs" role="tablist" aria-label="Points that read a signal">
         {resolved.specs.map((x) => (
           <button type="button" role="tab" aria-selected={x.id === spec.id} class="td-btn rp-signal" onClick={() => setState((st) => ({ ...st, selected: x.id }))}>
             <code>{x.id}</code>
             <small>{x.source} {x.interval}{x.outage !== 'none' ? ', outage' : ''}</small>
           </button>
         ))}
+        </div>
         <label class="td-field rp-duration">
           <span>Run length<Help text={HELP['workbench.duration']} label="Run length" /></span>
           <select value={String(durationMs)} onChange={(e) => setState((s) => ({ ...s, durationMs: Number((e.currentTarget as HTMLSelectElement).value) }))}>

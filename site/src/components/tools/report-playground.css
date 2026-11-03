@@ -35,7 +35,8 @@
 .rp-table table { display: table !important; width: 100%; font-size: var(--sl-text-xs); border-collapse: collapse; }
 .rp-table :is(th, td) { text-align: left; padding: 0.25rem 0.5rem; border-bottom: 1px solid var(--td-border); }
 .rp-signals { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: stretch; }
-.rp-signals > .td-btn { height: auto; min-height: 2.25rem; border-radius: 0.6rem; }
+.rp-tabs { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: stretch; }
+.rp-tabs > .td-btn { height: auto; min-height: 2.25rem; border-radius: 0.6rem; }
 .rp-signal { display: grid; gap: 0.1rem; height: auto; min-height: 2.25rem; padding-block: 0.3rem; border-radius: 0.6rem; text-align: left; line-height: 1.2; justify-items: start; }
 .rp-signal small { font-size: var(--sl-text-xs); color: var(--td-muted); }
 .rp-signal[aria-selected='true'] { border-color: var(--sl-color-accent); background: var(--sl-color-accent-low); }
