@@ -143,6 +143,10 @@ export interface Due<T> {
 }
 
 /** The reporting state of one point. */
+/** How long a point stays on source time after its last replayed reading, when no live reading
+ * ends the replay first (§5.3), in milliseconds. */
+export const REPLAY_IDLE = 2000;
+
 export class ReportState<T> {
   private origin: number;
   private last: { obs: Obs; quality: Quality } | null = null;
@@ -151,6 +155,11 @@ export class ReportState<T> {
   private unreadable = false;
   private pending: { item: T; obs: Obs } | null = null;
   private candidate: Candidate<T> | null = null;
+  /** Runtime time of the last replayed reading while the point is on source time; null on the
+   * runtime clock. */
+  private replayLastOffer: number | null = null;
+  /** Source time of the last reading published during a replay, to resume from. */
+  private lastPublishedSrc: number | null = null;
 
   constructor(
     readonly policy: ReportPolicy,
@@ -168,6 +177,8 @@ export class ReportState<T> {
     this.unreadable = false;
     this.pending = null;
     this.candidate = null;
+    this.replayLastOffer = null;
+    this.lastPublishedSrc = null;
   }
 
   /** A heartbeat read returned nothing for this point: it cannot be read on demand. */
@@ -189,6 +200,38 @@ export class ReportState<T> {
 
   /** Offer a reading. Returns it when it is to be published now; otherwise it is dropped or held. */
   offer(item: T, obs: Obs, quality: Quality, now: number): T | null {
+    if (this.replayLastOffer !== null) this.handOver(now);
+    return this.offerAt(item, obs, quality, now);
+  }
+
+  /** Offer a reading replayed from the source's history, with its source time `src`. Intervals
+   * are measured on source time; returns the readings to publish now, in order (§5.3 rule 7). */
+  offerReplayed(item: T, obs: Obs, quality: Quality, src: number, now: number): T[] {
+    if (this.replayLastOffer === null) {
+      this.lastPublished = this.lastPublishedSrc;
+      if (this.candidate) this.candidate.since = src;
+    }
+    this.replayLastOffer = now;
+    const out: T[] = [];
+    const released = this.release(src);
+    if (released !== null) out.push(released);
+    const offered = this.offerAt(item, obs, quality, src);
+    if (offered !== null) out.push(offered);
+    if (this.lastPublished !== null) this.lastPublishedSrc = this.lastPublished;
+    return out;
+  }
+
+  /** End a replay: the timers of a held or debouncing reading restart on the runtime clock. */
+  private handOver(now: number): void {
+    this.replayLastOffer = null;
+    if (this.lastPublished !== null) {
+      this.lastPublishedSrc = this.lastPublished;
+      this.lastPublished = now;
+    }
+    if (this.candidate) this.candidate.since = now;
+  }
+
+  private offerAt(item: T, obs: Obs, quality: Quality, now: number): T | null {
     const p = this.policy;
     if (!this.last) return this.doPublish(item, obs, quality, now);
     if (this.last.quality !== quality) return this.doPublish(item, obs, quality, now);
@@ -233,6 +276,26 @@ export class ReportState<T> {
 
   /** A pass of the runtime loop. */
   due(now: number, pushed: boolean): Due<T> {
+    if (this.replayLastOffer !== null) {
+      // Replayed readings release what they hold themselves, and no heartbeat read is due.
+      if (Math.max(0, now - this.replayLastOffer) < REPLAY_IDLE) return { publish: null, read: false };
+      this.handOver(now);
+    }
+    const p = this.policy;
+    const out = this.release(now);
+    let read = false;
+    if (p.maxInterval !== null) {
+      const reference = Math.max(this.lastPublished ?? this.origin, this.lastRead ?? this.origin);
+      if (pushed && !this.unreadable && Math.max(0, now - reference) >= p.maxInterval) {
+        this.lastRead = now;
+        read = true;
+      }
+    }
+    return { publish: out, read };
+  }
+
+  /** A held reading whose interval ended, or a debounced one that settled, by `now`. */
+  private release(now: number): T | null {
     const p = this.policy;
     let out: T | null = null;
     if (p.minInterval !== null && this.pending) {
@@ -253,15 +316,7 @@ export class ReportState<T> {
         }
       }
     }
-    let read = false;
-    if (p.maxInterval !== null) {
-      const reference = Math.max(this.lastPublished ?? this.origin, this.lastRead ?? this.origin);
-      if (pushed && !this.unreadable && Math.max(0, now - reference) >= p.maxInterval) {
-        this.lastRead = now;
-        read = true;
-      }
-    }
-    return { publish: out, read };
+    return out;
   }
 
   private publishIfChanged(item: T, obs: Obs, now: number): T | null {

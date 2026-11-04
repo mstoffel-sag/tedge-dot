@@ -20,6 +20,7 @@ option(TDOT_MODBUS "Build the Modbus connector (libmodbus, LGPL-2.1+)" ON)
 option(TDOT_OPCUA "Build the OPC UA connector (open62541, MPL-2.0)" ON)
 option(TDOT_PROFIBUS "Build the PROFIBUS-DP connector (built-in DP master)" ON)
 option(TDOT_SNMP "Build the SNMP trap receiver (POSIX sockets, built-in decoder)" ON)
+option(TDOT_AVEVA_PI "Build the AVEVA PI Web API connector (libcurl, curl license)" ON)
 # The synthetic module the performance harness drives (bench/, doc/performance.md). Never in
 # a release: cross/build.sh passes -DTDOT_BENCH=OFF explicitly, and
 # ci/check-release-features.sh fails the lint if that changes.
@@ -31,6 +32,10 @@ else()
   set(TDOT_CANBUS OFF)
   set(TDOT_CANOPEN OFF)
 endif()
+
+list(APPEND CMAKE_MODULE_PATH ${CMAKE_CURRENT_SOURCE_DIR}/cmake)
+include(mbedtls)
+include(curl)
 
 find_package(PkgConfig REQUIRED)
 find_package(Threads REQUIRED)
@@ -119,6 +124,7 @@ if(TDOT_OPCUA)
     else()
       set(_tdot_mbedtls_link ${TDOT_MBEDX509} ${TDOT_MBEDCRYPTO})
       set(_tdot_mbedtls_inc ${TDOT_MBEDTLS_INCLUDE})
+      set(_tdot_mbedtls_system TRUE)
     endif()
   endif()
   if(NOT open62541_FOUND)
@@ -126,42 +132,9 @@ if(TDOT_OPCUA)
     # the source build's alias of the same name: link the source build's own target.
     set(_tdot_ua_lib open62541)
     include(FetchContent)
-    # mbedTLS 3.6 LTS (Apache-2.0), built from the release tarball and linked statically:
-    # no system crypto library, so the binary keeps its libc-only dependency and the glibc
-    # floor of the cross build. The release tarball (not the git tag) is used because it
-    # carries the generated files and needs no submodules.
-    set(TDOT_MBEDTLS_URL
-        "https://github.com/Mbed-TLS/mbedtls/releases/download/mbedtls-3.6.7/mbedtls-3.6.7.tar.bz2"
-        CACHE STRING "mbedTLS 3.6.7 release tarball (a URL or a local path)")
-    set(ENABLE_PROGRAMS OFF CACHE BOOL "" FORCE)
-    set(ENABLE_TESTING OFF CACHE BOOL "" FORCE)
-    set(USE_SHARED_MBEDTLS_LIBRARY OFF CACHE BOOL "" FORCE)
-    set(USE_STATIC_MBEDTLS_LIBRARY ON CACHE BOOL "" FORCE)
-    set(MBEDTLS_FATAL_WARNINGS OFF CACHE BOOL "" FORCE)
-    FetchContent_Declare(mbedtls
-      URL ${TDOT_MBEDTLS_URL}
-      URL_HASH SHA256=a7e8bcbec0e6f761b4af24f25677626b35f762f68eef79c08677a363212d11f6
-      DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
-    FetchContent_MakeAvailable(mbedtls)
-    # open62541 locates mbedTLS with find_path/find_library (tools/cmake/FindMbedTLS.cmake),
-    # which cannot see libraries that are only built later. Its result variables are
-    # pre-seeded with the paths the in-tree libraries WILL have, and the build order is
-    # enforced below. Paths, not target names: open62541 exports its targets, and an export
-    # may not reference a target outside any export set (turning mbedTLS's own export on
-    # instead would also write to the user's CMake package registry).
-    FetchContent_GetProperties(mbedtls SOURCE_DIR _tdot_mbedtls_src)
-    set(_tdot_mbedtls_lib "${CMAKE_BINARY_DIR}/_deps/mbedtls-lib")
-    set_target_properties(mbedtls mbedx509 mbedcrypto PROPERTIES
-                          ARCHIVE_OUTPUT_DIRECTORY "${_tdot_mbedtls_lib}")
-    set(MBEDTLS_INCLUDE_DIRS "${_tdot_mbedtls_src}/include" CACHE PATH "" FORCE)
-    set(_tdot_mbedtls_link mbedx509 mbedcrypto)
-    set(_tdot_mbedtls_inc "${_tdot_mbedtls_src}/include")
-    foreach(_lib mbedtls mbedx509 mbedcrypto)
-      string(TOUPPER "${_lib}" _var)
-      set(${_var}_LIBRARY
-          "${_tdot_mbedtls_lib}/${CMAKE_STATIC_LIBRARY_PREFIX}${_lib}${CMAKE_STATIC_LIBRARY_SUFFIX}"
-          CACHE FILEPATH "" FORCE)
-    endforeach()
+    # mbedTLS 3.6 LTS from source (cmake/mbedtls.cmake), shared with the AVEVA PI connector's
+    # libcurl. open62541 locates it with find_path/find_library, which the macro pre-seeds.
+    tdot_fetch_mbedtls()
 
     set(UA_ENABLE_SUBSCRIPTIONS ON CACHE BOOL "" FORCE)
     # Server-side method nodes only: the client's Call service, which the call-method verb
@@ -306,6 +279,29 @@ if(TDOT_SNMP)
   target_compile_definitions(tedge_dot_sdk PUBLIC TDOT_FEATURE_SNMP)
 endif()
 
+if(TDOT_AVEVA_PI)
+  if(_tdot_mbedtls_system)
+    # The installed mbedTLS the OPC UA block chose (see cmake/curl.cmake).
+    find_library(TDOT_MBEDTLS_TLS mbedtls)
+    set(MBEDTLS_INCLUDE_DIR ${TDOT_MBEDTLS_INCLUDE} CACHE PATH "" FORCE)
+    set(MBEDTLS_LIBRARY ${TDOT_MBEDTLS_TLS} CACHE FILEPATH "" FORCE)
+    set(MBEDX509_LIBRARY ${TDOT_MBEDX509} CACHE FILEPATH "" FORCE)
+    set(MBEDCRYPTO_LIBRARY ${TDOT_MBEDCRYPTO} CACHE FILEPATH "" FORCE)
+  endif()
+  tdot_fetch_curl()
+  target_sources(tedge_dot_sdk PRIVATE connectors/aveva-pi/connector_aveva_pi.c
+                                       connectors/aveva-pi/pi_cursor.c
+                                       connectors/aveva-pi/pi_http.c
+                                       connectors/aveva-pi/pi_push.c
+                                       connectors/aveva-pi/pi_ring.c
+                                       connectors/aveva-pi/pi_value.c)
+  target_link_libraries(tedge_dot_sdk PUBLIC CURL::libcurl)
+  # pi_http.c wraps curl's mbedTLS verify callback (a certificate without a SAN is refused).
+  set_source_files_properties(connectors/aveva-pi/pi_http.c PROPERTIES
+                              INCLUDE_DIRECTORIES "${_tdot_mbedtls_inc}")
+  target_compile_definitions(tedge_dot_sdk PUBLIC TDOT_FEATURE_AVEVA_PI)
+endif()
+
 if(TDOT_BENCH)
   target_sources(tedge_dot_sdk PRIVATE connectors/bench/connector_bench.c)
   # The value streams must match the Rust build bit for bit: no fused multiply-add.
@@ -393,6 +389,38 @@ add_test(NAME health COMMAND tedge-dot-health)
 add_executable(tedge-dot-write tests/write.c)
 target_link_libraries(tedge-dot-write PRIVATE tedge_dot_sdk)
 add_test(NAME write COMMAND tedge-dot-write)
+
+# AVEVA PI: the static libcurl has what the connector needs (TLS on mbedTLS, WebSockets) and
+# nothing it does not, and mbedTLS is thread-safe.
+if(TDOT_AVEVA_PI)
+  add_executable(tedge-dot-aveva-pi-curl tests/aveva_pi_curl.c)
+  target_include_directories(tedge-dot-aveva-pi-curl PRIVATE ${_tdot_mbedtls_inc})
+  target_link_libraries(tedge-dot-aveva-pi-curl PRIVATE CURL::libcurl ${_tdot_mbedtls_link}
+                                                        Threads::Threads)
+  add_test(NAME aveva-pi-curl COMMAND tedge-dot-aveva-pi-curl)
+
+  # The decoder over the shared golden vectors (the Rust crate reads the same file), with the
+  # canonical number text and the write encoding.
+  add_executable(tedge-dot-aveva-pi-vectors tests/aveva_pi_vectors.c)
+  target_include_directories(tedge-dot-aveva-pi-vectors PRIVATE connectors/aveva-pi)
+  target_link_libraries(tedge-dot-aveva-pi-vectors PRIVATE tedge_dot_sdk)
+  add_test(NAME aveva-pi-vectors
+           COMMAND tedge-dot-aveva-pi-vectors
+                   ${CMAKE_CURRENT_SOURCE_DIR}/../../connectors/aveva-pi/conformance/decode-vectors.json)
+
+  # The configuration errors of impl/rust/crates/connector-aveva-pi/tests/config.rs.
+  add_executable(tedge-dot-aveva-pi-config tests/aveva_pi_config.c)
+  target_include_directories(tedge-dot-aveva-pi-config PRIVATE connectors/aveva-pi)
+  target_link_libraries(tedge-dot-aveva-pi-config PRIVATE tedge_dot_sdk)
+  add_test(NAME aveva-pi-config COMMAND tedge-dot-aveva-pi-config)
+
+  # Delivery cursors (cursor.rs tests) and the push ring: a producer far past the ring's bound
+  # and a slow consumer lose nothing.
+  add_executable(tedge-dot-aveva-pi-push tests/aveva_pi_push.c)
+  target_include_directories(tedge-dot-aveva-pi-push PRIVATE connectors/aveva-pi)
+  target_link_libraries(tedge-dot-aveva-pi-push PRIVATE tedge_dot_sdk)
+  add_test(NAME aveva-pi-push COMMAND tedge-dot-aveva-pi-push)
+endif()
 
 # OPC UA: the PKI directory and certificate trust over the PKI vectors the Rust build
 # validates too (connectors/opcua/conformance/tools/genpki.py; needs Python + cryptography).

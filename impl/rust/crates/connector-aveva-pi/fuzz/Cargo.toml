@@ -1,0 +1,25 @@
+[package]
+name = "connector-aveva-pi-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+license = "Apache-2.0"
+
+[package.metadata]
+cargo-fuzz = true
+
+# Standalone: fuzzing builds with cargo-fuzz (nightly), outside the main workspace.
+[workspace]
+
+[dependencies]
+libfuzzer-sys = "0.4"
+connector-aveva-pi = { path = ".." }
+tedge-dot-sdk = { path = "../../sdk" }
+serde_json = "1"
+
+[[bin]]
+name = "aveva_pi_value"
+path = "fuzz_targets/aveva_pi_value.rs"
+test = false
+doc = false
+bench = false

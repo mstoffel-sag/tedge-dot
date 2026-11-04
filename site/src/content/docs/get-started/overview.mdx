@@ -7,8 +7,8 @@ import { Card, CardGrid, LinkCard } from '@astrojs/starlight/components';
 import ArchitectureDiagram from '../../../components/ArchitectureDiagram.astro';
 
 **tedge-dot** connects industrial (OT) equipment to [thin-edge.io](https://thin-edge.io). One
-`tedge-dot` binary reads and writes Modbus, OPC UA and SNMP devices, plus CAN bus, CANopen
-and PROFIBUS-DP in preview (tested against simulators, not yet on real equipment), and publishes what it reads to the thin-edge.io MQTT broker in one protocol-neutral
+`tedge-dot` binary reads and writes Modbus, OPC UA and SNMP devices, plus CAN bus, CANopen,
+PROFIBUS-DP and AVEVA PI Web API in preview (tested against simulators, not yet on real equipment), and publishes what it reads to the thin-edge.io MQTT broker in one protocol-neutral
 format. From there, thin-edge.io [flows](https://thin-edge.github.io/thin-edge.io/extend/flows/)
 turn it into measurements, child devices, alarms, events and device parameters in the cloud.
 

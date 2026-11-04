@@ -7,3 +7,5 @@
 -r connectors/_shared/requirements.txt
 -r connectors/opcua/requirements.txt
 -r cloud/modbus/requirements.txt
+# The AVEVA PI simulator's own tests and the migration script's (`just test-aveva-pi-python`).
+-r connectors/aveva-pi/sim/requirements-test.txt

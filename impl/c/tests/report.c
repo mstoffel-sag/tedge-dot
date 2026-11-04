@@ -117,8 +117,23 @@ static void run_vectors(const cJSON *doc) {
                          cJSON_GetObjectItem(sample, "id")->valuestring);
                 tdot_report_obs_t obs;
                 obs_of(sample, &obs);
-                if (tdot_report_offer(&st, &item, &obs, item.sample.quality, now))
+                const cJSON *src = cJSON_GetObjectItem(sample, "src");
+                if (cJSON_IsNumber(src)) {
+                    tdot_report_item_t released;
+                    bool has_released = false;
+                    bool now_too = tdot_report_offer_replayed(
+                        &st, &item, &obs, item.sample.quality,
+                        (int64_t)src->valuedouble * 1000000, now, &released, &has_released);
+                    if (has_released) {
+                        snprintf(published, sizeof published, "%s", released.ts);
+                        tdot_report_item_release(&released);
+                    }
+                    if (now_too)
+                        snprintf(published + strlen(published), sizeof published - strlen(published),
+                                 "%s%s", published[0] ? "," : "", item.ts);
+                } else if (tdot_report_offer(&st, &item, &obs, item.sample.quality, now)) {
                     snprintf(published, sizeof published, "%s", item.ts);
+                }
             } else if (cJSON_GetObjectItem(step, "tick")) {
                 tdot_report_item_t out;
                 if (tdot_report_due(&st, now, pushed, &out, &read)) {

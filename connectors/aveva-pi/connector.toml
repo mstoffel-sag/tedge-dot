@@ -1,0 +1,220 @@
+# AVEVA PI Web API connector for the e2e stack (docker-compose.yaml). One device per simulator
+# fault domain; see the compose file for what each simulator is configured to do.
+[connector]
+protocol      = "aveva-pi"
+service_name  = "tedge-dot"
+poll_interval = "2s"
+log_level     = "info"
+
+[mqtt]
+host = "broker"
+port = 1883
+
+[connection]
+tls             = { ca_file = "/etc/tedge-dot/pki/ca.pem" }
+request_timeout = "2s"
+connect_timeout = "2s"
+resolve_retry   = "5s"
+backfill        = { max_age = "1h", max_events = 10000, page_size = 1000, cursor_flush = "1s" }
+channel         = { heartbeat_rate = 2, polling_interval = "1s" }
+
+# Channels push with backfill, Basic auth over HTTPS.
+[[device]]
+name = "pi"
+protocol_address = { base_url = "https://simulator:8443/piwebapi", data_server = "PISRV01", af_database = '\\AFSRV01\Plant', auth = { method = "basic", username = "piuser", password_file = "/etc/tedge-dot/secrets/pi.password" }, channel = { heartbeat_rate = 2, polling_interval = "250ms" } }
+
+  [[device.point]]
+  id = "ticks"
+  datatype = "int32"
+  address = { tag = "TICKS" }
+
+  [[device.point]]
+  id = "frozen"
+  datatype = "float64"
+  address = { tag = "FROZEN" }
+
+  # Backfill without and with a reporting policy (contract §5.3 rule 7).
+  [[device.point]]
+  id = "burst_all"
+  datatype = "float64"
+  address = { tag = "SETPOINT" }
+
+  [[device.point]]
+  id = "burst_limited"
+  datatype = "int32"
+  address = { tag = "COUNT16" }
+  report = { min_interval = "10s" }
+
+  [[device.point]]
+  id = "pressure"
+  datatype = "float64"
+  address = { path = 'Line1\Pump01|Discharge Pressure' }
+
+  # Opted out of push: polled with streamsets/value.
+  [[device.point]]
+  id = "slow"
+  datatype = "float64"
+  subscribe = false
+  address = { tag = "SLOW" }
+
+# Backfill bounded to the last 5 seconds.
+[[device]]
+name = "pi-maxage"
+protocol_address = { base_url = "https://simulator:8443/piwebapi", data_server = "PISRV01", auth = { method = "basic", username = "piuser", password_file = "/etc/tedge-dot/secrets/pi.password" }, backfill = { max_age = "5s", cursor_flush = "1s" } }
+
+  [[device.point]]
+  id = "ticks"
+  datatype = "int32"
+  address = { tag = "TICKS" }
+
+# A wrong password.
+[[device]]
+name = "pi-badpass"
+protocol_address = { base_url = "https://simulator:8443/piwebapi", data_server = "PISRV01", delivery = "snapshot", auth = { method = "basic", username = "piuser", password_file = "/etc/tedge-dot/secrets/wrong.password" } }
+
+  [[device.point]]
+  id = "ticks"
+  datatype = "int32"
+  address = { tag = "TICKS" }
+
+# Snapshot reads and writes, plain HTTP.
+[[device]]
+name = "pi-snap"
+protocol_address = { base_url = "http://sim-snapshot:8080/piwebapi", data_server = "PISRV01", af_database = '\\AFSRV01\Plant', delivery = "snapshot" }
+
+  [[device.point]]
+  id = "sinusoid"
+  datatype = "float64"
+  address = { tag = "SINUSOID" }
+
+  [[device.point]]
+  id = "pump_name"
+  datatype = "string"
+  access = "read_write"
+  address = { tag = "PUMP01.STATE" }
+
+  [[device.point]]
+  id = "pump_code"
+  datatype = "int32"
+  access = "read_write"
+  address = { path = '\\PISRV01\PUMP01.STATE' }
+
+  [[device.point]]
+  id = "setpoint"
+  datatype = "float64"
+  access = "read_write"
+  address = { tag = "SETPOINT" }
+
+  [[device.point]]
+  id = "count16"
+  datatype = "int16"
+  address = { tag = "COUNT16" }
+
+  [[device.point]]
+  id = "batch"
+  datatype = "string"
+  address = { tag = "BATCH.ID" }
+
+  [[device.point]]
+  id = "io"
+  datatype = "float64"
+  address = { tag = "IO.TIMEOUT" }
+
+  [[device.point]]
+  id = "questionable"
+  datatype = "float64"
+  address = { tag = "QUESTIONABLE" }
+
+  [[device.point]]
+  id = "missing"
+  datatype = "float64"
+  address = { tag = "NO.SUCH.TAG" }
+
+  [[device.point]]
+  id = "readonly"
+  datatype = "float64"
+  access = "read_write"
+  address = { tag = "READONLY" }
+
+  [[device.point]]
+  id = "pressure"
+  datatype = "float64"
+  address = { path = 'Line1\Pump01|Discharge Pressure' }
+
+  [[device.point]]
+  id = "sinusoid_raw"
+  mode = "raw"
+  address = { tag = "SINUSOID" }
+
+  [[device.point]]
+  id = "units_override"
+  datatype = "float64"
+  unit = "K"
+  address = { tag = "REACTOR01.TEMP" }
+
+# Recorded polling.
+[[device]]
+name = "pi-rec"
+sampling_interval = "1s"
+protocol_address = { base_url = "http://sim-recorded:8080/piwebapi", data_server = "PISRV01", delivery = "recorded" }
+
+  [[device.point]]
+  id = "ticks"
+  datatype = "int32"
+  address = { tag = "TICKS" }
+
+  [[device.point]]
+  id = "frozen"
+  datatype = "float64"
+  address = { tag = "FROZEN" }
+
+# Channels refused (403): falls back to recorded polling.
+[[device]]
+name = "pi-fallback"
+sampling_interval = "1s"
+protocol_address = { base_url = "http://sim-refuse:8080/piwebapi", data_server = "PISRV01" }
+
+  [[device.point]]
+  id = "ticks"
+  datatype = "int32"
+  address = { tag = "TICKS" }
+
+# Bearer token from a file the suite rotates.
+[[device]]
+name = "pi-bearer"
+protocol_address = { base_url = "https://sim-bearer:8443/piwebapi", data_server = "PISRV01", delivery = "snapshot", auth = { method = "bearer", token_file = "/etc/tedge-dot/secrets/token" } }
+
+  [[device.point]]
+  id = "ticks"
+  datatype = "int32"
+  address = { tag = "TICKS" }
+
+# Client certificate (mutual TLS).
+[[device]]
+name = "pi-mtls"
+protocol_address = { base_url = "https://sim-mtls:8443/piwebapi", data_server = "PISRV01", delivery = "snapshot", auth = { method = "certificate", cert_file = "/etc/tedge-dot/pki/client.pem", key_file = "/etc/tedge-dot/pki/client.key" } }
+
+  [[device.point]]
+  id = "ticks"
+  datatype = "int32"
+  address = { tag = "TICKS" }
+
+# A server certificate without a subject alternative name.
+[[device]]
+name = "pi-nosan"
+protocol_address = { base_url = "https://sim-nosan:8443/piwebapi", data_server = "PISRV01", delivery = "snapshot" }
+
+  [[device.point]]
+  id = "ticks"
+  datatype = "int32"
+  address = { tag = "TICKS" }
+
+# A server certificate the configured CA did not sign.
+[[device]]
+name = "pi-untrusted"
+protocol_address = { base_url = "https://sim-untrusted:8443/piwebapi", data_server = "PISRV01", delivery = "snapshot", tls = { ca_file = "/etc/tedge-dot/pki/other-ca.pem" } }
+
+  [[device.point]]
+  id = "ticks"
+  datatype = "int32"
+  address = { tag = "TICKS" }

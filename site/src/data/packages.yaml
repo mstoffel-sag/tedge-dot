@@ -12,7 +12,7 @@ packages:
     architectures: [amd64, arm64, armhf]
     glibc_min: "2.17"
     binary_size: 457 KB
-    protocols: [modbus, opcua, canbus, canopen, snmp, profibus]
+    protocols: [modbus, opcua, canbus, canopen, snmp, profibus, aveva-pi]
     features: []
   - id: tedge-dot-rs
     implementation: Rust
@@ -24,7 +24,7 @@ packages:
     # Not pinned: the Rust build is not tested on old distributions.
     glibc_min: null
     binary_size: 12 MB
-    protocols: [modbus, opcua, canbus, canopen, snmp]
+    protocols: [modbus, opcua, canbus, canopen, snmp, aveva-pi]
     features:
       - snmpv3-sha2
       - opcua-basic128rsa15
@@ -46,9 +46,9 @@ features:
     label: PROFIBUS-DP on a serial RS-485 line (not through a device server)
 
 # Protocols in preview: tested in CI against simulators (a virtual SocketCAN bus, a PROFIBUS-DP
-# slave simulator) but not yet on real equipment. The landing page, the picker and the config
+# slave simulator, a PI Web API simulator) but not yet on real equipment. The landing page, the picker and the config
 # builder mark them (src/data/protocols.json repeats the flag; a test keeps the two equal).
-preview_protocols: [canbus, canopen, profibus]
+preview_protocols: [canbus, canopen, profibus, aveva-pi]
 
 protocols:
   modbus: Modbus TCP / RTU
@@ -57,6 +57,7 @@ protocols:
   canbus: CAN bus (DBC)
   canopen: CANopen
   profibus: PROFIBUS-DP
+  aveva-pi: AVEVA PI Web API
 
 # Distribution choices for the picker, with the glibc each one ships.
 distributions:

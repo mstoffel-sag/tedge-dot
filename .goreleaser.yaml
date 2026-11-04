@@ -34,13 +34,13 @@ builds:
       - --release
       - --package=tedge-dot
       # Compile the cross-compilable protocol modules into the single binary so
-      # one service can run modbus, opcua, canbus, canopen and snmp connectors.
+      # one service can run modbus, opcua, canbus, canopen, snmp and aveva-pi connectors.
       #
       # profibus is deliberately excluded: its serial dependency (serialport via
       # profirust) has a native libudev build script that does not cross-compile
       # with cargo-zigbuild. Build from source on Linux with
       # `cargo build --features profibus` to use it.
-      - --features=modbus,opcua,canbus,canopen,snmp
+      - --features=modbus,opcua,canbus,canopen,snmp,aveva-pi
     # The macOS targets link against Apple frameworks (IOKit, Security, CoreFoundation) that
     # only a macOS host's SDK provides, so release.yaml runs this build on a macOS runner; zig
     # still cross-compiles the Linux and Windows targets from there.
@@ -151,6 +151,11 @@ nfpms:
         dst: /etc/tedge/plugins/ot/snmp.toml
         type: config|noreplace
         file_info: { owner: tedge, group: tedge, mode: 0640 }
+      # 0640 for the same reason: an AVEVA PI config names its password, token and key files.
+      - src: packaging/config/aveva-pi.toml
+        dst: /etc/tedge/plugins/ot/aveva-pi.toml
+        type: config|noreplace
+        file_info: { owner: tedge, group: tedge, mode: 0640 }
 
       # OPC UA PKI directory (doc/connectors/opcua-connector-spec.md §4): the application
       # certificate and the server-certificate trust lists. The service (running as tedge)
@@ -172,6 +177,11 @@ nfpms:
       - dst: /var/lib/tedge-dot/opcua/pki/own/private
         type: dir
         file_info: { owner: tedge, group: tedge, mode: 0700 }
+      # AVEVA PI delivery cursors (doc/connectors/aveva-pi-connector-spec.md §5.4), one file per
+      # device, written by the service.
+      - dst: /var/lib/tedge-dot/aveva-pi
+        type: dir
+        file_info: { owner: tedge, group: tedge, mode: 0750 }
 
       # Site-local point libraries (contract §3.4): the data point lists of the
       # device types this gateway talks to, referenced by `points_from` in a
@@ -250,6 +260,9 @@ nfpms:
         file_info: { owner: tedge, group: tedge, mode: 0644 }
       - src: demo/config/snmp.toml
         dst: /usr/share/tedge-dot/demo/snmp.toml
+        file_info: { owner: tedge, group: tedge, mode: 0644 }
+      - src: demo/config/aveva-pi.toml
+        dst: /usr/share/tedge-dot/demo/aveva-pi.toml
         file_info: { owner: tedge, group: tedge, mode: 0644 }
 
       # Packaged point libraries (contract §3.4): the data point list of each demo

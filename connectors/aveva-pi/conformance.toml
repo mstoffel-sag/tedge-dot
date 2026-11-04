@@ -1,0 +1,30 @@
+# Conformance manifest for the AVEVA PI Web API connector.
+#
+#   cargo run --manifest-path impl/rust/Cargo.toml -p ot-conformance -- check --spec connectors/aveva-pi/conformance.toml
+#
+# Runs the static layers (schema examples, manifest ↔ compiled capability agreement). The
+# behavioural layer (B1-B10) needs a built-in simulator the harness can start, and the PI Web
+# API simulator lives in Docker (connectors/aveva-pi/sim, Python), so that layer is skipped
+# here. Behaviour is covered instead by the decode golden vectors
+# (conformance/decode-vectors.json, read by the unit tests of both implementations) and the e2e
+# suite in connectors/aveva-pi/tests, which runs both implementations against the simulator.
+
+[connector]
+protocol    = "aveva-pi"
+modes       = ["raw", "typed"]
+datatypes   = ["bool", "int8", "uint8", "int16", "uint16", "int32", "uint32", "int64", "uint64", "float32", "float64", "string"]
+point_kinds = ["point", "attribute", "stream"]
+# PI points and AF attributes are written with POST streams/{webId}/value; the runtime adds
+# write-batch and the management verbs.
+verbs       = ["write"]
+# Snapshot reads are batched (streamsets/value); pushed points come over Channels or recorded
+# polling, with outage backfill from the archive.
+features    = ["polling", "subscribe", "bulk_read", "backfill"]
+subscribe   = true
+
+[simulator]
+# Our PI Web API simulator (aiohttp) in a container — served by the Dockerised e2e stack
+# (connectors/aveva-pi/docker-compose.yaml), not built into the harness.
+kind  = "aveva-pi"
+image = "connectors/aveva-pi/sim"
+seed  = "conformance/decode-vectors.json"

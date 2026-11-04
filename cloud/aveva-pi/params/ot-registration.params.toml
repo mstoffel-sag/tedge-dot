@@ -1,0 +1,8 @@
+# Registration flow params for the AVEVA PI cloud e2e harness: OT devices are registered as
+# aveva-pi child devices, advertise the parameter_update command (c8y_ParameterUpdate, served by
+# the OT flows; the operation template comes from tedge-parameter-plugin), and publish the
+# connector's device descriptor (base URL, delivery) as the c8y_AvevaPiDevice twin fragment.
+# Fallback only: the connector reports the device type its config declares (§3.1).
+device_type = "aveva-pi-device"
+command_capabilities = "parameter_update"
+twin_fragment = "c8y_AvevaPiDevice"

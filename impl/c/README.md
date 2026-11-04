@@ -60,6 +60,7 @@ are still inert. CI runs it.
 | Capability | Rust | C | Notes |
 |---|---|---|---|
 | Modbus, OPC UA, CAN bus, CANopen, SNMP | ✅ | ✅ | |
+| AVEVA PI Web API (`aveva-pi`) | ✅ | ✅ | Same configuration, capability descriptor, sample envelope (`addr`, canonical `raw`, `replayed` history), cursor file and dedup, paging, fallback, liveness and write bodies; both run the shared decode vectors ([`tests/aveva_pi_vectors.c`](tests/aveva_pi_vectors.c), `value.rs`) and the config scenarios of `tests/config.rs` ([`tests/aveva_pi_config.c`](tests/aveva_pi_config.c)). libcurl 8.23 on the in-tree mbedTLS. See "AVEVA PI" below for the differences. |
 | PROFIBUS-DP | ⚠️ source only | ✅ | The Rust package omits it: its serial dependency has a native libudev build script that does not cross-compile. The C package ships it. |
 | Push delivery (`subscribe`) | ✅ | ✅ | OPC UA monitored items; SNMP notifications. See "Push delivery" below for the CAN bus and SNMP differences. |
 | Point libraries (`points_from`) | ✅ | ✅ | Same search path, protocol scoping and merge rules (contract §3.4). The mirrored loader tests are [`library.rs`](../rust/crates/sdk/src/library.rs) and [`tests/config.c`](tests/config.c); the Modbus e2e suite resolves half its points through a library in both builds. |
@@ -138,6 +139,52 @@ fastest pushed point's sampling interval if that is shorter) later than in
 Rust, and its `ts` is when it was handed over rather than when the datagram
 arrived. An inform is acknowledged as its datagram is read, so the
 acknowledgement shares that delay.
+
+### AVEVA PI
+
+The module ([`connectors/aveva-pi/`](connectors/aveva-pi/)) keeps the Rust crate's layers:
+`pi_http.c` (libcurl: requests, TLS, authentication, chunking, the Channels WebSocket),
+`pi_value.c` (the pure decoder and the canonical JSON text), `pi_push.c` / `pi_cursor.c` /
+`pi_ring.c` (push delivery, recorded polling, backfill) and `connector_aveva_pi.c` (the
+configuration, WebId resolution and the vtable). Snapshot reads and writes run on the runtime
+thread; the chunks of one `read_points` call run in parallel on one curl multi handle, so the
+call takes at most one `request_timeout`. All push traffic, catch-ups included, runs on one
+worker thread per subscribed device. The worker queues each accepted event, as canonical JSON
+text, in a ring with the OPC UA bounds (`max(65536, 4 × points)`) and waits while the ring is
+above half its bound, so a catch-up is paced by the runtime and never drops
+([`tests/aveva_pi_push.c`](tests/aveva_pi_push.c) pushes three bounds' worth through a slow
+consumer). `drain_subscriptions` decodes what is queued, hands it to the sink and advances the
+cursors, which the worker writes to the cursor file. Because dedup has to see what is queued but
+not yet drained, the worker keeps its own copy of the cursors, advanced as it queues.
+
+Where the C module differs from the Rust one:
+
+- **Connection pool.** Each device has its own curl handles (one multi handle for the runtime
+  thread, one for its worker), where Rust shares one HTTP client between devices with the same
+  `(base_url, auth, tls)`.
+- **`tls.ca_file`** is the CA bundle curl verifies against (`CURLOPT_CAINFO`); Rust adds it to the
+  system roots. Without it, C uses the first of `/etc/ssl/certs/ca-certificates.crt`,
+  `/etc/pki/tls/certs/ca-bundle.crt`, `/etc/ssl/ca-bundle.pem` and `/etc/ssl/cert.pem` that
+  exists, since libcurl is built without a compiled-in path.
+- **Error texts** of transport and TLS failures are curl's and mbedTLS's, not reqwest's and
+  rustls's. The PI-level texts (`unauthorized`, `HTTP 404: <Errors>`, `not found: <path>`, the
+  decoder's errors, `no message or heartbeat for 1.2s`) are the same. A refused WebSocket
+  upgrade is logged with its status but without PI's `Errors` text, which curl does not read
+  from a refused upgrade.
+- **Units.** The C SDK has no per-sample unit, so a point that configures no `unit` takes PI's
+  (the point's `EngineeringUnits` or the attribute's default unit, else the first value's
+  `UnitsAbbreviation`) as its point unit on connect. Rust sets it per sample, so only a value
+  whose `UnitsAbbreviation` changes while the point has no PI unit would differ.
+- **Unresolved pushed points** stay on the polling schedule and report `not found: <path>` on
+  every poll; once a `resolve_retry` lookup finds one, the drain reports the link down so the
+  device reconnects and subscribes again. Rust delivers one `not found` sample and re-subscribes
+  from `check_subscription`.
+- **A `read_points` call whose every chunk failed** hands over a `bad` sample per point (the
+  failure as `error`) before the link goes down; Rust returns the transport error alone.
+- **Lengths**: string values, `raw` (the canonical JSON text of PI's `Value`) and errors are
+  truncated at the SDK's buffer sizes (see "String / raw value length").
+- **Dedup** compares values by their canonical text, so `1` and `1.0` at one timestamp are the
+  same value in C and two values in Rust (serde_json tells integers from floats).
 
 ### Liveness
 
@@ -266,11 +313,13 @@ worker thread per file), matching the Rust single-service model.
 | `connectors/canopen/` | expedited SDO client over raw SocketCAN (no CANopen library) | `impl/rust/crates/connector-canopen` |
 | `connectors/profibus/` | minimal DP-V0 master (Diag→Prm→Cfg→Data_Exchange, bus thread, tcp:// transport) | `impl/rust/crates/connector-profibus` |
 | `connectors/snmp/` | SNMP over net-snmp (`third_party/net-snmp/`, static, patched): batched GET/GETBULK and SET, one UDP listener for v1/v2c/v3 traps and informs, routing by source or `snmpTrapAddress.0`, community/USM checks, inform Response and v3 Report | `impl/rust/crates/connector-snmp` |
+| `connectors/aveva-pi/` | AVEVA PI Web API on libcurl (`cmake/curl.cmake`): batched snapshot reads on a multi handle, writes, Channels WebSocket and recorded polling with outage backfill on a worker thread per device, delivery cursors | `impl/rust/crates/connector-aveva-pi` |
 | `src/main.c` | `read` / `write` / `run` / `describe` CLI | `src/main.rs` |
 | `tests/golden.c` | conformance runner for `impl/rust/crates/sdk/conformance/vectors.json` | `tests/golden_vectors.rs` |
 | `tests/describe.c` | device-parameter derivation + DTM rendering checks | `impl/rust/crates/sdk/src/descriptor.rs` tests |
 | `tests/write.c` | inverse transform on write (`tdot_transform_invert`, `tdot_connector_write`) | `sdk/src/model.rs` / `sdk/src/connector.rs` tests |
 | `tests/snmp.c` | SNMP golden vectors (`connectors/snmp/conformance/trap-vectors.json`), config rules, loopback receive | `connector-snmp` unit tests |
+| `tests/aveva_pi_*.c` | AVEVA PI decode vectors (`connectors/aveva-pi/conformance/decode-vectors.json`), canonical numbers and write encoding; configuration errors; cursors and the push ring; the libcurl feature set | `connector-aveva-pi` unit and `tests/config.rs` tests |
 | `ci/describe-parity.sh` | `tedge-dot describe` output compared between the Rust and C binaries | — |
 | `ci/smoke.sh` | e2e smoke: connector ⇄ simulator ⇄ broker, per protocol (used by the `c` CI job) | conformance/e2e suites |
 | `cross/` | zig + Debian-multiarch cross-compilation image, build and verify scripts | goreleaser/zig |

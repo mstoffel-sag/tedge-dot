@@ -46,7 +46,7 @@ export default defineConfig({
     starlight({
       title: 'tedge-dot',
       description:
-        'OT protocol connectors for thin-edge.io: Modbus, OPC UA, SNMP, CAN bus, CANopen and PROFIBUS-DP into one neutral MQTT contract.',
+        'OT protocol connectors for thin-edge.io: Modbus, OPC UA, SNMP, CAN bus, CANopen, PROFIBUS-DP and AVEVA PI into one neutral MQTT contract.',
       favicon: '/favicon.svg',
       customCss: [
         '@fontsource-variable/inter',

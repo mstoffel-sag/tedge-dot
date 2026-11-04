@@ -269,8 +269,28 @@ static void emit_sample(rt_t *rt, tdot_device_t *dev, tdot_point_t *pt,
     if (st) {
         tdot_report_obs_t obs;
         tdot_report_obs_of(&item.sample, &obs);
-        if (!tdot_report_offer(st, &item, &obs, item.sample.quality, now))
+        if (s->replayed && s->source_ts_ms <= 0 && !pt->warned_unstamped_replay) {
+            pt->warned_unstamped_replay = true;
+            logmsg("warn", "%s/%s: a replayed sample has no source time; it is reported as a live one",
+                   dev->name, pt->id);
+        }
+        if (s->replayed && s->source_ts_ms > 0) {
+            /* Replayed history: the policy's intervals run on source time
+             * (§5.3), and a reading it releases goes out first. */
+            tdot_report_item_t released;
+            bool has_released = false;
+            bool now_too = tdot_report_offer_replayed(st, &item, &obs, item.sample.quality,
+                                                      (int64_t)(s->source_ts_ms * 1e6), now,
+                                                      &released, &has_released);
+            if (has_released) {
+                publish_item(rt, dev, pt, &released);
+                tdot_report_item_release(&released);
+            }
+            if (!now_too)
+                return;
+        } else if (!tdot_report_offer(st, &item, &obs, item.sample.quality, now)) {
             return;
+        }
     }
     publish_item(rt, dev, pt, &item);
 }

@@ -1,0 +1,87 @@
+# Default AVEVA PI Web API connector configuration installed by the tedge-dot package.
+#
+# No devices are configured out of the box, so the service starts, stays active and reads
+# nothing. Add `[[device]]` sections (see /usr/share/tedge-dot/demo/aveva-pi.toml or
+# doc/connectors/aveva-pi-connector-spec.md) and save it: the service applies the change within
+# a few seconds. To apply it at once:
+#
+#   sudo systemctl reload tedge-dot
+#
+# A device is one PI Web API endpoint. Its points are PI points (by tag or path), AF attributes
+# (by path) or any stream (by WebId). WebIds are looked up once per connection, and one request
+# reads all of a device's due points. By default points are pushed over the PI Web API Channels
+# WebSocket with their PI timestamps, and after an outage or a restart the gap is filled from
+# the PI archive.
+#
+# Secrets: passwords, tokens and keys are read from files (`*_file`), never written here. The
+# file keys, `tls.*` and `state_dir` are local-only settings: management commands cannot change
+# them. This file is installed 0640 tedge:tedge.
+#
+# C build (tedge-dot-c): a configuration's devices are served one at a time, so give each PI Web
+# API server its own configuration file (e.g. aveva-pi-site1.toml); a stalled server then delays
+# only its own devices.
+#
+# AVEVA, PI System and PI Web API are trademarks of AVEVA Group Limited or its subsidiaries.
+
+[connector]
+protocol      = "aveva-pi"
+service_name  = "tedge-dot-aveva-pi"
+poll_interval = "10s"
+log_level     = "info"
+# Measurement output batches a device's samples (doc/contract/ot-connector-contract.md §5.5).
+# Keep the default grouping by time: it never moves a backfilled event's time.
+# output = "measurements"
+# batch  = { group_by = "time" }
+
+# Heartbeat (reporting policy, see doc/reducing-data-volume.md). Left out by default; with a
+# change filter on a device, set it so a flat value is still published now and then.
+# report = { max_interval = "30m" }
+
+[mqtt]
+host = "127.0.0.1"
+port = 1883
+
+[connection]
+# Authentication, one of:
+# auth = { method = "basic",  username = "piuser", password_file = "/etc/tedge/plugins/ot/secrets/aveva-pi.password" }
+# auth = { method = "bearer", token_file = "/etc/tedge/plugins/ot/secrets/aveva-pi.token" }   # re-read after a 401
+# auth = { method = "certificate", cert_file = "/etc/tedge/plugins/ot/certs/aveva-pi.pem", key_file = "/etc/tedge/plugins/ot/certs/aveva-pi.key" }
+#
+# TLS is verified against the system trust store, plus a CA bundle you name here. Turning
+# verification off is logged at warn on every connect; prefer a proper server certificate (with
+# a subject alternative name for the host you connect to).
+# tls = { ca_file = "/etc/tedge/plugins/ot/certs/pi-ca.pem", insecure_skip_verify = false }
+#
+# request_timeout = "10s"
+# connect_timeout = "5s"
+# resolve_retry   = "5m"            # how often a tag the server did not have is looked up again
+# max_web_ids_per_request = 50
+# max_url_bytes   = 8192
+#
+# Where the delivery cursors are kept (one small file per device), and how far back the
+# connector catches up after an outage or a restart (`backfill = false` turns it off).
+# state_dir = "/var/lib/tedge-dot/aveva-pi"
+# backfill  = { max_age = "1h", max_events = 10000, page_size = 1000 }
+#
+# Channels heartbeat: the server sends an empty message after `heartbeat_rate` of its polling
+# intervals (ChannelPollingInterval, 1 s by default) without data.
+# channel = { heartbeat_rate = 5, polling_interval = "1s" }
+
+# Add devices below. Example:
+#
+# [[device]]
+# name             = "pi-plant1"
+# protocol_address = { base_url = "https://pi.example.com/piwebapi", data_server = "PISRV01", af_database = '\\AFSRV01\Plant' }
+# # delivery: "channel" (default, push), "recorded" (archive polling), or "snapshot" (current
+# # value at every poll, as the community plugin did).
+#
+#   [[device.point]]
+#   id       = "reactor_temp"
+#   datatype = "float64"
+#   address  = { tag = "REACTOR01.TEMP" }
+#
+#   [[device.point]]
+#   id       = "pump_state"
+#   datatype = "string"                    # a digital state's name; an integer type gives its code
+#   access   = "read_write"
+#   address  = { path = 'Line1\Pump01|State' }

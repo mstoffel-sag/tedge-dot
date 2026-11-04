@@ -104,6 +104,9 @@ typedef struct {
     bool has_last;
     tdot_report_obs_t last_obs;
     tdot_quality_t last_quality;
+    /* Whether last_published is set: a publish since the last reset, or the
+     * time a replay resumes from. */
+    bool has_published;
     int64_t last_published;
     bool has_read;
     int64_t last_read;
@@ -117,7 +120,19 @@ typedef struct {
     int64_t cand_since;
     tdot_report_item_t cand_latest;
     tdot_report_obs_t cand_latest_obs;
+    /* Replay (contract §5.3): while `replaying`, the interval timers run on
+     * the source time of replayed readings; replay_last_offer is the runtime
+     * time of the last one. last_published_src is the source time of the last
+     * reading published in a replay, to resume from in the next. */
+    bool replaying;
+    int64_t replay_last_offer;
+    bool has_published_src;
+    int64_t last_published_src;
 } tdot_report_state_t;
+
+/* How long a point stays on source time after its last replayed reading when
+ * no live reading ends the replay first, in nanoseconds. */
+#define TDOT_REPORT_REPLAY_IDLE_NS ((int64_t)2000000000)
 
 /* `now` is monotonic time in nanoseconds, from any fixed origin. */
 void tdot_report_init(tdot_report_state_t *st, const tdot_report_policy_t *policy,
@@ -136,6 +151,19 @@ void tdot_report_no_data(tdot_report_state_t *st);
  * from tdot_report_due. */
 bool tdot_report_offer(tdot_report_state_t *st, const tdot_report_item_t *item,
                        const tdot_report_obs_t *obs, tdot_quality_t quality, int64_t now);
+
+/* Offer a reading the module replays from the source's history, with its
+ * source time `src` (nanoseconds from any fixed origin, such as the Unix
+ * epoch). The policy's intervals are measured on source time, so a burst of
+ * history is reduced the way the live stream would have been: a held or
+ * settled reading whose interval ended by `src` is released first, into
+ * `released` (the caller then owns it: tdot_report_item_release), with
+ * *has_released set. Returns true when `item` is to be published now, after
+ * the released one. */
+bool tdot_report_offer_replayed(tdot_report_state_t *st, const tdot_report_item_t *item,
+                                const tdot_report_obs_t *obs, tdot_quality_t quality,
+                                int64_t src, int64_t now, tdot_report_item_t *released,
+                                bool *has_released);
 
 /* A pass of the runtime loop. Returns true with `out` filled (the caller then
  * owns it: tdot_report_item_release) when a held reading's interval ended or a

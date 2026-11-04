@@ -1105,6 +1105,7 @@ fn good_sample(id: &str, model: &ProfibusPoint, raw: Vec<u8>, value: Option<Valu
     Sample {
         source_value: None,
         source_ts: None,
+        replayed: false,
         ts: OffsetDateTime::now_utc(),
         device: String::new(),
         protocol: PROTOCOL,
@@ -1130,6 +1131,7 @@ fn bad_sample(id: &str, error: &str, addr: Option<&PointAddress>, unit: Option<S
     Sample {
         source_value: None,
         source_ts: None,
+        replayed: false,
         ts: OffsetDateTime::now_utc(),
         device: String::new(),
         protocol: PROTOCOL,

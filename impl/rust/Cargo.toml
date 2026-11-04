@@ -2,15 +2,15 @@
 name = "tedge-dot"
 version.workspace = true
 edition.workspace = true
-description = "thin-edge.io OT protocol connector binary (Modbus, OPC UA, CAN bus, CANopen, PROFIBUS and SNMP trap modules behind feature flags)"
+description = "thin-edge.io OT protocol connector binary (Modbus, OPC UA, CAN bus, CANopen, PROFIBUS, SNMP and AVEVA PI Web API modules behind feature flags)"
 license.workspace = true
 repository.workspace = true
 
 [workspace]
-members = ["crates/sdk", "crates/connector-modbus", "crates/connector-opcua", "crates/connector-canbus", "crates/connector-canopen", "crates/connector-profibus", "crates/connector-snmp", "crates/connector-bench", "crates/bench", "crates/ot-conformance"]
+members = ["crates/sdk", "crates/connector-modbus", "crates/connector-opcua", "crates/connector-canbus", "crates/connector-canopen", "crates/connector-profibus", "crates/connector-snmp", "crates/connector-aveva-pi", "crates/connector-bench", "crates/bench", "crates/ot-conformance"]
 # The fuzz crates build with cargo-fuzz (nightly, libFuzzer) and stay out of normal builds;
 # vendor/ holds patched copies of upstream crates (see the TEDGE-DOT-PATCH.md inside each).
-exclude = ["crates/sdk/fuzz", "crates/connector-snmp/fuzz", "crates/connector-opcua/fuzz", "vendor/async-opcua-crypto", "vendor/snmp2"]
+exclude = ["crates/sdk/fuzz", "crates/connector-snmp/fuzz", "crates/connector-aveva-pi/fuzz", "crates/connector-opcua/fuzz", "vendor/async-opcua-crypto", "vendor/snmp2"]
 
 # async-opcua's server answers ActivateSession with an empty nonce on a None-policy channel,
 # which open62541 clients (1.4+) reject; the vendored copy sends 32 bytes like every other
@@ -24,7 +24,7 @@ async-opcua-crypto = { path = "vendor/async-opcua-crypto" }
 snmp2 = { path = "vendor/snmp2" }
 
 [features]
-default = ["modbus", "opcua", "canbus-fd", "snmp"]
+default = ["modbus", "opcua", "canbus-fd", "snmp", "aveva-pi"]
 modbus = ["dep:connector-modbus"]
 opcua = ["dep:connector-opcua"]
 canbus = ["dep:connector-canbus"]
@@ -32,6 +32,7 @@ canbus-fd = ["canbus", "dep:connector-canbus", "connector-canbus/canbus-fd"]
 canopen = ["dep:connector-canopen"]
 profibus = ["dep:connector-profibus"]
 snmp = ["dep:connector-snmp"]
+aveva-pi = ["dep:connector-aveva-pi"]
 # Synthetic module for the performance harness (bench/). Never in `default` or a release
 # feature list: ci/check-release-features.sh fails the lint if one names it.
 bench = ["dep:connector-bench"]
@@ -44,6 +45,7 @@ connector-canbus = { path = "crates/connector-canbus", optional = true }
 connector-canopen = { path = "crates/connector-canopen", optional = true }
 connector-profibus = { path = "crates/connector-profibus", optional = true }
 connector-snmp = { path = "crates/connector-snmp", optional = true }
+connector-aveva-pi = { path = "crates/connector-aveva-pi", optional = true }
 connector-bench = { path = "crates/connector-bench", optional = true }
 clap = { version = "4", features = ["derive"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal"] }

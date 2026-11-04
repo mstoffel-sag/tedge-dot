@@ -109,11 +109,13 @@ check-linux target=TARGET:
 fuzz target="decode_primitive" seconds="60":
     cd impl/rust/crates/sdk && cargo +nightly fuzz run {{target}} -- -max_total_time={{seconds}}
 
-# Fuzz every SDK target briefly, plus the OPC UA structure walker (CI smoke; ~3 min total).
+# Fuzz every SDK target briefly, plus the OPC UA structure walker and the AVEVA PI value
+# decoder (CI smoke; ~4 min total).
 fuzz-all seconds="30":
     cd impl/rust/crates/sdk && for t in decode_primitive config_toml transform sample_envelope value_map; do \
         cargo +nightly fuzz run $t -- -max_total_time={{seconds}} || exit 1; done
     cd impl/rust/crates/connector-opcua && cargo +nightly fuzz run structure_walk -- -max_total_time={{seconds}}
+    cd impl/rust/crates/connector-aveva-pi && cargo +nightly fuzz run aveva_pi_value -- -max_total_time={{seconds}}
 
 # Cross-check the `requires:<capability>` test tags against the declared capability lists.
 check-capability-tags:
@@ -134,6 +136,30 @@ check-release-versions:
 # .github/mirror-images.txt (CI pulls them from the GHCR mirror), and none bypasses BASE_REGISTRY.
 check-mirrored-images:
     ./ci/check-mirrored-images.sh
+
+# The AVEVA PI simulator's unit tests and the migration script's tests (no Docker). Uses
+# ./.venv (`just venv`), or $PYTHON with connectors/aveva-pi/sim/requirements-test.txt.
+test-aveva-pi-python *args="":
+    ${PYTHON:-./.venv/bin/python} -m pytest -q -c connectors/aveva-pi/sim/pytest.ini \
+        --rootdir connectors/aveva-pi connectors/aveva-pi/sim connectors/aveva-pi/tools {{args}}
+
+# The AVEVA PI C module's unit tests under AddressSanitizer + UndefinedBehaviorSanitizer, then
+# ThreadSanitizer (the Channels worker thread and its ring). Builds into impl/c/build-asan and
+# impl/c/build-tsan; only the aveva-pi modules are on, so curl and mbedTLS are the only fetches.
+c-sanitize-aveva-pi:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    off="-DTDOT_MODBUS=OFF -DTDOT_OPCUA=OFF -DTDOT_PROFIBUS=OFF -DTDOT_SNMP=OFF -DTDOT_CANBUS=OFF -DTDOT_CANOPEN=OFF"
+    for san in "address,undefined" thread; do
+        dir=impl/c/build-${san%%,*}
+        dir=${dir/address/asan}; dir=${dir/thread/tsan}
+        cmake -B "$dir" -S impl/c -G Ninja -DCMAKE_BUILD_TYPE=Debug $off \
+            -DCMAKE_C_FLAGS="-fsanitize=$san -fno-omit-frame-pointer -fno-sanitize-recover=undefined" \
+            -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=$san"
+        cmake --build "$dir"
+        ASAN_OPTIONS=abort_on_error=1 TSAN_OPTIONS=halt_on_error=1 \
+            ctest --test-dir "$dir" --output-on-failure -R aveva-pi
+    done
 
 # Validate the thin-edge flows offline with `tedge flows test` (no broker/device/cloud).
 test-flows:

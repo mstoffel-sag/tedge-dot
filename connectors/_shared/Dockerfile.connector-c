@@ -25,6 +25,7 @@ RUN --mount=type=cache,id=tedge-dot-c-build-${PROTOCOL},target=/src/build \
     && cmake -S impl/c -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
         -DTDOT_MODBUS=$(on modbus) -DTDOT_OPCUA=$(on opcua) -DTDOT_PROFIBUS=$(on profibus) \
         -DTDOT_CANBUS=$(on canbus) -DTDOT_CANOPEN=$(on canopen) -DTDOT_SNMP=$(on snmp) \
+        -DTDOT_AVEVA_PI=$(on aveva-pi) \
     && cmake --build build --target tedge-dot \
     && cp build/tedge-dot /usr/local/bin/tedge-dot
 
@@ -56,5 +57,7 @@ RUN cp /opt/connector/connector.toml /etc/connector.toml \
     # Secrets the stack's config reads with *_password_file (SNMPv3), installed the same way
     # as in the Rust image and kept unreadable to anyone but the connector.
     && if [ -d /opt/connector/secrets ]; then mkdir -p /etc/tedge-dot && cp -r /opt/connector/secrets /etc/tedge-dot/secrets && chmod 0700 /etc/tedge-dot/secrets && chmod 0600 /etc/tedge-dot/secrets/*; fi \
+    # The AVEVA PI connector's delivery cursors (state_dir), as the package creates it.
+    && if [ "${PROTOCOL}" = "aveva-pi" ]; then mkdir -p /var/lib/tedge-dot/aveva-pi; fi \
     && rm -rf /opt/connector
 ENTRYPOINT ["/entrypoint.sh"]

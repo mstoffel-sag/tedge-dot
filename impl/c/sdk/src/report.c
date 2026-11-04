@@ -241,7 +241,7 @@ void tdot_report_reset(tdot_report_state_t *st, int64_t now) {
 void tdot_report_no_data(tdot_report_state_t *st) { st->unreadable = true; }
 
 static int64_t since_published(const tdot_report_state_t *st, int64_t now) {
-    int64_t ref = st->has_last ? st->last_published : st->origin;
+    int64_t ref = st->has_published ? st->last_published : st->origin;
     return now > ref ? now - ref : 0;
 }
 
@@ -251,13 +251,63 @@ static void publish(tdot_report_state_t *st, const tdot_report_obs_t *obs,
     st->last_obs = *obs;
     st->last_quality = quality;
     st->has_last = true;
+    st->has_published = true;
     st->last_published = now;
     clear_pending(st);
     clear_candidate(st);
 }
 
+/* End a replay: the timers of a held or debouncing reading restart on the
+ * runtime clock. */
+static void hand_over(tdot_report_state_t *st, int64_t now) {
+    st->replaying = false;
+    if (st->has_published) {
+        st->has_published_src = true;
+        st->last_published_src = st->last_published;
+        st->last_published = now;
+    }
+    if (st->has_candidate)
+        st->cand_since = now;
+}
+
+static bool offer_at(tdot_report_state_t *st, const tdot_report_item_t *item,
+                     const tdot_report_obs_t *obs, tdot_quality_t quality, int64_t now);
+
 bool tdot_report_offer(tdot_report_state_t *st, const tdot_report_item_t *item,
                        const tdot_report_obs_t *obs, tdot_quality_t quality, int64_t now) {
+    if (st->replaying)
+        hand_over(st, now);
+    return offer_at(st, item, obs, quality, now);
+}
+
+static bool release(tdot_report_state_t *st, int64_t now, tdot_report_item_t *out);
+
+bool tdot_report_offer_replayed(tdot_report_state_t *st, const tdot_report_item_t *item,
+                                const tdot_report_obs_t *obs, tdot_quality_t quality,
+                                int64_t src, int64_t now, tdot_report_item_t *released,
+                                bool *has_released) {
+    if (!st->replaying) {
+        /* Resume source time where the last replay left it; with none, the
+         * next reading is far enough from the origin to count as a new
+         * interval. */
+        st->has_published = st->has_published_src;
+        st->last_published = st->last_published_src;
+        if (st->has_candidate)
+            st->cand_since = src;
+    }
+    st->replaying = true;
+    st->replay_last_offer = now;
+    *has_released = release(st, src, released);
+    bool out = offer_at(st, item, obs, quality, src);
+    if (st->has_published) {
+        st->has_published_src = true;
+        st->last_published_src = st->last_published;
+    }
+    return out;
+}
+
+static bool offer_at(tdot_report_state_t *st, const tdot_report_item_t *item,
+                     const tdot_report_obs_t *obs, tdot_quality_t quality, int64_t now) {
     const tdot_report_policy_t *p = &st->policy;
     /* Always published: the first reading, and a quality change. */
     if (!st->has_last || st->last_quality != quality) {
@@ -328,8 +378,9 @@ static bool publish_if_changed(tdot_report_state_t *st, tdot_report_item_t *item
     return true;
 }
 
-bool tdot_report_due(tdot_report_state_t *st, int64_t now, bool pushed,
-                     tdot_report_item_t *out, bool *read) {
+/* A held reading whose interval ended, or a debounced one that settled, by
+ * `now`: true with `out` filled. */
+static bool release(tdot_report_state_t *st, int64_t now, tdot_report_item_t *out) {
     const tdot_report_policy_t *p = &st->policy;
     bool published = false;
     if (p->min_interval > 0 && st->has_pending && since_published(st, now) >= p->min_interval) {
@@ -352,9 +403,23 @@ bool tdot_report_due(tdot_report_state_t *st, int64_t now, bool pushed,
             published = publish_if_changed(st, &item, &obs, now, out);
         }
     }
+    return published;
+}
+
+bool tdot_report_due(tdot_report_state_t *st, int64_t now, bool pushed,
+                     tdot_report_item_t *out, bool *read) {
+    const tdot_report_policy_t *p = &st->policy;
     *read = false;
+    if (st->replaying) {
+        /* Replayed readings release what they hold themselves, and a replay
+         * publishes, so no heartbeat read is due while it goes on. */
+        if (now - st->replay_last_offer < TDOT_REPORT_REPLAY_IDLE_NS)
+            return false;
+        hand_over(st, now);
+    }
+    bool published = release(st, now, out);
     if (p->max_interval > 0) {
-        int64_t published_at = st->has_last ? st->last_published : st->origin;
+        int64_t published_at = st->has_published ? st->last_published : st->origin;
         int64_t read_at = st->has_read ? st->last_read : st->origin;
         int64_t reference = published_at > read_at ? published_at : read_at;
         int64_t idle = now > reference ? now - reference : 0;

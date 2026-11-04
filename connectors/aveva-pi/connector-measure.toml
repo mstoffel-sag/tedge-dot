@@ -1,0 +1,48 @@
+# The `pim` device of the AVEVA PI e2e harness, in measurement output (contract §5.5): the
+# connector publishes the thin-edge measurements itself. `output` is a connector setting, so the
+# device is a connector instance of its own, which entrypoint.sh starts next to the main one. Its
+# simulator (`sim-measure`) is used by no other device, so other tests' faults never reach it.
+#
+#   ticks   TICKS, Channels push       -> aveva-pi.ticks, one measurement per archived event,
+#                                         stamped with the PI time, also when replayed after an
+#                                         outage
+#   frozen  FROZEN, a unit             -> aveva-pi.frozen, and the units metadata
+#   named   FROZEN, meta.measurement   -> the series Tank.Level on m/Tank
+
+[connector]
+protocol      = "aveva-pi"
+service_name  = "tedge-dot-measure"
+poll_interval = "2s"
+log_level     = "info"
+output        = "measurements"
+
+[mqtt]
+host = "broker"
+port = 1883
+
+[connection]
+request_timeout = "2s"
+connect_timeout = "2s"
+backfill        = { max_age = "1h", cursor_flush = "1s" }
+channel         = { heartbeat_rate = 2, polling_interval = "250ms" }
+
+[[device]]
+name             = "pim"
+protocol_address = { base_url = "http://sim-measure:8080/piwebapi", data_server = "PISRV01" }
+
+  [[device.point]]
+  id       = "ticks"
+  datatype = "int32"
+  address  = { tag = "TICKS" }
+
+  [[device.point]]
+  id       = "frozen"
+  datatype = "float64"
+  unit     = "m"
+  address  = { tag = "FROZEN" }
+
+  [[device.point]]
+  id       = "named"
+  datatype = "float64"
+  address  = { tag = "FROZEN" }
+  meta     = { measurement = { group = "Tank", series = "Level" } }

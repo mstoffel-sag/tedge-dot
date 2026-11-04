@@ -66,10 +66,11 @@ one protocol, selected by `connector.protocol` in its config file.
 | CAN bus *(preview)* | Linux SocketCAN + DBC | ✅ | ✅ |
 | CANopen *(preview)* | Linux SocketCAN (SDO) | ✅ | ✅ |
 | PROFIBUS-DP *(preview)* | serial (Rust) / `tcp://` (C) | ❌ build from source (`--features profibus`, Linux only) | ✅ |
+| AVEVA PI Web API *(preview)* (batched reads, Channels push, outage backfill, writes) | HTTPS + WebSocket | ✅ | ✅ |
 
-**Preview:** the CAN bus, CANopen and PROFIBUS-DP connectors are tested in CI against simulators
-(a virtual SocketCAN bus and a PROFIBUS-DP slave simulator) but not yet on real equipment, so
-expect rough edges and changes. If you try one on real hardware, please
+**Preview:** the CAN bus, CANopen, PROFIBUS-DP and AVEVA PI Web API connectors are tested in CI
+against simulators (a virtual SocketCAN bus, a PROFIBUS-DP slave simulator and a PI Web API
+simulator) but not yet on real equipment or a real PI System, so expect rough edges and changes. If you try one on real hardware, please
 [tell us how it went](https://github.com/thin-edge/tedge-dot/issues).
 
 Rust modules: [connector-modbus](impl/rust/crates/connector-modbus/),
@@ -77,7 +78,8 @@ Rust modules: [connector-modbus](impl/rust/crates/connector-modbus/),
 [connector-canbus](impl/rust/crates/connector-canbus/),
 [connector-canopen](impl/rust/crates/connector-canopen/),
 [connector-profibus](impl/rust/crates/connector-profibus/),
-[connector-snmp](impl/rust/crates/connector-snmp/). C modules:
+[connector-snmp](impl/rust/crates/connector-snmp/),
+[connector-aveva-pi](impl/rust/crates/connector-aveva-pi/). C modules:
 [impl/c/connectors/](impl/c/connectors/).
 
 The SNMP connector talks to equipment both ways. It **polls** objects (GET, GETBULK) and **writes**
@@ -89,6 +91,16 @@ for both directions. What a notification *means* — an event, an alarm — is d
 raised by the flows. The Rust build uses [snmp2](https://github.com/roboplc/snmp2), the C build a
 minimal static [net-snmp](https://github.com/net-snmp/net-snmp); see the
 [SNMP connector spec](doc/connectors/snmp-connector-spec.md).
+
+The AVEVA PI Web API connector *(preview)* reads PI points and AF attributes from a PI System over HTTPS,
+the first connector for a REST/JSON system rather than a fieldbus. WebIds are looked up once, one
+request reads all of a device's points, values are pushed over the PI Web API Channels WebSocket
+with their PI timestamps, and after an outage or a restart the gap is filled from the PI archive.
+Basic, Bearer and client-certificate authentication, with secrets in files. See the
+[AVEVA PI connector spec](doc/connectors/aveva-pi-connector-spec.md), the
+[guide to writing REST connectors](doc/connectors/rest-connectors.md), and
+[migrating from the community plugin](doc/migration/aveva-pi-plugin.md). AVEVA and PI Web API are
+trademarks of AVEVA Group Limited or its subsidiaries.
 
 The OPC UA connector connects to secured servers as well as open ones: it generates (or uses) an
 application instance certificate and trusts a server only when its certificate is pinned or

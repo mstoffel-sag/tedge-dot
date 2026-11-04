@@ -1,0 +1,70 @@
+# AVEVA PI Web API connector configuration for the full Cumulocity end-to-end harness.
+#
+# The connector runs inside the tedge container, talks to the local MQTT broker and reads the
+# PI Web API simulator (service "simulator", HTTPS, Basic auth). Points of
+# connectors/aveva-pi/sim/seed.json:
+#
+#   TICKS     int32, +1 every second   -> measurements with their PI times; the outage and
+#                                         restart catch-up tests count them
+#   SINUSOID  float64, PI unit degC    -> a measurement with the unit from PI
+#   AF attribute Pump01|Discharge Pressure (bar)
+#   SETPOINT  float64, writable        -> a device parameter (c8y_ParameterUpdate round-trip)
+#   READONLY  float64, writes refused  -> a parameter whose update PI refuses (403)
+
+[connector]
+protocol      = "aveva-pi"
+# The packaged name: ot-command-forward addresses management commands to the
+# tedge-dot-<protocol> service by default (contract §6.3).
+service_name  = "tedge-dot-aveva-pi"
+poll_interval = "5s"
+log_level     = "info"
+
+[mqtt]
+host = "127.0.0.1"
+port = 1883
+
+[connection]
+auth            = { method = "basic", username = "piuser", password_file = "/etc/tedge/plugins/ot/secrets/aveva-pi.password" }
+tls             = { ca_file = "/opt/pi-sim/certs/ca.pem" }
+request_timeout = "5s"
+backfill        = { max_age = "1h", cursor_flush = "1s" }
+
+[[device]]
+name             = "pi"
+# The device type (§3.1): the parameter set is pi_plant_sim_control_parameters.
+type             = "pi-plant-sim"
+protocol_address = { base_url = "https://simulator:8443/piwebapi", data_server = "PISRV01", af_database = '\\AFSRV01\Plant' }
+
+  [[device.point]]
+  id       = "ticks"
+  datatype = "int32"
+  address  = { tag = "TICKS" }
+
+  [[device.point]]
+  id       = "sinusoid"
+  datatype = "float64"
+  address  = { tag = "SINUSOID" }
+
+  [[device.point]]
+  id       = "pressure"
+  datatype = "float64"
+  address  = { path = 'Line1\Pump01|Discharge Pressure' }
+
+  # Setpoints rarely change, so PI pushes them only at subscribe, possibly before the c8y
+  # mapper runs (here: before the device is bootstrapped), and the parameter twin would miss
+  # them until they change. The heartbeat re-reads and republishes them every 20 s.
+  [[device.point]]
+  id       = "setpoint"
+  datatype = "float64"
+  access   = "read_write"
+  address  = { tag = "SETPOINT" }
+  report   = { max_interval = "20s" }
+  meta     = { parameter = { title = "Setpoint", min = 0, max = 100 } }
+
+  [[device.point]]
+  id       = "locked"
+  datatype = "float64"
+  access   = "read_write"
+  address  = { tag = "READONLY" }
+  report   = { max_interval = "20s" }
+  meta     = { parameter = { title = "Locked setpoint" } }

@@ -1,0 +1,92 @@
+# Full Cumulocity end-to-end image for the AVEVA PI Web API connector: thin-edge.io demo base +
+# the connector, its thin-edge flows and the parameter plugin. The community plugin
+# (thin-edge-aveva-pi-connector) is not installed: this is what replaces it.
+#
+# IMPL selects the implementation under test, as in cloud/modbus/Dockerfile.tedge:
+#
+#   rust (default) — the cross-compiled .deb from dist/; run `just build` first.
+#   c              — the C implementation (impl/c/), compiled in a builder stage here, so
+#                    nothing has to be built beforehand and dist/ is not read at all.
+#
+# Build context is the repository root. CI overrides BASE_REGISTRY with the GHCR mirror.
+ARG BASE_REGISTRY=public.ecr.aws/docker/library
+ARG DEMO_IMAGE=ghcr.io/thin-edge/tedge-demo-main-systemd:latest
+ARG IMPL=rust
+
+# --- C connector build (only when IMPL=c) --------------------------------------------------
+# Only the aveva-pi module is compiled in. libcurl and mbedTLS are fetched and linked
+# statically (impl/c/cmake/curl.cmake), so the runtime stage needs no curl/TLS library.
+FROM ${BASE_REGISTRY}/debian:bookworm AS build-c
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        build-essential cmake ninja-build pkg-config git ca-certificates python3 perl file \
+        libmosquitto-dev libcjson-dev \
+    && rm -rf /var/lib/apt/lists/*
+WORKDIR /src
+COPY impl/c /src/impl/c
+COPY impl/rust/crates/sdk/conformance /src/impl/rust/crates/sdk/conformance
+RUN cmake -S impl/c -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+        -DTDOT_AVEVA_PI=ON -DTDOT_MODBUS=OFF -DTDOT_OPCUA=OFF -DTDOT_PROFIBUS=OFF \
+        -DTDOT_CANBUS=OFF -DTDOT_CANOPEN=OFF -DTDOT_SNMP=OFF \
+    && cmake --build build --target tedge-dot \
+    && cp build/tedge-dot /usr/local/bin/tedge-dot
+
+# --- connector install, Rust: the packaged .deb ----------------------------------------------
+FROM ${DEMO_IMAGE} AS connector-rust
+RUN mkdir -p /opt/debs/
+COPY dist/*.deb /opt/debs/
+RUN arch=$(dpkg --print-architecture) \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends --allow-downgrades \
+        /opt/debs/tedge-dot-rs_*_linux_${arch}.deb \
+    && rm -rf /opt/debs \
+    && rm -rf /var/lib/apt/lists/*
+
+# --- connector install, C: the layout the C package would produce ----------------------------
+# Reproduced by hand, as in cloud/modbus/Dockerfile.tedge (which also explains why: the Robot
+# guard tells the two apart by whether a package is installed).
+FROM ${DEMO_IMAGE} AS connector-c
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends libmosquitto1 libcjson1 \
+    && rm -rf /var/lib/apt/lists/*
+COPY --from=build-c /usr/local/bin/tedge-dot /usr/bin/tedge-dot
+COPY packaging/tedge-dot.service /lib/systemd/system/tedge-dot.service
+RUN chmod 0755 /usr/bin/tedge-dot \
+    && chmod 0644 /lib/systemd/system/tedge-dot.service \
+    && install -d -o tedge -g tedge -m 0755 /etc/tedge/plugins/ot \
+    && install -d -o tedge -g tedge -m 0750 /var/lib/tedge-dot /var/lib/tedge-dot/aveva-pi
+COPY flows/ot-measurement       /etc/tedge/mappers/c8y/flows/ot-measurement
+COPY flows/ot-registration      /etc/tedge/mappers/c8y/flows/ot-registration
+COPY flows/ot-command-forward   /etc/tedge/mappers/c8y/flows/ot-command-forward
+COPY flows/ot-command-result    /etc/tedge/mappers/c8y/flows/ot-command-result
+COPY flows/ot-parameter-state   /etc/tedge/mappers/c8y/flows/ot-parameter-state
+COPY flows/ot-alarm             /etc/tedge/mappers/c8y/flows/ot-alarm
+COPY flows/ot-event             /etc/tedge/mappers/c8y/flows/ot-event
+RUN chown -R tedge:tedge /etc/tedge/mappers/c8y/flows
+
+# --- everything below is shared by both implementations ------------------------------------
+FROM connector-${IMPL}
+
+# tedge-parameter-plugin owns the c8y_ParameterUpdate operation template (the rust stage's .deb
+# install already pulled it in as a dependency); jq + curl let the suite read the simulator's
+# control API from this container.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends jq curl tedge-parameter-plugin \
+    && rm -rf /var/lib/apt/lists/*
+
+# The one connector config of this harness, replacing the packaged defaults. The password is
+# the simulator's (a test fixture), in the file the config names, readable by tedge only.
+COPY cloud/aveva-pi/aveva-pi.toml /etc/tedge/plugins/ot/aveva-pi.toml
+RUN find /etc/tedge/plugins/ot -maxdepth 1 -name '*.toml' ! -name aveva-pi.toml -delete \
+    && install -d -o tedge -g tedge -m 0700 /etc/tedge/plugins/ot/secrets \
+    && printf 'pi-password-1' > /etc/tedge/plugins/ot/secrets/aveva-pi.password \
+    && chown tedge:tedge /etc/tedge/plugins/ot/aveva-pi.toml /etc/tedge/plugins/ot/secrets/aveva-pi.password \
+    && chmod 0640 /etc/tedge/plugins/ot/aveva-pi.toml \
+    && chmod 0600 /etc/tedge/plugins/ot/secrets/aveva-pi.password
+
+# The operator's step: the registration flow settings (the flows themselves come from the
+# connector install above, so this suite also tests the packaging).
+COPY cloud/aveva-pi/params/ot-registration.params.toml /etc/tedge/mappers/c8y/flows/ot-registration/params.toml
+
+RUN chown -R tedge:tedge /etc/tedge/mappers \
+    && systemctl enable tedge-dot.service

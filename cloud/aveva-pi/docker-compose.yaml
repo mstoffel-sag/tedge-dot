@@ -1,0 +1,52 @@
+# Full Cumulocity end-to-end stack for the AVEVA PI Web API connector.
+#
+#   tedge      - thin-edge.io demo image + connector + flows + the parameter plugin
+#   simulator  - the PI Web API simulator (connectors/aveva-pi/sim): HTTPS with Basic auth.
+#                It writes the test PKI into the `certs` volume, whose CA the connector trusts.
+#
+# The stack is started by the Robot suite itself (DeviceLibrary, see
+# cloud/_shared/device.resource): every setup creates its own compose project with a random
+# name and a random DEVICE_ID, which the suite bootstraps with the image's bootstrap.sh and
+# deletes from the tenant again at teardown. Nothing has to be started beforehand.
+volumes:
+  certs:
+
+services:
+  tedge:
+    # IMPL selects the connector under test: the Rust .deb from dist/ by default, the C build
+    # (impl/c/) via `just test-cloud-c aveva-pi` — see cloud/aveva-pi/Dockerfile.tedge.
+    image: tedge-dot-${IMPL:-rust}-cloud-aveva-pi
+    build:
+      context: ../..
+      dockerfile: cloud/aveva-pi/Dockerfile.tedge
+      args:
+        BASE_REGISTRY: ${BASE_REGISTRY:-public.ecr.aws/docker/library}
+        IMPL: ${IMPL:-rust}
+    privileged: true
+    labels:
+      device-test-core.role: main
+    environment:
+      - C8Y_BASEURL=${C8Y_BASEURL:-}
+      - C8Y_USER=${C8Y_USER:-}
+      - C8Y_PASSWORD=${C8Y_PASSWORD:-}
+      - DEVICE_ID=${DEVICE_ID:-}
+    volumes:
+      # The simulator's CA, named by tls.ca_file in aveva-pi.toml.
+      - certs:/opt/pi-sim/certs:ro
+    depends_on:
+      simulator:
+        condition: service_healthy
+
+  simulator:
+    build:
+      context: ../..
+      dockerfile: connectors/aveva-pi/sim/Dockerfile
+      args:
+        BASE_REGISTRY: ${BASE_REGISTRY:-public.ecr.aws/docker/library}
+    volumes:
+      - certs:/certs
+    environment:
+      SIM_AUTH: basic
+      SIM_USER: piuser
+      SIM_PASSWORD: pi-password-1
+      SIM_HOSTNAMES: simulator,localhost

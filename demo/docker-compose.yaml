@@ -191,6 +191,21 @@ services:
       TRAP_INTERVAL: "10"
     restart: unless-stopped
 
+  # --- AVEVA PI Web API simulator (our own, aiohttp) ---------------------------
+  # Plain HTTP without authentication on host port 8480, for demo/config/aveva-pi.toml. A real
+  # PI Web API server is HTTPS; see connectors/aveva-pi/sim/server.py for the TLS and auth modes.
+  aveva-pi-sim:
+    image: ${SIM_IMAGE_REPO:-ghcr.io/thin-edge/tedge-dot}/aveva-pi-sim:${SIM_IMAGE_TAG:-latest}
+    pull_policy: missing
+    build:
+      context: ..
+      dockerfile: connectors/aveva-pi/sim/Dockerfile
+    environment:
+      SIM_TLS: "0"
+    ports:
+      - "8480:8080"
+    restart: unless-stopped
+
 volumes:
   # The secured OPC-UA simulator's generated certificates (kept across restarts, so a trusted
   # certificate stays trusted).

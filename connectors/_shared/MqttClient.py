@@ -98,6 +98,14 @@ class MqttClient:
             return [payload for _recv_time, payload in self._messages.get(topic, [])]
 
     @keyword
+    def get_messages_since(self, topic, since):
+        """Return every payload received on an exact topic at or after `since` (a
+        `Get Message Mark`), oldest first."""
+        start = float(since)
+        with self._lock:
+            return [p for recv_time, p in self._messages.get(topic, []) if recv_time >= start]
+
+    @keyword
     def wait_for_retained(self, topic, timeout=10):
         """Wait until any message has been seen on the topic; return its payload.
 

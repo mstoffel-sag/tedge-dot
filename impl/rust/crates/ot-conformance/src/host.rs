@@ -137,6 +137,8 @@ pub fn build_connector(protocol: &str) -> Result<Box<dyn Connector>, String> {
         "profibus" => Ok(connector_profibus::factory()),
         #[cfg(feature = "snmp")]
         "snmp" => Ok(connector_snmp::factory()),
+        #[cfg(feature = "aveva-pi")]
+        "aveva-pi" => Ok(connector_aveva_pi::factory()),
         other => Err(format!(
             "protocol '{other}' is not compiled into ot-conformance (enable its cargo \
              feature); for an external binary set `[harness] command` in the manifest"

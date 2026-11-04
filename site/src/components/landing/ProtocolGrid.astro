@@ -12,6 +12,7 @@ const protocols: { id: string; name: string; transport: string; what: string; hr
   { id: 'canbus', name: 'CAN bus', transport: 'SocketCAN + DBC', what: 'Signals decoded from a DBC file; writes by read-modify-write.', href: '/tedge-dot/reference/connectors/canbus/', rs: true, c: true },
   { id: 'canopen', name: 'CANopen', transport: 'SocketCAN (SDO)', what: 'Object dictionary entries by index and sub-index.', href: '/tedge-dot/guides/canbus-canopen/', rs: true, c: true },
   { id: 'profibus', name: 'PROFIBUS-DP', transport: 'serial / tcp://', what: 'A DP-V0 class-1 master for cyclic I/O.', href: '/tedge-dot/guides/small-gateways/', rs: 'source', c: true },
+  { id: 'aveva-pi', name: 'AVEVA PI Web API', transport: 'HTTPS + WebSocket', what: 'PI points and AF attributes: push, batched polls, backfill, writes.', href: '/tedge-dot/guides/aveva-pi/', rs: true, c: true },
 ];
 ---
 

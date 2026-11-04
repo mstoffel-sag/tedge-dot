@@ -673,6 +673,7 @@ fn good_sample(
     Sample {
         source_value: None,
         source_ts: None,
+        replayed: false,
         ts: OffsetDateTime::now_utc(),
         device: String::new(), // filled in by the SDK from the topic context if needed
         protocol: PROTOCOL,
@@ -707,6 +708,7 @@ fn bad_sample(
     Sample {
         source_value: None,
         source_ts: None,
+        replayed: false,
         ts: OffsetDateTime::now_utc(),
         device: String::new(),
         protocol: PROTOCOL,

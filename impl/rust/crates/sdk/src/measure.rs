@@ -1063,6 +1063,7 @@ mod tests {
         Sample {
             ts: parse_ts(r["ts"].as_str().unwrap()),
             source_ts: None,
+            replayed: false,
             device: device.name.clone(),
             protocol: "test",
             point: point.id.clone(),

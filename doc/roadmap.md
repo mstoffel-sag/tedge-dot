@@ -66,6 +66,10 @@ contract, SDK, conformance harness, and flow library — demonstrating the frame
 ## Beyond M4 (opportunistic)
 
 - More protocols: BACnet, additional fieldbuses.
+- AVEVA PI Web API follow-ups: Kerberos (SPNEGO) authentication, which many corporate PI Web API
+  servers allow alone; letting a module supply a point's datatype from the server (PI's
+  `PointType`), a contract change for typed mode; republishing archived values that PI edits after
+  they were delivered.
 - A dynamic-plugin loading path (deferred from v1) if demand justifies the ABI cost.
 - A small library of reusable transformation flows (DBC scaling, unit conversion, aggregation)
   shared across protocols.

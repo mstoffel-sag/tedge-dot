@@ -1,0 +1,150 @@
+# End-to-end harness for the AVEVA PI Web API connector: snapshot reads, Channels push, recorded
+# polling, outage backfill, writes, and every authentication method, against our PI Web API
+# simulator (connectors/aveva-pi/sim).
+#
+# The stack is started by the Robot suite itself (DeviceLibrary, see
+# connectors/_shared/stack.resource): every setup creates its own compose project with a
+# random name, so suites are isolated and nothing has to be started beforehand.
+#
+# Services:
+#   simulator      HTTPS + Basic auth: device `pi` (Channels, backfill) and `pi-badpass`
+#                  (a wrong password). Also generates the test PKI into the `certs` volume, which
+#                  every other simulator and the connector read.
+#   sim-snapshot   plain HTTP, no auth: device `pi-snap` (snapshot reads, writes, chunking).
+#   sim-recorded   plain HTTP: device `pi-rec` (recorded polling).
+#   sim-refuse     plain HTTP, Channels refused with 403: device `pi-fallback`.
+#   sim-bearer     HTTPS + Bearer token: device `pi-bearer` (token rotation).
+#   sim-mtls       HTTPS + client certificate: device `pi-mtls`.
+#   sim-nosan      HTTPS with a server certificate without a SAN: device `pi-nosan`.
+#   sim-untrusted  HTTPS, the connector trusts another CA for it: device `pi-untrusted`.
+#   sim-measure    plain HTTP: device `pim` of the measurement-output instance
+#                  (connector-measure.toml).
+#
+# Faults (`/_sim/...`) are global to one simulator, which is why each scenario has its own.
+# The suite drives them with `docker compose exec <sim> curl ...`, so no simulator port is
+# published. Ports are published WITHOUT a fixed host port (parallel-safe); BROKER_PORT pins the
+# broker's for manual work (`just e2e-up aveva-pi`).
+
+# Nine services run one image, and exactly one (`simulator`) builds it; see
+# connectors/snmp/docker-compose.yaml for why the others must not build it too.
+x-sim: &sim
+  image: tedge-dot-aveva-pi-sim
+  volumes:
+    - certs:/certs
+  depends_on:
+    simulator:
+      condition: service_healthy
+
+volumes:
+  certs:
+
+services:
+  broker:
+    image: ${BASE_REGISTRY:-public.ecr.aws/docker/library}/eclipse-mosquitto:2
+    volumes:
+      - ../_shared/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+    ports:
+      - target: 1883
+        published: "${BROKER_PORT:-}"
+
+  simulator:
+    image: tedge-dot-aveva-pi-sim
+    build:
+      context: ../..
+      dockerfile: connectors/aveva-pi/sim/Dockerfile
+      args:
+        BASE_REGISTRY: ${BASE_REGISTRY:-public.ecr.aws/docker/library}
+    volumes:
+      - certs:/certs
+    environment:
+      SIM_AUTH: basic
+      SIM_PASSWORD: pi-password-1
+      SIM_CHANNEL_POLL_MS: "250"
+      # Every simulator name the connector reaches with HTTPS, so one server certificate fits all.
+      SIM_HOSTNAMES: simulator,sim-bearer,sim-mtls,sim-nosan,sim-untrusted,localhost
+
+  sim-snapshot:
+    <<: *sim
+    environment:
+      SIM_TLS: "0"
+
+  sim-recorded:
+    <<: *sim
+    environment:
+      SIM_TLS: "0"
+
+  sim-refuse:
+    <<: *sim
+    environment:
+      SIM_TLS: "0"
+      SIM_REFUSE_CHANNELS: "403"
+
+  sim-bearer:
+    <<: *sim
+    environment:
+      SIM_AUTH: bearer
+      SIM_TOKEN: token-1
+
+  sim-mtls:
+    <<: *sim
+    environment:
+      SIM_AUTH: certificate
+
+  sim-nosan:
+    <<: *sim
+    environment:
+      SIM_SERVER_CERT: server-nosan
+
+  sim-untrusted:
+    <<: *sim
+
+  sim-measure:
+    <<: *sim
+    environment:
+      SIM_TLS: "0"
+      SIM_CHANNEL_POLL_MS: "250"
+
+  connector:
+    image: tedge-dot-${IMPL:-rust}-aveva-pi-connector
+    build:
+      context: ../..
+      dockerfile: ${CONNECTOR_DOCKERFILE:-connectors/aveva-pi/Dockerfile.connector}
+      args:
+        BASE_REGISTRY: ${BASE_REGISTRY:-public.ecr.aws/docker/library}
+        PROTOCOL: aveva-pi
+    labels:
+      device-test-core.role: main
+    volumes:
+      - certs:/etc/tedge-dot/pki:ro
+    depends_on:
+      broker:
+        condition: service_started
+      simulator:
+        condition: service_healthy
+      sim-snapshot:
+        condition: service_healthy
+      sim-recorded:
+        condition: service_healthy
+      sim-refuse:
+        condition: service_healthy
+      sim-bearer:
+        condition: service_healthy
+      sim-mtls:
+        condition: service_healthy
+      sim-nosan:
+        condition: service_healthy
+      sim-untrusted:
+        condition: service_healthy
+      sim-measure:
+        condition: service_healthy
+
+  flows:
+    build:
+      context: ../..
+      dockerfile: connectors/_shared/Dockerfile.flows
+      args:
+        BASE_REGISTRY: ${BASE_REGISTRY:-public.ecr.aws/docker/library}
+        PROTOCOL: aveva-pi
+    depends_on:
+      broker:
+        condition: service_started

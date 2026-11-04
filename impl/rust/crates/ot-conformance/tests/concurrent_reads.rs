@@ -58,6 +58,7 @@ fn sample(device: &str, point: &str) -> Sample {
         error: None,
         source_value: None,
         source_ts: None,
+        replayed: false,
     }
 }
 

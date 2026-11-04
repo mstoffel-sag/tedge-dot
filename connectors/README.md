@@ -53,7 +53,7 @@ The same keyword resolves the broker endpoint, so no suite hardcodes a port:
 
 | Stack | Broker | Why |
 |---|---|---|
-| modbus, opcua, profibus, snmp | published on an **ephemeral** host port, resolved with `Get Service Port` | parallel-safe |
+| modbus, opcua, profibus, snmp, aveva-pi | published on an **ephemeral** host port, resolved with `Get Service Port` | parallel-safe |
 | canbus, canopen | host network namespace, fixed port (13883 / 13884), no published port | the SocketCAN connector and simulator need the host's `vcan0`, so they reach the broker over the host loopback; one stack per protocol per host |
 
 Host ports are pinned only for manual work, through env vars the compose files interpolate

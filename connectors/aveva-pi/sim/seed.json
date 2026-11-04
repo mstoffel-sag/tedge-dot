@@ -1,0 +1,32 @@
+{
+  "data_server": "PISRV01",
+  "af_server": "AFSRV01",
+  "af_database": "Plant",
+  "digital_sets": {
+    "PumpState": [
+      { "Name": "Stopped", "Value": 0 },
+      { "Name": "Running", "Value": 1 },
+      { "Name": "Fault", "Value": 2 }
+    ]
+  },
+  "points": [
+    { "name": "SINUSOID", "type": "Float64", "units": "degC", "gen": "sine", "every": 1, "amplitude": 10, "offset": 50, "period": 60 },
+    { "name": "REACTOR01.TEMP", "type": "Float32", "units": "degC", "gen": "sine", "every": 2, "amplitude": 5, "offset": 80, "period": 120 },
+    { "name": "TICKS", "type": "Int32", "units": "", "gen": "counter", "every": 1 },
+    { "name": "SLOW", "type": "Float64", "units": "bar", "gen": "counter", "every": 10 },
+    { "name": "SETPOINT", "type": "Float64", "units": "degC", "gen": "manual", "initial": 21.5 },
+    { "name": "COUNT16", "type": "Int16", "units": "", "gen": "manual", "initial": -42 },
+    { "name": "PUMP01.STATE", "type": "Digital", "set": "PumpState", "gen": "manual", "initial": "Running" },
+    { "name": "PUMP02.STATE", "type": "Digital", "set": "PumpState", "gen": "cycle", "every": 5 },
+    { "name": "BATCH.ID", "type": "String", "units": "", "gen": "manual", "initial": "batch-0001" },
+    { "name": "LAST.CHANGE", "type": "Timestamp", "units": "", "gen": "manual", "initial": "2026-11-01T23:00:00Z" },
+    { "name": "IO.TIMEOUT", "type": "Float64", "units": "degC", "gen": "system", "state": "I/O Timeout" },
+    { "name": "QUESTIONABLE", "type": "Float64", "units": "%", "gen": "manual", "initial": 12.5, "questionable": true },
+    { "name": "FROZEN", "type": "Float64", "units": "", "gen": "manual", "initial": 7 },
+    { "name": "READONLY", "type": "Float64", "units": "", "gen": "manual", "initial": 1, "write_denied": true }
+  ],
+  "attributes": [
+    { "path": "Line1\\Pump01|Discharge Pressure", "point": "SINUSOID", "units": "bar" },
+    { "path": "Line1\\Pump01|State", "point": "PUMP01.STATE" }
+  ]
+}

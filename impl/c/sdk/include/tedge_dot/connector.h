@@ -196,6 +196,9 @@ tdot_connector_t *tdot_connector_profibus_new(void);
 #ifdef TDOT_FEATURE_SNMP
 tdot_connector_t *tdot_connector_snmp_new(void);
 #endif
+#ifdef TDOT_FEATURE_AVEVA_PI
+tdot_connector_t *tdot_connector_aveva_pi_new(void);
+#endif
 #ifdef TDOT_FEATURE_BENCH
 tdot_connector_t *tdot_connector_bench_new(void);
 #endif

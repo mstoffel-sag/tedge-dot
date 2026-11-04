@@ -85,7 +85,9 @@ if [ ${#configs[@]} -eq 0 ]; then
              # Literal parameters (meta.parameter.fragment): primitive definitions.
              "$repo"/impl/c/ci/fixtures/literal-modbus.toml
              # OPC UA namespace tables, inline and as a sub-table.
-             "$repo"/impl/c/ci/fixtures/namespaces-opcua.toml)
+             "$repo"/impl/c/ci/fixtures/namespaces-opcua.toml
+             # What the AVEVA PI migration script generates (backslash user, no device type).
+             "$repo"/connectors/aveva-pi/tools/testdata/plugin-expected.toml)
 fi
 
 # stdout is the JSON and stderr carries diagnostics (a config with no device `type` is

@@ -369,6 +369,108 @@
         { "at": 4000, "sample": { "id": "d", "num": 5 }, "publish": ["d"] },
         { "at": 5000, "sample": { "id": "e", "num": 5 } }
       ]
+    },
+    {
+      "name": "a replayed burst keeps the min_interval rate in source time",
+      "policy": { "min_interval": "10s" },
+      "pushed": true,
+      "steps": [
+        { "at": 0, "sample": { "id": "s0", "num": 0, "src": 1700000000000 }, "publish": ["s0"] },
+        { "at": 1, "sample": { "id": "s1", "num": 1, "src": 1700000001000 } },
+        { "at": 2, "sample": { "id": "s2", "num": 2, "src": 1700000002000 } },
+        { "at": 3, "sample": { "id": "s3", "num": 3, "src": 1700000003000 } },
+        { "at": 4, "sample": { "id": "s4", "num": 4, "src": 1700000004000 } },
+        { "at": 5, "sample": { "id": "s5", "num": 5, "src": 1700000005000 } },
+        { "at": 6, "sample": { "id": "s6", "num": 6, "src": 1700000006000 } },
+        { "at": 7, "sample": { "id": "s7", "num": 7, "src": 1700000007000 } },
+        { "at": 8, "sample": { "id": "s8", "num": 8, "src": 1700000008000 } },
+        { "at": 9, "sample": { "id": "s9", "num": 9, "src": 1700000009000 } },
+        { "at": 10, "sample": { "id": "s10", "num": 10, "src": 1700000010000 }, "publish": ["s9"] },
+        { "at": 11, "sample": { "id": "s11", "num": 11, "src": 1700000011000 } },
+        { "at": 12, "sample": { "id": "s12", "num": 12, "src": 1700000012000 } },
+        { "at": 13, "sample": { "id": "s13", "num": 13, "src": 1700000013000 } },
+        { "at": 14, "sample": { "id": "s14", "num": 14, "src": 1700000014000 } },
+        { "at": 15, "sample": { "id": "s15", "num": 15, "src": 1700000015000 } },
+        { "at": 16, "sample": { "id": "s16", "num": 16, "src": 1700000016000 } },
+        { "at": 17, "sample": { "id": "s17", "num": 17, "src": 1700000017000 } },
+        { "at": 18, "sample": { "id": "s18", "num": 18, "src": 1700000018000 } },
+        { "at": 19, "sample": { "id": "s19", "num": 19, "src": 1700000019000 } },
+        { "at": 20, "sample": { "id": "s20", "num": 20, "src": 1700000020000 }, "publish": ["s19"] },
+        { "at": 21, "sample": { "id": "s21", "num": 21, "src": 1700000021000 } },
+        { "at": 22, "sample": { "id": "s22", "num": 22, "src": 1700000022000 } },
+        { "at": 23, "sample": { "id": "s23", "num": 23, "src": 1700000023000 } },
+        { "at": 24, "sample": { "id": "s24", "num": 24, "src": 1700000024000 } },
+        { "at": 25, "sample": { "id": "s25", "num": 25, "src": 1700000025000 } },
+        { "at": 26, "tick": true },
+        { "at": 3000, "tick": true },
+        { "at": 12999, "tick": true },
+        { "at": 13000, "tick": true, "publish": ["s25"] }
+      ]
+    },
+    {
+      "name": "debounce settles on source time during a replay",
+      "policy": { "debounce": "20s" },
+      "pushed": true,
+      "steps": [
+        { "at": 0, "sample": { "id": "a", "num": 1, "src": 1700000000000 }, "publish": ["a"] },
+        { "at": 1, "sample": { "id": "b", "num": 2, "src": 1700000010000 } },
+        { "at": 2, "sample": { "id": "c", "num": 2, "src": 1700000020000 } },
+        { "at": 3, "sample": { "id": "d", "num": 2, "src": 1700000040000 }, "publish": ["c"] },
+        { "at": 4, "sample": { "id": "e", "num": 2, "src": 1700000050000 } }
+      ]
+    },
+    {
+      "name": "a live reading ends the replay and a held reading waits on the runtime clock",
+      "policy": { "min_interval": "10s" },
+      "pushed": true,
+      "steps": [
+        { "at": 0, "sample": { "id": "a", "num": 1, "src": 1700000000000 }, "publish": ["a"] },
+        { "at": 1, "sample": { "id": "b", "num": 2, "src": 1700000001000 } },
+        { "at": 500, "sample": { "id": "live", "num": 3 } },
+        { "at": 10499, "tick": true },
+        { "at": 10500, "tick": true, "publish": ["live"] }
+      ]
+    },
+    {
+      "name": "a quality change in a replay is published at once and discards the held reading",
+      "policy": { "min_interval": "10s" },
+      "pushed": true,
+      "steps": [
+        { "at": 0, "sample": { "id": "a", "num": 1, "src": 1700000000000 }, "publish": ["a"] },
+        { "at": 1, "sample": { "id": "b", "num": 2, "src": 1700000001000 } },
+        { "at": 2, "sample": { "id": "c", "quality": "bad", "raw": "", "src": 1700000002000 }, "publish": ["c"] },
+        { "at": 3, "tick": true }
+      ]
+    },
+    {
+      "name": "no heartbeat read while a pushed point replays",
+      "policy": { "on_change": true, "max_interval": "1m" },
+      "pushed": true,
+      "steps": [
+        { "at": 0, "sample": { "id": "a", "num": 1, "src": 1700000000000 }, "publish": ["a"] },
+        { "at": 10000, "sample": { "id": "r0", "num": 1, "src": 1700000001000 } },
+        { "at": 20000, "sample": { "id": "r1", "num": 1, "src": 1700000002000 } },
+        { "at": 30000, "sample": { "id": "r2", "num": 1, "src": 1700000003000 } },
+        { "at": 40000, "sample": { "id": "r3", "num": 1, "src": 1700000004000 } },
+        { "at": 50000, "sample": { "id": "r4", "num": 1, "src": 1700000005000 } },
+        { "at": 60000, "sample": { "id": "r5", "num": 1, "src": 1700000006000 } },
+        { "at": 61000, "tick": true },
+        { "at": 70000, "sample": { "id": "r6", "num": 1, "src": 1700000007000 } },
+        { "at": 72000, "tick": true },
+        { "at": 131999, "tick": true },
+        { "at": 132000, "tick": true, "read": true }
+      ]
+    },
+    {
+      "name": "a replay that pauses resumes on source time",
+      "policy": { "min_interval": "10s" },
+      "pushed": true,
+      "steps": [
+        { "at": 0, "sample": { "id": "a", "num": 1, "src": 1700000000000 }, "publish": ["a"] },
+        { "at": 5000, "tick": true },
+        { "at": 6000, "sample": { "id": "b", "num": 2, "src": 1700000005000 } },
+        { "at": 6001, "sample": { "id": "c", "num": 3, "src": 1700000010000 }, "publish": ["b"] }
+      ]
     }
   ]
 }

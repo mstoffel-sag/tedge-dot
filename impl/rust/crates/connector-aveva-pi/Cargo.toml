@@ -1,0 +1,32 @@
+[package]
+name = "connector-aveva-pi"
+version.workspace = true
+edition.workspace = true
+description = "AVEVA PI Web API module for thin-edge.io OT connectors (batched snapshot reads, Channels push, recorded polling with outage backfill, writes)"
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+tedge-dot-sdk = { path = "../sdk" }
+async-trait = "0.1"
+serde = { version = "1", features = ["derive"] }
+# Exact float parsing: the canonical text of a value (spec §4) must match the C build's strtod.
+serde_json = { version = "1", features = ["float_roundtrip"] }
+tracing = "0.1"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "time", "sync", "fs", "net"] }
+time = { version = "0.3", features = ["std", "formatting", "parsing"] }
+base64 = "0.22"
+futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
+# HTTPS and the Channels WebSocket share one rustls configuration, built here with the `ring`
+# provider: no OpenSSL, and no aws-lc C build in the musl/zig cross builds.
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+rustls-native-certs = "0.8"
+rustls-pki-types = "1"
+reqwest = { version = "0.13", default-features = false, features = ["rustls-no-provider", "json"] }
+tokio-tungstenite = { version = "0.29", default-features = false, features = ["connect", "handshake", "__rustls-tls"] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["full"] }
+toml = "0.8"
+proptest = "1"
+tempfile = "3"

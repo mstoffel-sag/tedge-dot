@@ -868,6 +868,16 @@ point.
 5. **Timing.** Held and debounced readings are published on the first pass of the runtime's
    loop after their interval ends, keeping the `ts` of the reading.
 6. **`seq`** counts published samples only (§5).
+7. **Replayed readings.** A module that delivers history after the fact (an archive read after
+   an outage) marks those pushed samples as **replayed** (`replayed` in both SDKs) and gives
+   each its source time. For a replayed reading, `min_interval`, `debounce` and `max_interval`
+   are measured on **source time**, so a burst of history is reduced exactly as the live stream
+   would have been, not to its first and last value; a held or settled reading whose interval
+   ends within the replay is published as the replay reaches that time. The replay ends at the
+   point's first live reading, or 2 s after its last replayed one; a reading still held or
+   settling then waits on the runtime clock from that moment. No heartbeat read is made for a
+   point while it replays. A replayed sample without a source time is handled as a live one,
+   with a warning.
 
 The one-shot CLI `read` is not subject to the policy. The runtime publishes the effective
 policies in the capability descriptor (`reports`, §7), so a consumer can tell why a point is
@@ -891,7 +901,8 @@ A sample's `ts` is the time the reading belongs to:
   at its first read's completion. A polled pass over a device therefore has one timestamp and
   batches into one measurement (§5.5). The runtime sets it; a module does not.
 
-A reading held back by the reporting policy (§5.3) keeps its time. The time has the precision
+A reading held back by the reporting policy (§5.3) keeps its time. A replayed reading (§5.3
+rule 7) always carries its source time. The time has the precision
 §9 sets, milliseconds.
 
 ### 5.5 Measurement output

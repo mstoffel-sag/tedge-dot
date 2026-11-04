@@ -31,7 +31,7 @@ the same release, runs the same e2e, cloud and conformance suites, and is held t
 | Architectures | amd64, arm64 | amd64, arm64, **armhf** |
 | Minimum glibc | not pinned | **2.17** (Debian 8 / RHEL 7 era) |
 | Binary size, all protocols | about 12 MB, static | about 457 KB (open62541 statically linked) |
-| Protocols | Modbus, OPC UA, CAN bus, CANopen, SNMP | the same, plus PROFIBUS-DP (preview) |
+| Protocols | Modbus, OPC UA, CAN bus, CANopen, SNMP, AVEVA PI (preview) | the same, plus PROFIBUS-DP (preview) |
 
 The glibc floor comes from the build: every architecture is cross-compiled with zig, which
 supplies the compiler and a libc pinned to 2.17, against Debian's multiarch libraries. See

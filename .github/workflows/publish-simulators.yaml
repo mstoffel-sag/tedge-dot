@@ -31,7 +31,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        sim: [modbus, opcua, canbus, canopen, profibus, snmp]
+        sim: [modbus, opcua, canbus, canopen, profibus, snmp, aveva-pi]
         # A simulator whose image is not connectors/<sim>/sim/Dockerfile names its own file:
         # the SNMP agent the connector polls (the `snmp` image is the notification sender).
         include:

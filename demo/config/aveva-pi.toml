@@ -1,0 +1,66 @@
+# Demo AVEVA PI Web API connector config — pairs with the aveva-pi-sim service of
+# ../docker-compose.yaml (our PI Web API simulator, plain HTTP without authentication on host port
+# 8480). A real PI Web API server is HTTPS with Basic, Bearer or client
+# certificate authentication: see /etc/tedge/plugins/ot/aveva-pi.toml.
+#
+# Ships with the tedge-dot package in /usr/share/tedge-dot/demo/. Copy it to
+# /etc/tedge/plugins/ot/ and reload tedge-dot.service to run it against the simulator. Publishes
+# to the thin-edge.io broker on 127.0.0.1:1883.
+
+[connector]
+protocol      = "aveva-pi"
+service_name  = "tedge-dot-aveva-pi"
+poll_interval = "5s"
+log_level     = "info"
+output        = "measurements"
+
+[mqtt]
+host = "127.0.0.1"
+port = 1883
+
+[connection]
+state_dir = "/var/lib/tedge-dot/aveva-pi"
+
+# site:start device
+[[device]]
+name             = "pi-demo"
+type             = "aveva-pi-server"
+protocol_address = { base_url = "http://127.0.0.1:8480/piwebapi", data_server = "PISRV01", af_database = '\\AFSRV01\Plant' }
+# site:end device
+
+  # site:start points
+  # Pushed over Channels, with their PI timestamps.
+  [[device.point]]
+  id       = "sinusoid"
+  name     = "Sinusoid"
+  datatype = "float64"
+  address  = { tag = "SINUSOID" }
+
+  [[device.point]]
+  id       = "reactor_temp"
+  name     = "Reactor temperature"
+  datatype = "float32"
+  address  = { tag = "REACTOR01.TEMP" }
+
+  [[device.point]]
+  id       = "pump02_state"
+  name     = "Pump 02 state"
+  datatype = "string"
+  address  = { tag = "PUMP02.STATE" }
+
+  [[device.point]]
+  id       = "discharge_pressure"
+  name     = "Pump 01 discharge pressure"
+  datatype = "float64"
+  address  = { path = 'Line1\Pump01|Discharge Pressure' }
+
+  # A device parameter: writable from the cloud.
+  [[device.point]]
+  id       = "setpoint"
+  name     = "Temperature setpoint"
+  datatype = "float64"
+  unit     = "degC"
+  access   = "read_write"
+  address  = { tag = "SETPOINT" }
+  meta.parameter = { key = "control.setpoint" }
+  # site:end points

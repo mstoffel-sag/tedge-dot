@@ -63,6 +63,7 @@ impl BenchPoint {
             error: None,
             source_value: None,
             source_ts: None,
+            replayed: false,
         }
     }
 }

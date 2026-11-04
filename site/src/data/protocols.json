@@ -175,5 +175,47 @@
     },
     "newDevice": { "name": "io1", "protocol_address": { "station_address": 3, "input_bytes": 2, "output_bytes": 2 } },
     "newPoint": { "id": "input_word", "datatype": "uint16", "access": "read", "address": { "direction": "input", "byte_offset": 0 } }
+  },
+  "aveva-pi": {
+    "label": "AVEVA PI Web API",
+    "preview": true,
+    "spec": "/tedge-dot/reference/connectors/aveva-pi/",
+    "protocol_address": {
+      "type": "object",
+      "required": ["base_url"],
+      "properties": {
+        "base_url": { "type": "string", "pattern": "^https?://", "description": "The PI Web API root, e.g. https://pi.example.com/piwebapi (http:// only without authentication)." },
+        "data_server": { "type": "string", "description": "The PI Data Archive that tag points live in." },
+        "af_database": { "type": "string", "description": "\\\\<AF server>\\<database>, the prefix of relative attribute paths." },
+        "delivery": { "enum": ["channel", "recorded", "snapshot"], "description": "channel (push, the default), recorded (polled archive) or snapshot (polled current values)." }
+      }
+    },
+    "address": {
+      "type": "object",
+      "properties": {
+        "tag": { "type": "string", "description": "A PI point name on the device's data_server." },
+        "path": { "type": "string", "description": "A full PI point path, or an AF attribute path (with |)." },
+        "web_id": { "type": "string", "description": "A PI Web API WebId." }
+      }
+    },
+    "connection": {
+      "type": "object",
+      "properties": {
+        "auth": {
+          "type": "object",
+          "properties": {
+            "method": { "enum": ["none", "basic", "bearer", "certificate"] },
+            "username": { "type": "string" },
+            "password_file": { "type": "string" },
+            "token_file": { "type": "string" },
+            "cert_file": { "type": "string" },
+            "key_file": { "type": "string" }
+          }
+        },
+        "tls": { "type": "object", "properties": { "ca_file": { "type": "string" }, "insecure_skip_verify": { "type": "boolean" } } }
+      }
+    },
+    "newDevice": { "name": "pi-plant1", "protocol_address": { "base_url": "https://pi.example.com/piwebapi", "data_server": "PISRV01" } },
+    "newPoint": { "id": "reactor_temp", "datatype": "float64", "access": "read", "address": { "tag": "REACTOR01.TEMP" } }
   }
 }

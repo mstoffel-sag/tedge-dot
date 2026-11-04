@@ -1,0 +1,239 @@
+---
+title: AVEVA PI Web API
+description: Read PI points and AF attributes from a PI System through the PI Web API, with pushed values, outage backfill and writes, starting from the demo's PI Web API simulator.
+sidebar:
+  order: 9
+  badge:
+    text: Preview
+    variant: caution
+---
+
+import { Steps, Tabs, TabItem, Aside, LinkCard, CardGrid } from '@astrojs/starlight/components';
+import RepoFile from '../../../components/RepoFile.astro';
+
+<Aside type="caution" title="Preview">
+The `aveva-pi` connector is tested in CI against the project's PI Web API simulator, but not yet
+against a real PI System. Expect rough edges, and changes to its configuration. If you try it
+against a real server, please [tell us how it went](https://github.com/thin-edge/tedge-dot/issues).
+</Aside>
+
+The `aveva-pi` connector reads and writes a PI System through its
+PI Web API REST interface. It is the first
+tedge-dot connector for a server rather than a fieldbus device:
+
+- A point is a **PI point** (by tag name or path), an **AF attribute** (by path) or any stream
+  (by WebId). WebIds are looked up once per connection.
+- One request reads all of a device's due points, however many there are.
+- By default, values are **pushed** over the PI Web API Channels WebSocket and keep their PI
+  timestamps.
+- After an outage or a restart, the gap is **filled from the PI archive**, so Cumulocity gets
+  the readings it missed, in order.
+- Writable points can be changed from the cloud.
+
+**What you'll build:** one device, `pi-demo`, that receives four values from the demo's PI Web
+API simulator (`aveva-pi-sim`, plain HTTP on host port 8480) and writes a temperature setpoint
+back to it.
+
+AVEVA, PI System and PI Web API are trademarks of AVEVA Group Limited or its subsidiaries.
+tedge-dot is not affiliated with or endorsed by AVEVA.
+
+## Run the demo
+
+<Tabs>
+  <TabItem label="On a Linux gateway">
+    With thin-edge.io and a tedge-dot package installed:
+
+    <Steps>
+
+    1. Start the simulator:
+
+       ```sh
+       docker compose -f /usr/share/tedge-dot/demo/docker-compose.yaml up -d aveva-pi-sim
+       ```
+
+    2. Enable the demo config. The service picks it up within a few seconds:
+
+       ```sh
+       sudo install -m 0640 -o tedge -g tedge /usr/share/tedge-dot/demo/aveva-pi.toml /etc/tedge/plugins/ot/aveva-pi.toml
+       ```
+
+    3. Watch the values arrive. `pi-demo` appears in Cumulocity as a child device of the
+       gateway:
+
+       ```sh
+       tedge mqtt sub 'te/device/pi-demo/#'
+       ```
+
+    </Steps>
+  </TabItem>
+  <TabItem label="From a checkout (CLI only)">
+    Read and write the simulator with no broker. Use `tedge-dot` from a package, or
+    `cargo run --manifest-path impl/rust/Cargo.toml --` in its place:
+
+    ```sh
+    docker compose -f demo/docker-compose.yaml up -d --wait aveva-pi-sim
+    tedge-dot read  -c demo/config/aveva-pi.toml -p sinusoid
+    tedge-dot read  -c demo/config/aveva-pi.toml -p pump02_state
+    tedge-dot write -c demo/config/aveva-pi.toml -d pi-demo -p setpoint --value 72.5
+    docker compose -f demo/docker-compose.yaml down
+    ```
+
+    Each command logs a warning that the base URL is plain HTTP. Only the simulator should be
+    reached that way.
+  </TabItem>
+</Tabs>
+
+## The device
+
+A device is one PI Web API endpoint:
+
+<RepoFile path="demo/config/aveva-pi.toml" marker="device" />
+
+| Key | Required | Notes |
+| --- | --- | --- |
+| `base_url` | yes | The PI Web API root, such as `https://pi.example.com/piwebapi`. |
+| `data_server` | for `tag` points | The PI Data Archive that bare tag names live in. |
+| `af_database` | no | `\\<AF server>\<database>`, the prefix of relative attribute paths. |
+| `delivery` | no | How values arrive: see below. |
+
+Any `[connection]` key, such as `auth` or `tls`, can be overridden per device. Several devices
+may share one `base_url`, and then they share one connection pool.
+
+`delivery` decides how readable points are delivered:
+
+| `delivery` | How values arrive | Timestamp |
+| --- | --- | --- |
+| `"channel"` (default) | Pushed over a Channels WebSocket as PI archives them, with backfill after an outage. | The PI time of each value. |
+| `"recorded"` | The archive is polled every `sampling_interval` (else `poll_interval`), from where the last poll stopped. | The PI time of each value. |
+| `"snapshot"` | The current value is read at every `poll_interval`, as the community plugin did. | The read time; the PI time is in the sample's `addr.timestamp`. |
+
+If the server refuses the Channels WebSocket while its REST requests work, the device falls back
+to `recorded` until the next reconnect and logs the refusal once.
+
+## Points
+
+<RepoFile path="demo/config/aveva-pi.toml" marker="points" />
+
+Each point has exactly one address key:
+
+| Address | Kind |
+| --- | --- |
+| `{ tag = "SINUSOID" }` | A PI point on the device's `data_server`. |
+| `{ path = '\\PISRV01\SINUSOID' }` | A PI point by its full path. |
+| `{ path = '\\AF\Plant\Line1\Pump01\|Discharge Pressure' }` | An AF attribute by its full path. |
+| `{ path = 'Line1\Pump01\|Discharge Pressure' }` | An AF attribute, relative to `af_database`. |
+| `{ web_id = "F1DP…" }` | Any stream, by WebId. It isn't looked up. |
+
+Use TOML literal strings (`'…'`) for paths, so the backslashes stay as written. A tag that the
+server doesn't have makes that point `bad` with `not found: <path>`, without taking the device
+down, and it is looked up again every `resolve_retry` (5 minutes by default).
+
+- **Datatypes.** Every point needs a `datatype`. Use `float32` or `float64` for PI Float points,
+  `int16` or `int32` for Int points, and `string` for String and Timestamp points.
+- **Digital states.** A PI digital point has a code and a name from its state set, for example
+  `1` and `Running`. `int32` gives the code, which becomes a measurement series. `string` gives
+  the name, which is useful for a device parameter, an event or an alarm, but is not a
+  measurement. For both, configure two points with the same `tag`.
+- **Units.** A point without a `unit` takes its engineering unit from PI.
+- **Quality.** A value that PI marks as not good, or a system state such as `I/O Timeout`,
+  arrives as a `bad` sample with PI's state name as the error. Questionable, substituted and
+  annotated values stay good and are flagged in the sample's `addr.flags`.
+
+## Connecting to a real PI Web API server
+
+A real PI Web API server is HTTPS and needs credentials. The packaged
+`/etc/tedge/plugins/ot/aveva-pi.toml` has no devices and lists every option as a comment.
+
+<Steps>
+
+1. Put the secret in a file that only the `tedge` user can read. The connector never reads a
+   password or token from the config itself:
+
+   ```sh
+   sudo install -d -m 0700 -o tedge -g tedge /etc/tedge/plugins/ot/secrets
+   printf '%s' 'the-password' | sudo install -m 0600 -o tedge -g tedge /dev/stdin /etc/tedge/plugins/ot/secrets/aveva-pi.password
+   ```
+
+2. Name the method and the file in `[connection]`:
+
+   ```toml title="/etc/tedge/plugins/ot/aveva-pi.toml"
+   [connection]
+   auth = { method = "basic", username = 'CORP\pi-reader', password_file = "/etc/tedge/plugins/ot/secrets/aveva-pi.password" }
+   tls  = { ca_file = "/etc/tedge/plugins/ot/certs/pi-ca.pem" }
+   ```
+
+3. Add a `[[device]]` with an `https://` `base_url`, and points as above.
+
+</Steps>
+
+| `auth.method` | Keys | Notes |
+| --- | --- | --- |
+| `basic` | `username`, `password_file` | A domain user is written `'DOMAIN\user'`. |
+| `bearer` | `token_file` | The file is read again after a 401, so an external job can rotate the token. |
+| `certificate` | `cert_file`, `key_file` | A PEM client certificate and key (mutual TLS). |
+
+Kerberos and NTLM aren't supported.
+
+- **Server certificate.** It is checked against the system trust store, plus the CA bundle in
+  `tls.ca_file` (in `tedge-dot-c`, the bundle replaces the system store). The certificate needs a
+  subject alternative name for the host in `base_url`. `tls.insecure_skip_verify = true` turns
+  the check off and logs a warning on every connect.
+- **Plain HTTP.** An `http://` `base_url` is accepted only without authentication. With any
+  `auth.method` except `none`, the config is refused, so credentials are never sent unencrypted.
+- **Local-only settings.** The secret file keys, `tls` and `state_dir` can't be changed by a
+  management command from the cloud.
+
+<Aside type="tip" title="One file per server on tedge-dot-c">
+The C build serves a config file's devices one at a time, so a PI Web API server that stops
+answering delays every other device in the same file. Give each server its own config file, for
+example `aveva-pi-site1.toml` and `aveva-pi-site2.toml`.
+</Aside>
+
+## Outages and backfill
+
+With `channel` or `recorded` delivery, the connector keeps a cursor for each point: the time of
+the last value it delivered. The cursors are written to
+`/var/lib/tedge-dot/aveva-pi/<service>/<device>.json` (`state_dir`), so they survive a restart.
+
+After an outage or a restart, the connector reads the archive from the cursor onwards, delivers
+those values in time order, and then continues with the live ones. The catch-up is limited by
+`backfill`:
+
+```toml
+[connection]
+backfill = { max_age = "1h", max_events = 10000 }   # per point; backfill = false turns it off
+```
+
+A longer gap is logged once, with the point and the time range that was skipped. The
+[reporting policy](/tedge-dot/guides/reducing-data-volume/) applies to replayed values on their
+PI time, so a backfilled hour is reduced as the live stream would have been.
+
+## Writing to PI
+
+A point with `access = "read_write"` (or `"write"`) can be written. The demo's `setpoint` is also
+a [device parameter](/tedge-dot/guides/writing-to-devices/), so it can be changed from the
+Cumulocity Parameters tab.
+
+- A write sends the value with the server's time.
+- For a digital point, write either the state name or its code. A state that isn't in the
+  point's state set fails without a request.
+- `update_option` (default `"Replace"`) and `buffer_option` (default `"BufferIfPossible"`) in
+  `[connection]` set how PI stores the value.
+- A write is never retried. If PI refuses it, for example with a 403 because the account may only
+  read, the command fails with PI's error message and the device stays connected.
+
+## Migrating from the community plugin
+
+If you run the community [thin-edge-aveva-pi-connector](https://github.com/Cumulocity-IoT/thin-edge-aveva-pi-connector),
+a script turns its `pi_config.json` and `datapoints.json` into a connector config. The
+measurements land on a child device with a different type, so read the
+[migration guide](/tedge-dot/reference/migration/aveva-pi-plugin/) before you switch.
+
+## Next steps
+
+<CardGrid>
+  <LinkCard title="AVEVA PI connector reference" description="Every key, the decoding rules, request chunking and the link states." href="/tedge-dot/reference/connectors/aveva-pi/" />
+  <LinkCard title="Migrating from the community plugin" description="Map the plugin's files onto the connector, and what changes in Cumulocity." href="/tedge-dot/reference/migration/aveva-pi-plugin/" />
+  <LinkCard title="Writing to devices from the cloud" description="Edit writable points from the Cumulocity Parameters tab." href="/tedge-dot/guides/writing-to-devices/" />
+  <LinkCard title="Reducing data volume" description="Deadbands, minimum intervals and heartbeats per point." href="/tedge-dot/guides/reducing-data-volume/" />
+</CardGrid>

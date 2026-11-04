@@ -229,6 +229,20 @@ pub struct Due<T> {
     pub read: bool,
 }
 
+/// How long a point stays on source time after its last replayed reading, when no live reading
+/// ends the replay first (§5.3).
+pub const REPLAY_IDLE: Duration = Duration::from_secs(2);
+
+/// Which clock the point's interval timers run on.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Clock {
+    /// The runtime's monotonic clock: live readings.
+    Runtime,
+    /// Source time: the module is replaying history. `last_offer` is the runtime time of the
+    /// last replayed reading.
+    Replay { last_offer: Duration },
+}
+
 /// The reporting state of one point. `now` is monotonic time, from any fixed origin.
 pub struct ReportState<T> {
     policy: ReportPolicy,
@@ -241,6 +255,10 @@ pub struct ReportState<T> {
     unreadable: bool,
     pending: Option<(T, Obs)>,
     candidate: Option<Candidate<T>>,
+    clock: Clock,
+    /// The source time of the last reading published during a replay, to resume from when
+    /// another replay starts.
+    last_published_src: Option<Duration>,
 }
 
 impl<T> ReportState<T> {
@@ -254,6 +272,8 @@ impl<T> ReportState<T> {
             unreadable: false,
             pending: None,
             candidate: None,
+            clock: Clock::Runtime,
+            last_published_src: None,
         }
     }
 
@@ -287,6 +307,49 @@ impl<T> ReportState<T> {
     /// Offer a reading. Returns it when it is to be published now; otherwise it is dropped or
     /// held (and may come back from [`due`](Self::due)).
     pub fn offer(&mut self, item: T, obs: Obs, quality: Quality, now: Duration) -> Option<T> {
+        if self.clock != Clock::Runtime {
+            self.hand_over(now);
+        }
+        self.offer_at(item, obs, quality, now)
+    }
+
+    /// Offer a reading the module replays from the source's history, with its source time
+    /// `src` (from any fixed origin, such as the Unix epoch). The policy's intervals are measured
+    /// on source time, so a burst of history is reduced the way the live stream would have been:
+    /// a held or settled reading whose interval ended by `src` is published first. Returns the
+    /// readings to publish now, in order.
+    pub fn offer_replayed(&mut self, item: T, obs: Obs, quality: Quality, src: Duration, now: Duration) -> Vec<T> {
+        if self.clock == Clock::Runtime {
+            // Resume source time where the last replay left it; with none, the next reading
+            // is far enough from the origin to count as a new interval.
+            self.last_published = self.last_published_src;
+            if let Some(c) = self.candidate.as_mut() {
+                c.since = src;
+            }
+        }
+        self.clock = Clock::Replay { last_offer: now };
+        let mut out = Vec::new();
+        out.extend(self.release(src));
+        out.extend(self.offer_at(item, obs, quality, src));
+        if self.last_published.is_some() {
+            self.last_published_src = self.last_published;
+        }
+        out
+    }
+
+    /// End a replay: the timers of a held or debouncing reading restart on the runtime clock.
+    fn hand_over(&mut self, now: Duration) {
+        self.clock = Clock::Runtime;
+        if self.last_published.is_some() {
+            self.last_published_src = self.last_published;
+            self.last_published = Some(now);
+        }
+        if let Some(c) = self.candidate.as_mut() {
+            c.since = now;
+        }
+    }
+
+    fn offer_at(&mut self, item: T, obs: Obs, quality: Quality, now: Duration) -> Option<T> {
         let Some((last_obs, last_quality)) = &self.last else {
             return self.publish(item, obs, quality, now);
         };
@@ -355,6 +418,31 @@ impl<T> ReportState<T> {
     /// A pass of the runtime loop: publish a held reading whose interval ended, or a debounced
     /// one that settled, and say whether a pushed point's heartbeat read is due.
     pub fn due(&mut self, now: Duration, pushed: bool) -> Due<T> {
+        if let Clock::Replay { last_offer } = self.clock {
+            // Replayed readings release what they hold themselves, and a replay publishes, so
+            // no heartbeat read is due while it goes on.
+            if now.saturating_sub(last_offer) < REPLAY_IDLE {
+                return Due { publish: None, read: false };
+            }
+            self.hand_over(now);
+        }
+        let out = self.release(now);
+        let mut read = false;
+        if let Some(max) = self.policy.max_interval {
+            let reference = self
+                .last_published
+                .unwrap_or(self.origin)
+                .max(self.last_read.unwrap_or(self.origin));
+            if pushed && !self.unreadable && now.saturating_sub(reference) >= max {
+                self.last_read = Some(now);
+                read = true;
+            }
+        }
+        Due { publish: out, read }
+    }
+
+    /// A held reading whose interval ended, or a debounced one that settled, by `now`.
+    fn release(&mut self, now: Duration) -> Option<T> {
         let mut out = None;
         if let (Some(min), Some(_)) = (self.policy.min_interval, &self.pending) {
             if self.since_published(now) >= min {
@@ -378,18 +466,7 @@ impl<T> ReportState<T> {
                 }
             }
         }
-        let mut read = false;
-        if let Some(max) = self.policy.max_interval {
-            let reference = self
-                .last_published
-                .unwrap_or(self.origin)
-                .max(self.last_read.unwrap_or(self.origin));
-            if pushed && !self.unreadable && now.saturating_sub(reference) >= max {
-                self.last_read = Some(now);
-                read = true;
-            }
-        }
-        Due { publish: out, read }
+        out
     }
 
     fn publish_if_changed(&mut self, item: T, obs: Obs, now: Duration) -> Option<T> {
@@ -470,7 +547,16 @@ mod tests {
                 let mut read = false;
                 if let Some(sample) = step.get("sample") {
                     let id = sample["id"].as_str().unwrap().to_string();
-                    published.extend(state.offer(id, obs_of(sample), quality_of(sample), now));
+                    match sample.get("src").and_then(|v| v.as_u64()) {
+                        Some(src) => published.extend(state.offer_replayed(
+                            id,
+                            obs_of(sample),
+                            quality_of(sample),
+                            Duration::from_millis(src),
+                            now,
+                        )),
+                        None => published.extend(state.offer(id, obs_of(sample), quality_of(sample), now)),
+                    }
                 } else if step.get("tick").is_some() {
                     let due = state.due(now, pushed);
                     published.extend(due.publish);
@@ -624,6 +710,50 @@ mod tests {
                 last_published = Some(v);
             }
             prop_assert_eq!(last_published, Some(values.last().unwrap().1));
+        }
+
+        // A replay arrives in a burst, but its intervals are measured on source time: it
+        // publishes exactly what the live state would publish on a clock that runs on source
+        // time and ticks as each reading arrives. The last reading still arrives once the replay
+        // hands over to the runtime clock.
+        #[test]
+        fn a_replay_matches_live_on_source_time(
+            readings in prop::collection::vec((1u64..5000, -3i8..3), 1..200),
+            min in prop::option::of(1u64..20_000),
+            debounce in prop::option::of(1u64..20_000),
+            on_change in any::<bool>(),
+        ) {
+            let policy = ReportPolicy {
+                min_interval: min.map(Duration::from_millis),
+                debounce: debounce.map(Duration::from_millis),
+                on_change,
+                ..Default::default()
+            };
+            let mut replay: ReportState<usize> = ReportState::new(policy.clone(), Duration::ZERO);
+            let mut live: ReportState<usize> = ReportState::new(policy, Duration::ZERO);
+            let mut src = Duration::from_secs(1_700_000_000);
+            let (mut from_replay, mut from_live) = (Vec::new(), Vec::new());
+            for (i, (gap, value)) in readings.iter().enumerate() {
+                src += Duration::from_millis(*gap);
+                let obs = Obs::Number(*value as f64);
+                from_replay.extend(replay.offer_replayed(i, obs.clone(), Quality::Good, src, Duration::ZERO));
+                from_live.extend(live.due(src, true).publish);
+                from_live.extend(live.offer(i, obs, Quality::Good, src));
+            }
+            prop_assert_eq!(&from_replay, &from_live);
+
+            // After the hand-over, whatever is still held comes out on the runtime clock.
+            let mut now = REPLAY_IDLE;
+            let wait = Duration::from_millis(min.unwrap_or(0) + debounce.unwrap_or(0));
+            from_replay.extend(replay.due(now, true).publish);
+            now += wait;
+            from_replay.extend(replay.due(now, true).publish);
+            now += wait;
+            from_replay.extend(replay.due(now, true).publish);
+            src += wait * 2;
+            from_live.extend(live.due(src, true).publish);
+            from_live.extend(live.due(src + wait, true).publish);
+            prop_assert_eq!(from_replay.last(), from_live.last());
         }
     }
 }

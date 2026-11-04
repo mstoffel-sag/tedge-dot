@@ -164,6 +164,9 @@ typedef struct tdot_point {
      * point whose policy is not the passthrough; NULL otherwise. Freed with
      * the point, so a replaced configuration starts from a clean state. */
     tdot_report_state_t *report_state;
+    /* A replayed sample without a source time was reported once for this
+     * point (it is then handled as a live one). */
+    bool warned_unstamped_replay;
     /* Point health logging (health.h): the error last logged, "" while the
      * point reads fine, and this pass's reading, held until the runtime knows
      * whether the whole pass failed (tick_state 0 = not read, 1 = good, 2 =

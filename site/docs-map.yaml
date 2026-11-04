@@ -97,6 +97,15 @@ pages:
     slug: reference/connectors/snmp
     section: Connectors
     label: SNMP
+  - source: doc/connectors/aveva-pi-connector-spec.md
+    slug: reference/connectors/aveva-pi
+    section: Connectors
+    label: AVEVA PI Web API
+    badge: Preview
+  - source: doc/connectors/rest-connectors.md
+    slug: reference/connectors/rest-connectors
+    section: Connectors
+    label: Writing a REST connector
   - source: connectors/README.md
     slug: reference/connectors/adding-a-connector
     section: Connectors
@@ -177,6 +186,10 @@ pages:
     slug: reference/migration/migration-guide
     section: Migration
     label: From the modbus plugin
+  - source: doc/migration/aveva-pi-plugin.md
+    slug: reference/migration/aveva-pi-plugin
+    section: Migration
+    label: From the AVEVA PI plugin
   - source: doc/migration/modbus-plugin-gap-analysis.md
     slug: reference/migration/gap-analysis
     section: Migration

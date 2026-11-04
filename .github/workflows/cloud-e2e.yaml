@@ -1,14 +1,17 @@
 name: Cloud e2e (Cumulocity)
 
-# Tenant-gated: runs the full Cumulocity end-to-end suite (child registration, twin,
-# measurements, c8y_SetRegister/c8y_SetCoil, and the Cloud Fieldbus round-trip) against a
-# live tenant. Manual trigger only — requires the repository secrets
+# Tenant-gated: runs a protocol's full Cumulocity end-to-end suite against a live tenant
+# (modbus: child registration, twin, measurements, c8y_SetRegister/c8y_SetCoil, the Cloud
+# Fieldbus round-trip; aveva-pi: measurements with PI times, outage and restart backfill,
+# device parameters written to PI). Manual trigger only — requires the repository secrets
 # C8Y_BASEURL / C8Y_USER / C8Y_PASSWORD.
 on:
   workflow_dispatch:
     inputs:
       protocol:
         description: Protocol harness under cloud/
+        type: choice
+        options: [modbus, aveva-pi]
         default: modbus
         required: true
       impl:

@@ -28,8 +28,12 @@ describe('report-policy vectors', () => {
         let read = false;
         if (step.sample) {
           const quality: Quality = step.sample.quality ?? 'good';
-          const out = state.offer(step.sample.id, obsOf(step.sample), quality, now);
-          if (out !== null) published.push(out);
+          if (typeof step.sample.src === 'number') {
+            published.push(...state.offerReplayed(step.sample.id, obsOf(step.sample), quality, step.sample.src, now));
+          } else {
+            const out = state.offer(step.sample.id, obsOf(step.sample), quality, now);
+            if (out !== null) published.push(out);
+          }
         } else if (step.tick) {
           const due = state.due(now, vector.pushed ?? false);
           if (due.publish !== null) published.push(due.publish);

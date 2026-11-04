@@ -141,6 +141,12 @@ typedef struct {
      * -- for none. The runtime makes it the sample's `ts` (contract §5); a
      * sample without one carries the completion time of its read call. */
     double source_ts_ms;
+    /* Nonzero when the module delivers this reading after the fact, from the
+     * source's history (an archive read after an outage). Only meaningful
+     * with a source_ts_ms: the reporting policy then measures its intervals
+     * on source time (contract §5.3). Not part of the envelope; 0 -- what
+     * tdot_sample_init sets -- for a live reading. */
+    int replayed;
 } tdot_sample_t;
 
 void tdot_sample_init(tdot_sample_t *s);

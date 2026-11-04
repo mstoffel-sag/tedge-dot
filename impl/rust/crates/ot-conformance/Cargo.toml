@@ -12,13 +12,14 @@ repository.workspace = true
 # instead via `[harness] command` in its manifest. `canbus` enables CAN FD to match the
 # shipped binary's default capability descriptor. `profibus` is off by default for the same
 # packaging reasons as in the main binary.
-default = ["modbus", "opcua", "canbus", "canopen", "snmp"]
+default = ["modbus", "opcua", "canbus", "canopen", "snmp", "aveva-pi"]
 modbus = ["dep:connector-modbus", "dep:tokio-modbus"]
 opcua = ["dep:connector-opcua", "dep:async-opcua"]
 canbus = ["dep:connector-canbus", "connector-canbus/canbus-fd"]
 canopen = ["dep:connector-canopen"]
 profibus = ["dep:connector-profibus"]
 snmp = ["dep:connector-snmp"]
+aveva-pi = ["dep:connector-aveva-pi"]
 
 [dependencies]
 tedge-dot-sdk = { path = "../sdk" }
@@ -29,6 +30,7 @@ connector-canbus = { path = "../connector-canbus", optional = true }
 connector-canopen = { path = "../connector-canopen", optional = true }
 connector-profibus = { path = "../connector-profibus", optional = true }
 connector-snmp = { path = "../connector-snmp", optional = true }
+connector-aveva-pi = { path = "../connector-aveva-pi", optional = true }
 clap = { version = "4", features = ["derive"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "time", "sync", "io-util", "process", "signal"] }
 serde = { version = "1", features = ["derive"] }

@@ -9,7 +9,7 @@
   <svg class="arch-wide" viewBox="0 0 680 460" role="img" aria-labelledby="arch-title arch-desc">
     <title id="arch-title">tedge-dot architecture</title>
     <desc id="arch-desc">
-      OT devices (Modbus, OPC UA, SNMP, CAN bus, CANopen, PROFIBUS-DP) are read and written by
+      OT devices (Modbus, OPC UA, SNMP, CAN bus, CANopen, PROFIBUS-DP, AVEVA PI) are read and written by
       tedge-dot, which publishes protocol-neutral sample, status and command envelopes to the
       thin-edge.io MQTT broker. thin-edge.io flows turn them into measurements, child devices,
       alarms, events and parameters, and the Cumulocity mapper sends them to the cloud. Writes
@@ -23,7 +23,7 @@
 
     <!-- Row 1: OT devices -> tedge-dot -->
     <text x="10" y="22" class="label-head">OT devices</text>
-    {['Modbus TCP/RTU', 'OPC UA', 'SNMP', 'CAN bus', 'CANopen', 'PROFIBUS-DP'].map((name, i) => (
+    {['Modbus TCP/RTU', 'OPC UA', 'SNMP', 'CAN / CANopen', 'PROFIBUS-DP', 'AVEVA PI'].map((name, i) => (
       <g>
         <rect x={10 + (i % 2) * 120} y={38 + Math.floor(i / 2) * 42} width="114" height="32" rx="8" class="box-device"></rect>
         <text x={67 + (i % 2) * 120} y={59 + Math.floor(i / 2) * 42} text-anchor="middle" class="label label-device">{name}</text>
@@ -86,7 +86,7 @@
     <rect x="10" y="10" width="320" height="76" rx="12" class="box-device"></rect>
     <text x="170" y="38" text-anchor="middle" class="label-strong small">OT devices</text>
     <text x="170" y="60" text-anchor="middle" class="label">Modbus · OPC UA · SNMP · CAN</text>
-    <text x="170" y="77" text-anchor="middle" class="label">CANopen · PROFIBUS-DP</text>
+    <text x="170" y="77" text-anchor="middle" class="label">CANopen · PROFIBUS-DP · AVEVA PI</text>
     <path d="M170 88 V112" class="line" marker-end="url(#arch-arrow-n)"></path>
     <rect x="10" y="116" width="320" height="96" rx="12" class="box-dot"></rect>
     <text x="170" y="144" text-anchor="middle" class="label-strong">tedge-dot</text>

@@ -34,6 +34,11 @@ A `sample` has an `id`, which names it in the expectations, and an optional `qua
 | `str` | A string (`value_repr = "string"`), including 64-bit integers outside the safe range. |
 | `raw` | Hex bytes, for a point with no decoded value (raw mode, or a bad sample). |
 
+A `sample` with a `src` field is **replayed** (§5.3 rule 7): `src` is its source time in Unix
+milliseconds, and the policy measures its intervals on it. `at` is still the runtime time it
+arrives at. A replayed step's `publish` can name two ids: a held reading the replay released,
+then the sample itself.
+
 A step's expectations are:
 
 | Expectation | Meaning |

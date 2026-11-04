@@ -1,13 +1,13 @@
 ---
 title: Every fieldbus, one contract.
-description: tedge-dot connects Modbus, OPC UA, SNMP, CAN bus, CANopen and PROFIBUS-DP equipment to thin-edge.io through one neutral MQTT contract.
+description: tedge-dot connects Modbus, OPC UA, SNMP, CAN bus, CANopen and PROFIBUS-DP equipment, and AVEVA PI servers, to thin-edge.io through one neutral MQTT contract.
 template: splash
 tableOfContents: false
 editUrl: false
 hero:
   tagline: >-
-    <strong>tedge-dot</strong> connects Modbus, OPC UA and SNMP equipment (with CAN bus, CANopen
-    and PROFIBUS-DP in preview) to <a href="https://thin-edge.io">thin-edge.io</a>. A lean driver publishes one
+    <strong>tedge-dot</strong> connects Modbus, OPC UA and SNMP equipment (with CAN bus, CANopen,
+    PROFIBUS-DP and AVEVA PI in preview) to <a href="https://thin-edge.io">thin-edge.io</a>. A lean driver publishes one
     protocol-neutral MQTT contract; small JavaScript flows turn it into measurements, alarms and
     device parameters in the cloud.
   actions:
@@ -29,7 +29,7 @@ import TwoPackages from '../../components/landing/TwoPackages.astro';
 import QuickStart from '../../components/landing/QuickStart.astro';
 import Section from '../../components/landing/Section.astro';
 
-<Section kicker="Protocols" title="Six protocols, one shape of data">
+<Section kicker="Protocols" title="Seven protocols, one shape of data">
   Every connector publishes the same `sample`, `status` and `cmd` envelopes on
   `te/device/<device>/ot/<protocol>/…`, so a flow, a dashboard or a cloud integration written
   once works for all of them. The connectors marked *Preview* are tested against simulators but
@@ -58,6 +58,7 @@ import Section from '../../components/landing/Section.astro';
       <LinkCard title="Secured OPC UA" description="Certificates, trust and the tedge-dot pki CLI." href="/tedge-dot/guides/secured-opcua/" />
       <LinkCard title="CAN bus and CANopen (preview)" description="DBC signals and SDO objects over SocketCAN." href="/tedge-dot/guides/canbus-canopen/" />
       <LinkCard title="SNMP network devices" description="Poll, SET, and receive traps and informs." href="/tedge-dot/guides/snmp/" />
+      <LinkCard title="AVEVA PI Web API (preview)" description="PI points and AF attributes, pushed, with outage backfill." href="/tedge-dot/guides/aveva-pi/" />
       <LinkCard title="A fleet of identical devices" description="One point library, many instances." href="/tedge-dot/guides/fleet-point-libraries/" />
       <LinkCard title="Less data on a metered link" description="Report by exception, with a heartbeat." href="/tedge-dot/guides/reducing-data-volume/" />
       <LinkCard title="Write to devices from the cloud" description="Device parameters, value maps and literal parameters." href="/tedge-dot/guides/writing-to-devices/" />

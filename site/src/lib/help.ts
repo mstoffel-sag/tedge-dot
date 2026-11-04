@@ -136,6 +136,17 @@ export const HELP: Record<string, string> = {
   'profibus.connection.master_address': "The gateway's own station address on the bus.",
   'profibus.connection.slot_bits': 'The slot time in bit times: how long the master waits for an answer.',
 
+  // AVEVA PI Web API
+  'aveva-pi.protocol_address.base_url': 'The PI Web API root, for example https://pi.example.com/piwebapi. http:// only without auth.',
+  'aveva-pi.protocol_address.data_server': 'The PI Data Archive that tag points live in.',
+  'aveva-pi.protocol_address.af_database': 'The AF database of relative attribute paths, as \\\\<AF server>\\<database>.',
+  'aveva-pi.protocol_address.delivery': 'channel (pushed, the default), recorded (archive polled) or snapshot (current value polled).',
+  'aveva-pi.address.tag': "A PI point name on the device's data_server.",
+  'aveva-pi.address.path': 'A full PI point path, or an AF attribute path with | before the attribute name.',
+  'aveva-pi.address.web_id': 'A PI Web API WebId. It is used as given, without a lookup.',
+  'aveva-pi.connection.auth': 'none, basic, bearer or certificate. Secrets are read from files (password_file, token_file, key_file).',
+  'aveva-pi.connection.tls': 'ca_file: a CA bundle for the server certificate. insecure_skip_verify turns the check off.',
+
   // The workbench's own fields
   'workbench.example': 'Replace the signals and the configuration with a ready-made case.',
   'workbench.demo': 'Load a demo config from the repository, wired to the demo simulators.',

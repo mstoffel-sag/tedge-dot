@@ -12,11 +12,12 @@ const { data } = Astro.locals.starlightRoute.entry;
 const { title = data.title, tagline, actions = [] } = data.hero || {};
 
 const devices = [
-  { label: 'Modbus', y: 44 },
-  { label: 'OPC UA', y: 112 },
-  { label: 'SNMP', y: 180 },
-  { label: 'CAN / CANopen', y: 248 },
-  { label: 'PROFIBUS-DP', y: 316 },
+  { label: 'Modbus', y: 34 },
+  { label: 'OPC UA', y: 92 },
+  { label: 'SNMP', y: 150 },
+  { label: 'CAN / CANopen', y: 208 },
+  { label: 'PROFIBUS-DP', y: 266 },
+  { label: 'AVEVA PI', y: 324 },
 ];
 // Each device's path into tedge-dot (the node at x 226..334, y 152..208).
 const inPath = (y: number) => `M144 ${y} C 188 ${y}, 188 ${180 + (y - 180) * 0.13}, 226 ${180 + (y - 180) * 0.13}`;
@@ -44,7 +45,8 @@ const inPath = (y: number) => `M144 ${y} C 188 ${y}, 188 ${180 + (y - 180) * 0.1
     <svg class="td-flow-wide" viewBox="0 0 720 360" role="img" aria-labelledby="td-flow-title td-flow-desc">
       <title id="td-flow-title">How data flows through tedge-dot</title>
       <desc id="td-flow-desc">
-        Readings from Modbus, OPC UA, SNMP, CAN and CANopen, and PROFIBUS-DP devices flow into
+        Readings from Modbus, OPC UA, SNMP, CAN and CANopen, and PROFIBUS-DP devices, and from
+        AVEVA PI servers, flow into
         tedge-dot, which publishes protocol-neutral samples over MQTT. thin-edge.io flows turn
         them into measurements, alarms and device parameters, and thin-edge.io sends them to the
         cloud. Writes travel the other way.

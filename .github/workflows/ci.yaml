@@ -102,6 +102,44 @@ jobs:
       - name: Run flow tests
         run: ./flows/test-flows.sh
 
+  # The AVEVA PI simulator is our own model of the PI Web API, so it has unit tests of its own;
+  # the migration script from the community plugin is tested against it. Its golden output is
+  # also loaded by the Rust connector (`test` job) and by both builds (describe parity).
+  python:
+    name: Python tests (AVEVA PI simulator + migration script)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: extractions/setup-just@v2
+      - name: Install test dependencies
+        run: python -m pip install -r connectors/aveva-pi/sim/requirements-test.txt
+      - name: Run tests
+        run: PYTHON=python just test-aveva-pi-python
+
+  # The AVEVA PI C module runs a worker thread per device and hands samples over through a
+  # ring; its unit tests run under ASan+UBSan and TSan (the `c` job runs them unsanitized).
+  c-sanitize:
+    name: C sanitizers (aveva-pi)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: extractions/setup-just@v2
+      - name: Install C toolchain + libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang cmake ninja-build pkg-config libmosquitto-dev libcjson-dev
+      # The runner's kernel randomizes mmap with 32 bits, which TSan's fixed memory layout
+      # refuses ("unexpected memory mapping").
+      - name: Reduce mmap randomization for TSan
+        run: sudo sysctl vm.mmap_rnd_bits=28
+      - name: Unit tests under sanitizers
+        env:
+          CC: clang
+        run: just c-sanitize-aveva-pi
+
   fuzz-smoke:
     name: Fuzz smoke (30s per target)
     runs-on: ubuntu-latest
@@ -122,6 +160,9 @@ jobs:
       - name: Fuzz the SNMP notification decoder briefly
         working-directory: impl/rust/crates/connector-snmp
         run: cargo +nightly fuzz run trap_message -- -max_total_time=30
+      - name: Fuzz the AVEVA PI value decoder briefly
+        working-directory: impl/rust/crates/connector-aveva-pi
+        run: cargo +nightly fuzz run aveva_pi_value -- -max_total_time=30
 
   c:
     name: C build & conformance (${{ matrix.protocol }})
@@ -133,6 +174,8 @@ jobs:
       # `toomanyrequests: Rate exceeded`.
       max-parallel: 2
       matrix:
+        # aveva-pi: its simulator is HTTPS with authentication, not a demo endpoint; the
+        # e2e-c job runs the whole suite against the C build instead of a smoke test.
         protocol: [modbus, opcua, canbus, canopen, profibus, snmp]
     steps:
       - uses: actions/checkout@v4
@@ -208,7 +251,7 @@ jobs:
       # `toomanyrequests: Rate exceeded`.
       max-parallel: 2
       matrix:
-        protocol: [modbus, opcua, canbus, canopen, profibus, snmp]
+        protocol: [modbus, opcua, canbus, canopen, profibus, snmp, aveva-pi]
     steps:
       - uses: actions/checkout@v4
       - name: Install system deps (libudev for the profibus serial transport)
@@ -235,7 +278,7 @@ jobs:
       # once, and three per matrix still ran into throttled pulls.
       max-parallel: 2
       matrix:
-        protocol: [modbus, opcua, canbus, canopen, profibus, snmp]
+        protocol: [modbus, opcua, canbus, canopen, profibus, snmp, aveva-pi]
     steps:
       - uses: actions/checkout@v4
       # Best effort: the mirror is public, so a failed login still pulls (anonymously).
@@ -274,7 +317,7 @@ jobs:
       # once, and three per matrix still ran into throttled pulls.
       max-parallel: 2
       matrix:
-        protocol: [modbus, opcua, canbus, canopen, profibus, snmp]
+        protocol: [modbus, opcua, canbus, canopen, profibus, snmp, aveva-pi]
     steps:
       - uses: actions/checkout@v4
       # Best effort: the mirror is public, so a failed login still pulls (anonymously).
