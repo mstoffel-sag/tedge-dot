@@ -422,6 +422,14 @@ if(TDOT_AVEVA_PI)
   add_test(NAME aveva-pi-push COMMAND tedge-dot-aveva-pi-push)
 endif()
 
+add_executable(tedge-dot-cli-cleanup tests/cli_cleanup.c)
+target_link_libraries(tedge-dot-cli-cleanup PRIVATE tedge_dot_sdk)
+add_test(NAME cli-cleanup COMMAND tedge-dot-cli-cleanup)
+
+add_executable(tedge-dot-management-cleanup tests/management_cleanup.c)
+target_link_libraries(tedge-dot-management-cleanup PRIVATE tedge_dot_sdk)
+add_test(NAME management-cleanup COMMAND tedge-dot-management-cleanup)
+
 # OPC UA: the PKI directory and certificate trust over the PKI vectors the Rust build
 # validates too (connectors/opcua/conformance/tools/genpki.py; needs Python + cryptography).
 if(TDOT_OPCUA)
