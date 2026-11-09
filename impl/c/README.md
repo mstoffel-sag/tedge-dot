@@ -248,6 +248,12 @@ Liveness is covered by `operation_timeout` and `stall_timeout` — see
 
 Debugging: `TDOT_OPCUA_DEBUG=1` keeps open62541's client handshake log on stdout.
 
+The `cli-cleanup` and `management-cleanup` CTest cases cover resource cleanup on CLI
+errors and failed configuration writes, including preservation of the original I/O error.
+Run them with `ctest --test-dir build --output-on-failure -R cleanup`; an
+AddressSanitizer build (`-DCMAKE_C_FLAGS="-fsanitize=address -fno-omit-frame-pointer"`)
+also checks their heap cleanup with `ASAN_OPTIONS=detect_leaks=1`.
+
 ## Packaging & releases
 
 Both implementations are released together by

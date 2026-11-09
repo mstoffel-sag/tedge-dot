@@ -215,6 +215,13 @@ static int setup(const args_t *a, tdot_config_t **cfg,
     return 0;
 }
 
+static void teardown(tdot_connector_t *conn, tdot_config_t *cfg) {
+    for (size_t i = 0; i < cfg->ndevices; i++)
+        conn->disconnect_device(conn, &cfg->devices[i]);
+    conn->destroy(conn);
+    tdot_config_free(cfg);
+}
+
 static void print_sample(const args_t *a, tdot_config_t *cfg,
                          tdot_device_t *dev, tdot_point_t *pt,
                          const tdot_sample_t *s) {
@@ -257,9 +264,10 @@ static int cmd_read(const args_t *a) {
     char err[256];
     if (setup(a, &cfg, &conn) != 0)
         return 1;
+    int exit_code = 1;
     if (tdot_connector_configure(conn, cfg, err, sizeof err) != 0) {
         fprintf(stderr, "error: %s\n", err);
-        return 1;
+        goto cleanup;
     }
     conn->no_push = true;
 
@@ -270,7 +278,7 @@ static int cmd_read(const args_t *a) {
     sigaction(SIGINT, &sa, NULL);
     sigaction(SIGTERM, &sa, NULL);
 
-    int exit_code = 0;
+    exit_code = 0;
     bool any_matched = false;
     for (size_t i = 0; i < cfg->ndevices && !g_stop; i++) {
         tdot_device_t *dev = &cfg->devices[i];
@@ -295,7 +303,8 @@ static int cmd_read(const args_t *a) {
     }
     if (!any_matched && !g_stop) {
         fprintf(stderr, "error: no matching readable points\n");
-        return 1;
+        exit_code = 1;
+        goto cleanup;
     }
 
     int rounds = 0;
@@ -347,10 +356,8 @@ static int cmd_read(const args_t *a) {
         }
     } while (a->poll && !g_stop && (a->count == 0 || rounds < a->count));
 
-    for (size_t i = 0; i < cfg->ndevices; i++)
-        conn->disconnect_device(conn, &cfg->devices[i]);
-    conn->destroy(conn);
-    tdot_config_free(cfg);
+cleanup:
+    teardown(conn, cfg);
     return exit_code;
 }
 
@@ -382,28 +389,29 @@ static int cmd_write(const args_t *a) {
     char err[256];
     if (setup(a, &cfg, &conn) != 0)
         return 1;
+    int exit_code = 1;
     if (tdot_connector_configure(conn, cfg, err, sizeof err) != 0) {
         fprintf(stderr, "error: %s\n", err);
-        return 1;
+        goto cleanup;
     }
     conn->no_push = true;
     tdot_device_t *dev = tdot_config_device(cfg, a->device);
     if (!dev) {
         fprintf(stderr, "error: unknown device: %s\n", a->device);
-        return 1;
+        goto cleanup;
     }
     tdot_point_t *pt = tdot_device_point(dev, a->points[0]);
     if (!pt) {
         fprintf(stderr, "error: unknown point: %s\n", a->points[0]);
-        return 1;
+        goto cleanup;
     }
     if (!(pt->access & TDOT_ACCESS_WRITE)) {
         fprintf(stderr, "error: point %s is not writable\n", pt->id);
-        return 1;
+        goto cleanup;
     }
     if (conn->connect_device(conn, dev, err, sizeof err) != 0) {
         fprintf(stderr, "error: device %s: %s\n", dev->name, err);
-        return 1;
+        goto cleanup;
     }
     /* --value is in engineering units, like the `write` verb's value */
     tdot_value_t value;
@@ -413,10 +421,10 @@ static int cmd_write(const args_t *a) {
         fprintf(stderr, "error: write %s/%s: %s\n", dev->name, pt->id, err);
     else
         printf("wrote %s/%s = %s\n", dev->name, pt->id, a->value);
-    conn->disconnect_device(conn, dev);
-    conn->destroy(conn);
-    tdot_config_free(cfg);
-    return rc == 0 ? 0 : 1;
+    exit_code = rc == 0 ? 0 : 1;
+cleanup:
+    teardown(conn, cfg);
+    return exit_code;
 }
 
 static int cmp_str(const void *a, const void *b) {

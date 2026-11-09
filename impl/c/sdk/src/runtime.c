@@ -1665,13 +1665,20 @@ static void handle_management(rt_t *rt, const char *topic, const char *verb,
     char tmp_path[1024];
     snprintf(tmp_path, sizeof tmp_path, "%s.tmp", cfg->path);
     FILE *f = fopen(tmp_path, "w");
-    if (!f || fputs(text, f) == EOF || fclose(f) != 0) {
-        free(text);
-        snprintf(reason, sizeof reason, "cannot write %s: %s", tmp_path, strerror(errno));
+    int write_error = f ? 0 : errno;
+    if (f) {
+        if (fputs(text, f) == EOF)
+            write_error = errno;
+        if (fclose(f) != 0 && !write_error)
+            write_error = errno;
+    }
+    free(text);
+    if (write_error) {
+        snprintf(reason, sizeof reason, "cannot write %s: %s", tmp_path,
+                 strerror(write_error));
         publish_status(rt, topic, "failed", reason, req);
         return;
     }
-    free(text);
     char err[256];
     tdot_config_t *candidate = tdot_config_load(tmp_path, err, sizeof err);
     if (!candidate) {
