@@ -55,7 +55,7 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 [workspace.package]
-version = "0.0.17"
+version = "0.0.18"
 edition = "2021"
 license = "Apache-2.0"
 repository = "https://github.com/thin-edge/tedge-dot"
