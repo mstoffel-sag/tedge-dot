@@ -6,7 +6,7 @@ import YAML from 'yaml';
 const data = YAML.parse(readFileSync('src/data/packages.yaml', 'utf8'));
 const blurb: Record<string, string> = {
   'tedge-dot-c': 'The default. About 25 times smaller, runs down to glibc 2.17, and ships every protocol, including the PROFIBUS-DP preview.',
-  'tedge-dot-rs': 'For the features only the Rust build has: SNMPv3 with SHA-2, OPC UA structured values, CAN FD.',
+  'tedge-dot-rs': 'For the features only the Rust build has: SNMPv3 with SHA-2, CAN FD.',
 };
 ---
 

@@ -1,6 +1,5 @@
 # Point library: the structured values of the demo OPC UA simulator (contract §3.4,
-# doc/connectors/opcua-connector-spec.md §3.7). Rust build only: the C build does not decode
-# OPC UA structures yet (capability `opcua-structures`, impl/c/README.md).
+# doc/connectors/opcua-connector-spec.md §3.7). Both builds decode it.
 #
 # The simulator's `Pump` variable holds a custom structure, SimPumpStatus, which the connector
 # knows nothing about at build time. It reads the type's DataTypeDefinition from the server once

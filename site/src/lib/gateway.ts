@@ -282,9 +282,6 @@ export function packageNeeds(config: Config): { protocols: string[]; features: s
   const policies = [config.connection?.security_policy, ...devices.map((d) => d.protocol_address?.security_policy)];
   if (protocol === 'opcua') {
     if (policies.some((p) => typeof p === 'string' && /basic128rsa15/i.test(p))) features.add('opcua-basic128rsa15');
-    if (devices.some((d) => ((d.point ?? []) as Config[]).some((p) => p.address?.field !== undefined || p.address?.index !== undefined))) {
-      features.add('opcua-structures');
-    }
   }
   return { protocols: protocol ? [protocol] : [], features: [...features] };
 }

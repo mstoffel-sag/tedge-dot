@@ -33,7 +33,7 @@ KNOWN_CAPABILITIES := "subscribe canbus-fd profibus-serial snmpv3-sha2 opcua-bas
 #
 # NOTE: a capability listed here only becomes ENFORCED once a test is tagged with it;
 # `just check-capability-tags` reports the ones that are still inert.
-C_MISSING_CAPABILITIES := "canbus-fd profibus-serial snmpv3-sha2 opcua-basic128rsa15 opcua-structures"
+C_MISSING_CAPABILITIES := "canbus-fd profibus-serial snmpv3-sha2 opcua-basic128rsa15"
 
 # Create/refresh the single Python virtualenv used by every system test (and by the editor,
 # see .vscode/settings.json).
@@ -116,6 +116,17 @@ fuzz-all seconds="30":
         cargo +nightly fuzz run $t -- -max_total_time={{seconds}} || exit 1; done
     cd impl/rust/crates/connector-opcua && cargo +nightly fuzz run structure_walk -- -max_total_time={{seconds}}
     cd impl/rust/crates/connector-aveva-pi && cargo +nightly fuzz run aveva_pi_value -- -max_total_time={{seconds}}
+
+# Fuzz the C OPC UA structure walker (impl/c/connectors/opcua/structure.c) with libFuzzer, the
+# counterpart of the Rust `structure_walk` target. Needs clang with libFuzzer (Linux; Apple's
+# clang has none). Without it, ctest runs the same target as a deterministic driver.
+fuzz-c-opcua-struct seconds="60":
+    cmake -S impl/c -B impl/c/build-fuzz -DCMAKE_C_COMPILER=clang -DTDOT_FUZZ=ON \
+        -DTDOT_MODBUS=OFF -DTDOT_SNMP=OFF -DTDOT_PROFIBUS=OFF -DTDOT_AVEVA_PI=OFF
+    cmake --build impl/c/build-fuzz --target tedge-dot-fuzz-opcua-struct
+    mkdir -p impl/c/build-fuzz/corpus-opcua-struct
+    impl/c/build-fuzz/tedge-dot-fuzz-opcua-struct impl/c/build-fuzz/corpus-opcua-struct \
+        -max_total_time={{seconds}}
 
 # Cross-check the `requires:<capability>` test tags against the declared capability lists.
 check-capability-tags:

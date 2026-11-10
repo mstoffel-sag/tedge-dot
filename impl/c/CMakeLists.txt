@@ -24,6 +24,9 @@ option(TDOT_AVEVA_PI "Build the AVEVA PI Web API connector (libcurl, curl licens
 # The synthetic module the performance harness drives (bench/, doc/performance.md). Never in
 # a release: cross/build.sh passes -DTDOT_BENCH=OFF explicitly, and
 # ci/check-release-features.sh fails the lint if that changes.
+# A libFuzzer build of the C fuzz targets (clang): `-DTDOT_FUZZ=ON`. Without it the same
+# sources build as deterministic drivers that ctest runs.
+option(TDOT_FUZZ "Build the C fuzz targets for libFuzzer (clang -fsanitize=fuzzer)" OFF)
 option(TDOT_BENCH "Build the synthetic bench module (performance harness only)" OFF)
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   option(TDOT_CANBUS "Build the CAN bus connector (SocketCAN + DBC)" ON)
@@ -179,6 +182,7 @@ if(TDOT_OPCUA)
     endforeach()
   endif()
   target_sources(tedge_dot_sdk PRIVATE connectors/opcua/connector_opcua.c
+                                       connectors/opcua/structure.c
                                        connectors/opcua/ua_pki.c
                                        connectors/opcua/pki_cli.c)
   target_include_directories(tedge_dot_sdk PRIVATE ${_tdot_mbedtls_inc})
@@ -452,6 +456,32 @@ if(TDOT_OPCUA)
   target_include_directories(tedge-dot-opcua-blocks PRIVATE connectors/opcua)
   target_link_libraries(tedge-dot-opcua-blocks PRIVATE tedge_dot_sdk ${_tdot_ua_lib})
   add_test(NAME opcua-blocks COMMAND tedge-dot-opcua-blocks)
+
+  # Structured values (openspec opcua-structures-c): the walker over the vectors the Rust
+  # connector runs too, and its fuzz target.
+  set(_tdot_struct_vectors
+      ${CMAKE_CURRENT_SOURCE_DIR}/../../doc/contract/test-vectors/opcua-struct/vectors.json)
+  add_executable(tedge-dot-opcua-struct tests/opcua_struct.c)
+  target_include_directories(tedge-dot-opcua-struct PRIVATE connectors/opcua)
+  target_link_libraries(tedge-dot-opcua-struct PRIVATE tedge_dot_sdk ${_tdot_ua_lib})
+  add_test(NAME opcua-struct COMMAND tedge-dot-opcua-struct ${_tdot_struct_vectors})
+
+  add_executable(tedge-dot-fuzz-opcua-struct tests/fuzz_opcua_struct.c)
+  target_include_directories(tedge-dot-fuzz-opcua-struct PRIVATE connectors/opcua)
+  target_link_libraries(tedge-dot-fuzz-opcua-struct PRIVATE tedge_dot_sdk ${_tdot_ua_lib})
+  target_compile_definitions(tedge-dot-fuzz-opcua-struct
+                             PRIVATE TDOT_STRUCT_VECTORS="${_tdot_struct_vectors}")
+  if(TDOT_FUZZ)
+    # The walker compiled into the target itself, so libFuzzer sees its coverage; the
+    # SDK archive's copy is then never pulled in.
+    target_sources(tedge-dot-fuzz-opcua-struct PRIVATE connectors/opcua/structure.c)
+    target_compile_definitions(tedge-dot-fuzz-opcua-struct PRIVATE TDOT_LIBFUZZER)
+    target_compile_options(tedge-dot-fuzz-opcua-struct PRIVATE -fsanitize=fuzzer,address -g)
+    target_link_options(tedge-dot-fuzz-opcua-struct PRIVATE -fsanitize=fuzzer,address)
+  else()
+    add_test(NAME opcua-struct-fuzz-smoke
+             COMMAND tedge-dot-fuzz-opcua-struct ${_tdot_struct_vectors} 20000)
+  endif()
 
   add_executable(tedge-dot-opcua-pki tests/opcua_pki.c)
   target_include_directories(tedge-dot-opcua-pki PRIVATE connectors/opcua)

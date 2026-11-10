@@ -110,8 +110,6 @@ passing. In short, `tedge-dot-c` does not have:
 - **SNMPv3 with SHA-2 authentication or AES-192/256 privacy.** MD5/SHA with DES/AES works. A
   device configured with one of the others stays `disconnected` with a reason naming the
   capability, while every other device keeps working.
-- **OPC UA structured values** (ExtensionObject fields, array elements by `address.index`).
-  Such points are reported as unsupported; the configuration still loads.
 - **The deprecated Basic128Rsa15 OPC UA policy.** `Basic256` and the current policies work.
 - **CAN FD** frames: classic CAN only.
 - **PROFIBUS-DP on a serial line.** It speaks `tcp://` to a device server or the simulator.
