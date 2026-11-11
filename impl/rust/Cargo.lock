@@ -670,7 +670,7 @@ dependencies = [
 
 [[package]]
 name = "connector-aveva-pi"
-version = "0.0.18"
+version = "0.0.19"
 dependencies = [
  "async-trait",
  "base64",
@@ -693,7 +693,7 @@ dependencies = [
 
 [[package]]
 name = "connector-bench"
-version = "0.0.18"
+version = "0.0.19"
 dependencies = [
  "async-trait",
  "serde_json",
@@ -705,7 +705,7 @@ dependencies = [
 
 [[package]]
 name = "connector-canbus"
-version = "0.0.18"
+version = "0.0.19"
 dependencies = [
  "async-trait",
  "can-dbc",
@@ -723,7 +723,7 @@ dependencies = [
 
 [[package]]
 name = "connector-canopen"
-version = "0.0.18"
+version = "0.0.19"
 dependencies = [
  "async-trait",
  "serde",
@@ -740,7 +740,7 @@ dependencies = [
 
 [[package]]
 name = "connector-modbus"
-version = "0.0.18"
+version = "0.0.19"
 dependencies = [
  "async-trait",
  "serde",
@@ -757,7 +757,7 @@ dependencies = [
 
 [[package]]
 name = "connector-opcua"
-version = "0.0.18"
+version = "0.0.19"
 dependencies = [
  "async-opcua",
  "async-trait",
@@ -780,7 +780,7 @@ dependencies = [
 
 [[package]]
 name = "connector-profibus"
-version = "0.0.18"
+version = "0.0.19"
 dependencies = [
  "async-trait",
  "libc",
@@ -797,7 +797,7 @@ dependencies = [
 
 [[package]]
 name = "connector-snmp"
-version = "0.0.18"
+version = "0.0.19"
 dependencies = [
  "async-trait",
  "proptest",
@@ -2175,7 +2175,7 @@ checksum = "7c87def4c32ab89d880effc9e097653c8da5d6ef28e6b539d313baaacfbafcbe"
 
 [[package]]
 name = "ot-conformance"
-version = "0.0.18"
+version = "0.0.19"
 dependencies = [
  "async-opcua",
  "async-trait",
@@ -3234,7 +3234,7 @@ checksum = "55937e1799185b12863d447f42597ed69d9928686b8d88a1df17376a097d8369"
 
 [[package]]
 name = "tedge-dot"
-version = "0.0.18"
+version = "0.0.19"
 dependencies = [
  "clap",
  "connector-aveva-pi",
@@ -3255,7 +3255,7 @@ dependencies = [
 
 [[package]]
 name = "tedge-dot-bench"
-version = "0.0.18"
+version = "0.0.19"
 dependencies = [
  "clap",
  "libc",
@@ -3269,7 +3269,7 @@ dependencies = [
 
 [[package]]
 name = "tedge-dot-sdk"
-version = "0.0.18"
+version = "0.0.19"
 dependencies = [
  "async-trait",
  "proptest",

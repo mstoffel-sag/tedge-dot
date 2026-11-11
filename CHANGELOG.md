@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.0.19](https://github.com/thin-edge/tedge-dot/compare/0.0.18...0.0.19) (2026-11-11)
+
+
+### Features
+
+* **opcua:** structured values in the C build (opcua-structures-c) ([#112](https://github.com/thin-edge/tedge-dot/issues/112)) ([ed813af](https://github.com/thin-edge/tedge-dot/commit/ed813afbe8e798b606b6afaf81fb46ece51b9a7b))
+
 ## [0.0.18](https://github.com/thin-edge/tedge-dot/compare/0.0.17...0.0.18) (2026-11-09)
 
 
