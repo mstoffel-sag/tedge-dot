@@ -32,6 +32,12 @@ static int failures = 0;
 typedef struct {
     /* Per point: -2 reads its node; 0 or -1 is its outcome without a read. */
     int prepare[MAX_POINTS];
+    /* Per point: the node it reads (0: its own, k + 1: point k's) and its
+     * element index (-1 by default). */
+    size_t same_as[MAX_POINTS];
+    int64_t index[MAX_POINTS];
+    /* Per Read call: how many of its nodes carry an IndexRange. */
+    size_t ranged[MAX_CALLS + 1];
     /* Per point: the status its node's result carries, and whether it has a
      * value. */
     UA_StatusCode node_status[MAX_POINTS];
@@ -52,17 +58,21 @@ typedef struct {
 
 static void fake_init(fake_t *f) {
     memset(f, 0, sizeof *f);
-    for (size_t k = 0; k < MAX_POINTS; k++)
+    for (size_t k = 0; k < MAX_POINTS; k++) {
         f->prepare[k] = -2;
+        f->index[k] = -1;
+    }
 }
 
-static bool fake_prepare(void *ctx, size_t k, UA_NodeId *node, int *rc) {
+static bool fake_prepare(void *ctx, size_t k, UA_NodeId *node, int64_t *index, int *rc) {
     fake_t *f = ctx;
     if (f->prepare[k] != -2) {
         *rc = f->prepare[k];
         return false;
     }
-    *node = UA_NODEID_NUMERIC(1, (UA_UInt32)k);
+    size_t id = f->same_as[k] ? f->same_as[k] - 1 : k;
+    *node = UA_NODEID_NUMERIC(1, (UA_UInt32)id);
+    *index = f->index[k];
     return true;
 }
 
@@ -71,8 +81,11 @@ static UA_ReadResponse fake_read(void *ctx, UA_ReadRequest *req) {
     UA_ReadResponse resp;
     UA_ReadResponse_init(&resp);
     size_t call = ++f->calls;
-    if (call <= MAX_CALLS)
+    if (call <= MAX_CALLS) {
         f->sizes[call] = req->nodesToReadSize;
+        for (size_t j = 0; j < req->nodesToReadSize; j++)
+            f->ranged[call] += req->nodesToRead[j].indexRange.length > 0;
+    }
     if (call <= MAX_CALLS && f->service[call] != UA_STATUSCODE_GOOD) {
         resp.responseHeader.serviceResult = f->service[call];
         return resp;
@@ -120,7 +133,7 @@ static int fake_result(void *ctx, size_t k, UA_StatusCode status, const UA_Varia
  * tdot_ua_read_blocks returns. */
 static size_t run(fake_t *f, size_t n, size_t block, int *rc) {
     UA_ReadValueId *nodes = calloc(block, sizeof *nodes);
-    size_t *at = calloc(block, sizeof *at);
+    size_t *at = calloc(2 * n, sizeof *at);
     tdot_ua_blocks_t io = {
         .ctx = f, .prepare = fake_prepare, .read = fake_read, .result = fake_result};
     size_t got = tdot_ua_read_blocks(&io, n, block, nodes, at, rc);
@@ -246,6 +259,33 @@ static void check_result_status(void) {
           "the other points get their own value");
 }
 
+/* Points on the same node share its ReadValueId and its result; points on
+ * the same node with different indexes do not (openspec opcua-structures-c,
+ * design C6). A block counts nodes, not points. */
+static void check_shared_nodes(void) {
+    fake_init(&f);
+    for (size_t k = 1; k < 600; k++)
+        f.same_as[k] = 1; /* points 0..599 all read node 0 */
+    f.index[700] = 3;
+    f.same_as[701] = 701; /* node 700, no index */
+    f.index[702] = 3;
+    f.same_as[702] = 701; /* node 700, index 3: shares with point 700 */
+    size_t got = run(&f, 1200, 500, rc);
+    CHECK(got == 1200 && f.calls == 2 && f.sizes[1] == 500 && f.sizes[2] == 100,
+          "1200 points on 600 distinct reads, in Reads of 500 and 100: %zu read, %zu call(s) "
+          "of %zu, %zu",
+          got, f.calls, f.sizes[1], f.sizes[2]);
+    size_t shared = 0;
+    for (size_t k = 0; k < 600; k++)
+        shared += f.got[k] && rc[k] == 0 && f.value[k] == 0.0;
+    CHECK(shared == 600, "every point on node 0 gets its value: %zu of 600", shared);
+    CHECK(f.got[700] && f.got[701] && f.got[702] && f.value[702] == 700.0,
+          "points on node 700 get its value");
+    CHECK(f.ranged[1] + f.ranged[2] == 1, "one IndexRange read for index 3 on node 700: %zu",
+          f.ranged[1] + f.ranged[2]);
+    CHECK(good_in(&f, rc, 703, 1200) == 497, "the other points get their own value");
+}
+
 int main(void) {
     check_blocks();
     check_unread_points();
@@ -254,6 +294,7 @@ int main(void) {
     check_lost_block();
     check_short_answer();
     check_result_status();
+    check_shared_nodes();
     if (failures) {
         printf("%d failure(s)\n", failures);
         return 1;

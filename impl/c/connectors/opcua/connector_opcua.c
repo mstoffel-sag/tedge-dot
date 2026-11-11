@@ -11,6 +11,7 @@
 #include <open62541/plugin/certificategroup_default.h>
 #include <ctype.h>
 #include <errno.h>
+#include <inttypes.h>
 #include <limits.h>
 #include <math.h>
 #include <stdio.h>
@@ -29,6 +30,7 @@
 #include "ua_pki.h"
 #include "ua_blocks.h"
 #include "ua_sampling.h"
+#include "structure.h"
 
 /* Per-point parsed address (pt->proto, flat). */
 typedef struct {
@@ -61,6 +63,23 @@ typedef struct {
     char object_id[160];
     int object_ns;
     char object_resolved[160];
+    /* Structured values (openspec change opcua-structures-c): `address.field`
+     * as written ("" for none; parsed again per session, since the runtime
+     * frees this struct with a plain free()) and `address.index` (-1: none). */
+    char field[256];
+    int64_t index;
+    /* This session's resolution, valid when gen == ua_device_t.types_gen:
+     * a field point's plan and its structure's expected encoding (null: not
+     * named), or why there is none; a raw point's DataType (for the
+     * addr.data_type echo; null when unknown). */
+    unsigned gen;
+    bool has_plan;
+    uas_plan_t plan;
+    UA_NodeId encoding;
+    UA_NodeId data_type;
+    char unresolved[TDOT_ERR_MAX];
+    /* A raw structure sample's addr, with encoding_id and data_type (C7). */
+    char addr_dyn[768];
     /* `address.inputs`: the input argument datatypes, in order. */
     size_t ninputs;
     tdot_datatype_t inputs[];
@@ -143,6 +162,14 @@ typedef struct {
     UA_ByteString x509_key;  /* PEM + NUL */
 } ua_secret_t;
 
+/* One resolved (or failed) structure type of a session, parallel to
+ * ua_device_t.types.structs. */
+typedef struct {
+    UA_NodeId id;       /* the DataType, in the client's namespace indexes */
+    UA_NodeId encoding; /* its default binary encoding; null when not named */
+    char *err;          /* why it could not be resolved; NULL when it was */
+} ua_tslot_t;
+
 /* Per-device state (dev->proto, flat; client freed on disconnect). */
 typedef struct {
     char endpoint[256];
@@ -188,6 +215,20 @@ typedef struct {
     /* The most nodes one polling Read of this session carries:
      * UA_NODES_PER_READ, or the server's MaxNodesPerRead when lower. */
     size_t nodes_per_read;
+
+    /* Structured values (openspec change opcua-structures-c, design C2, C3),
+     * all of one session: bumped on every connect, so a point resolved in an
+     * earlier session is resolved again. */
+    unsigned types_gen;
+    uas_types_t types; /* the structures resolved so far */
+    ua_tslot_t *tslots; /* per structure: its DataType, encoding, failure */
+    /* The server's NamespaceArray (structure bodies) and the client's
+     * namespace table (NodeIds open62541 decoded), for the nsu= forms. */
+    bool ns_read;
+    char **srv_ns;
+    size_t nsrv;
+    char **cli_ns;
+    size_t ncli;
 } ua_device_t;
 
 typedef struct {
@@ -908,6 +949,8 @@ static int configure_method(tdot_point_t *pt, toml_array_t *table, char *err, si
     }
     size_t n = inputs ? (size_t)toml_array_nelem(inputs) : 0;
     ua_point_t *up = calloc(1, sizeof *up + n * sizeof up->inputs[0]);
+    if (up)
+        up->index = -1;
     pt->proto = up;
     up->is_method = true;
     for (size_t k = 0; k < n; k++) {
@@ -954,6 +997,60 @@ static int configure_method(tdot_point_t *pt, toml_array_t *table, char *err, si
     cJSON_AddStringToObject(addr, "method_id", up->node_id);
     pt->addr_json = cJSON_PrintUnformatted(addr);
     cJSON_Delete(addr);
+    return 0;
+}
+
+/* `address.field` and `address.index` of a variable point (openspec changes
+ * opcua-custom-datatypes and opcua-structures-c), checked as the Rust module
+ * checks them. */
+static int configure_structure(tdot_point_t *pt, ua_point_t *up, char *err, size_t errlen) {
+    if (address_has(pt->address, "field")) {
+        toml_datum_t f = toml_string_in(pt->address, "field");
+        if (!f.ok) {
+            snprintf(err, errlen, "point '%s' address: field must be a string", pt->id);
+            return -1;
+        }
+        char why[300];
+        uas_path_t path;
+        int rc = uas_parse_path(f.u.s, &path, why, sizeof why);
+        if (rc == 0) {
+            /* echoed as parsed, as the Rust module echoes it */
+            uas_path_text(&path, up->field, sizeof up->field);
+            uas_path_free(&path);
+            if (strlen(f.u.s) >= sizeof up->field) {
+                snprintf(why, sizeof why, "field path is longer than %zu bytes",
+                         sizeof up->field - 1);
+                rc = -1;
+            }
+        }
+        free(f.u.s);
+        if (rc != 0) {
+            snprintf(err, errlen, "point '%s' address: %s", pt->id, why);
+            return -1;
+        }
+    }
+    if (address_has(pt->address, "index")) {
+        toml_datum_t i = toml_int_in(pt->address, "index");
+        if (!i.ok || i.u.i < 0 || i.u.i > 0xFFFFFFFFLL) {
+            snprintf(err, errlen,
+                     "point '%s' address: index must be a non-negative integer", pt->id);
+            return -1;
+        }
+        up->index = (int64_t)i.u.i;
+    }
+    if (up->field[0] && pt->mode == TDOT_MODE_RAW) {
+        snprintf(err, errlen,
+                 "point '%s': address.field selects a typed value; a raw point reads the "
+                 "whole structure body",
+                 pt->id);
+        return -1;
+    }
+    if ((up->field[0] || up->index >= 0) && (pt->access & TDOT_ACCESS_WRITE)) {
+        snprintf(err, errlen,
+                 "point '%s': points with address.field or address.index are read-only",
+                 pt->id);
+        return -1;
+    }
     return 0;
 }
 
@@ -1090,6 +1187,7 @@ static int configure(tdot_connector_t *self, tdot_config_t *cfg, char *err,
              * or structured `namespace = 2, identifier = "X" | 1001`. */
             ua_point_t *up = calloc(1, sizeof *up);
             pt->proto = up;
+            up->index = -1;
             toml_datum_t nd = toml_string_in(pt->address, "node_id");
             if (nd.ok) {
                 snprintf(up->node_id, sizeof up->node_id, "%s", nd.u.s);
@@ -1142,8 +1240,14 @@ static int configure(tdot_connector_t *self, tdot_config_t *cfg, char *err,
                 }
             }
 
+            if (configure_structure(pt, up, err, errlen) != 0)
+                return -1;
             cJSON *addr = cJSON_CreateObject();
             cJSON_AddStringToObject(addr, "node_id", up->node_id);
+            if (up->field[0])
+                cJSON_AddStringToObject(addr, "field", up->field);
+            if (up->index >= 0)
+                cJSON_AddNumberToObject(addr, "index", (double)up->index);
             pt->addr_json = cJSON_PrintUnformatted(addr);
             cJSON_Delete(addr);
         }
@@ -1186,6 +1290,9 @@ static int configure(tdot_connector_t *self, tdot_config_t *cfg, char *err,
     return 0;
 }
 
+static void reset_structures(tdot_device_t *dev, ua_device_t *ua);
+static void read_client_namespaces(ua_device_t *ua);
+
 static void disconnect_device(tdot_connector_t *self, tdot_device_t *dev) {
     (void)self;
     ua_device_t *ua = dev->proto;
@@ -1206,6 +1313,7 @@ static void disconnect_device(tdot_connector_t *self, tdot_device_t *dev) {
         ua->sub_lost = false;
         ua_ring_free(&ua->queue);
         reset_translation(dev, ua);
+        reset_structures(dev, ua);
     }
 }
 
@@ -1756,6 +1864,10 @@ static int connect_device(tdot_connector_t *self, tdot_device_t *dev,
                 "request; polls go out in blocks of that size\n",
                 dev->name, ua->nodes_per_read);
     translate_device(dev, false);
+    /* A new session: structures are resolved again (design C2). */
+    if (++ua->types_gen == 0)
+        ua->types_gen = 1;
+    read_client_namespaces(ua);
     return 0;
 }
 
@@ -1934,6 +2046,848 @@ static int variant_to_sample(const UA_Variant *v, tdot_point_t *pt,
     return 0;
 }
 
+/* ---- structured values (openspec change opcua-structures-c) ------------------
+ * The port of the Rust module's resolve.rs and decode_value: what a session
+ * learns from the server before a structure can be decoded (design C2), and
+ * how a value is decoded as its point selects it (C3, C4). The walker itself
+ * is structure.c. */
+
+/* Prefix of every reason a definition could not be resolved. */
+#define UA_UNAVAILABLE "data type definition unavailable"
+/* Supertype hops followed to find the built-in type behind a simple subtype. */
+#define UA_MAX_SUPERTYPES 8
+/* ns0 ids this section needs. */
+#define UA_NS0_ENUMERATION 29
+#define UA_NS0_HASENCODING 38
+#define UA_NS0_HASSUBTYPE 45
+
+/* Whether a point needs this section: a field point, or a raw point (whose
+ * structure value carries its DataType). */
+static bool needs_types(const tdot_point_t *pt) {
+    const ua_point_t *up = pt->proto;
+    return up && !up->is_method && (up->field[0] || pt->mode == TDOT_MODE_RAW);
+}
+
+static void node_str(const UA_NodeId *id, char *out, size_t len) {
+    UA_String s = UA_STRING_NULL;
+    if (UA_NodeId_print(id, &s) == UA_STATUSCODE_GOOD)
+        snprintf(out, len, "%.*s", (int)s.length, (const char *)s.data);
+    else
+        snprintf(out, len, "?");
+    UA_String_clear(&s);
+}
+
+/* A NodeId open62541 decoded (client namespace indexes) in the samples'
+ * nsu= form (C3). */
+static void node_nsu(const ua_device_t *ua, const UA_NodeId *id, char *out, size_t len) {
+    UA_NodeId bare = *id;
+    bare.namespaceIndex = 0;
+    char ident[512];
+    node_str(&bare, ident, sizeof ident);
+    uas_node_text(id->namespaceIndex, ident, (const char *const *)ua->cli_ns, ua->ncli, out,
+                  len);
+}
+
+/* The built-in type a namespace-0 DataType is encoded as, for the built-in
+ * types themselves and their common simple subtypes (resolve.rs builtin_of). */
+static int builtin_of(const UA_NodeId *dt) {
+    if (dt->namespaceIndex != 0 || dt->identifierType != UA_NODEIDTYPE_NUMERIC)
+        return 0;
+    UA_UInt32 id = dt->identifier.numeric;
+    if ((id >= 1 && id <= 21) || id == 23 || id == 25)
+        return (int)id;
+    switch (id) {
+    case 22: return UAS_EXTENSIONOBJECT; /* Structure: abstract */
+    case 24: case 26: case 27: case 28: return UAS_VARIANT; /* BaseDataType, Number, ... */
+    case 288: case 289: case 17588: case 20998: return UAS_UINT32;
+    case 290: return UAS_DOUBLE;
+    case 293: case 294: return UAS_DATETIME;
+    case 291: case 292: case 295: case 12877: case 12878: case 12879: case 12880:
+    case 12881: case 23751: case 24263: return UAS_STRING;
+    case 30: case 311: case 521: case 2000: case 2001: case 2002: case 2003:
+    case 16307: return UAS_BYTESTRING;
+    case 388: return UAS_NODEID;
+    case 11737: return UAS_UINT64;
+    default: return 0;
+    }
+}
+
+static void free_strings(char **v, size_t n) {
+    for (size_t i = 0; i < n; i++)
+        free(v[i]);
+    free(v);
+}
+
+/* Forget the session's structures (on disconnect). */
+static void reset_structures(tdot_device_t *dev, ua_device_t *ua) {
+    for (size_t j = 0; j < dev->npoints; j++) {
+        ua_point_t *up = dev->points[j].proto;
+        if (!up)
+            continue;
+        uas_plan_free(&up->plan);
+        up->has_plan = false;
+        UA_NodeId_clear(&up->encoding);
+        UA_NodeId_clear(&up->data_type);
+        up->unresolved[0] = '\0';
+        up->gen = 0;
+    }
+    for (size_t i = 0; i < ua->types.n; i++) {
+        UA_NodeId_clear(&ua->tslots[i].id);
+        UA_NodeId_clear(&ua->tslots[i].encoding);
+        free(ua->tslots[i].err);
+    }
+    free(ua->tslots);
+    ua->tslots = NULL;
+    uas_types_free(&ua->types);
+    free_strings(ua->srv_ns, ua->nsrv);
+    free_strings(ua->cli_ns, ua->ncli);
+    ua->srv_ns = ua->cli_ns = NULL;
+    ua->nsrv = ua->ncli = 0;
+    ua->ns_read = false;
+}
+
+/* The client's namespace table (C3): local to open62541, no request. Filled
+ * on connect, when the client has added the server's namespaces to it. */
+static void read_client_namespaces(ua_device_t *ua) {
+    free_strings(ua->cli_ns, ua->ncli);
+    ua->cli_ns = NULL;
+    ua->ncli = 0;
+    for (UA_UInt16 i = 0; i < 1024; i++) {
+        UA_String uri = UA_STRING_NULL;
+        if (UA_Client_getNamespaceUri(ua->client, i, &uri) != UA_STATUSCODE_GOOD)
+            break;
+        char **grown = realloc(ua->cli_ns, (ua->ncli + 1) * sizeof *grown);
+        char *text = malloc(uri.length + 1);
+        if (!grown || !text) {
+            free(text);
+            if (grown)
+                ua->cli_ns = grown;
+            UA_String_clear(&uri);
+            break;
+        }
+        memcpy(text, uri.data, uri.length);
+        text[uri.length] = '\0';
+        ua->cli_ns = grown;
+        ua->cli_ns[ua->ncli++] = text;
+        UA_String_clear(&uri);
+    }
+}
+
+/* The server's NamespaceArray, for NodeIds inside structure bodies; once per
+ * session. A failure leaves it empty: those NodeIds render as ns=<n>;. */
+static void read_namespaces(ua_device_t *ua) {
+    if (ua->ns_read)
+        return;
+    ua->ns_read = true;
+    UA_Variant array;
+    UA_Variant_init(&array);
+    if (UA_Client_readValueAttribute(ua->client,
+                                     UA_NODEID_NUMERIC(0, UA_NS0ID_SERVER_NAMESPACEARRAY),
+                                     &array) == UA_STATUSCODE_GOOD &&
+        !UA_Variant_isScalar(&array) && array.type == &UA_TYPES[UA_TYPES_STRING]) {
+        const UA_String *uris = array.data;
+        ua->srv_ns = calloc(array.arrayLength ? array.arrayLength : 1, sizeof *ua->srv_ns);
+        for (size_t i = 0; ua->srv_ns && i < array.arrayLength; i++) {
+            ua->srv_ns[i] = malloc(uris[i].length + 1);
+            if (ua->srv_ns[i]) {
+                memcpy(ua->srv_ns[i], uris[i].data, uris[i].length);
+                ua->srv_ns[i][uris[i].length] = '\0';
+            }
+        }
+        if (ua->srv_ns)
+            ua->nsrv = array.arrayLength;
+    }
+    UA_Variant_clear(&array);
+}
+
+/* One Read; a failed service or a short answer is a "read failed" reason. */
+static int read_nodes(ua_device_t *ua, UA_ReadValueId *ids, size_t n, UA_ReadResponse *resp,
+                      char *err, size_t errlen) {
+    UA_ReadRequest req;
+    UA_ReadRequest_init(&req);
+    req.nodesToRead = ids;
+    req.nodesToReadSize = n;
+    req.timestampsToReturn = UA_TIMESTAMPSTORETURN_NEITHER;
+    *resp = UA_Client_Service_read(ua->client, req);
+    UA_StatusCode sc = resp->responseHeader.serviceResult;
+    if (sc == UA_STATUSCODE_GOOD && resp->resultsSize != n)
+        sc = UA_STATUSCODE_BADUNEXPECTEDERROR;
+    if (sc != UA_STATUSCODE_GOOD) {
+        snprintf(err, errlen, "read failed: %s", UA_StatusCode_name(sc));
+        UA_ReadResponse_clear(resp);
+        return -1;
+    }
+    return 0;
+}
+
+/* The first node an inverse reference of `reftype` leads to: 0 with *out,
+ * 1 when there is none, -1 with *sc when the browse failed. */
+static int browse_inverse(ua_device_t *ua, const UA_NodeId *node, UA_UInt32 reftype,
+                          UA_NodeId *out, UA_StatusCode *sc) {
+    UA_BrowseDescription bd;
+    UA_BrowseDescription_init(&bd);
+    bd.nodeId = *node;
+    bd.browseDirection = UA_BROWSEDIRECTION_INVERSE;
+    bd.referenceTypeId = UA_NODEID_NUMERIC(0, reftype);
+    bd.includeSubtypes = false;
+    bd.resultMask = UA_BROWSERESULTMASK_ALL;
+    UA_BrowseRequest req;
+    UA_BrowseRequest_init(&req);
+    req.requestedMaxReferencesPerNode = 1;
+    req.nodesToBrowse = &bd;
+    req.nodesToBrowseSize = 1;
+    UA_BrowseResponse resp = UA_Client_Service_browse(ua->client, req);
+    *sc = resp.responseHeader.serviceResult;
+    if (*sc == UA_STATUSCODE_GOOD && resp.resultsSize == 1)
+        *sc = resp.results[0].statusCode;
+    int rc = -1;
+    if (*sc == UA_STATUSCODE_GOOD) {
+        rc = 1;
+        if (resp.resultsSize == 1 && resp.results[0].referencesSize > 0) {
+            UA_NodeId_copy(&resp.results[0].references[0].nodeId.nodeId, out);
+            rc = 0;
+        }
+    }
+    UA_BrowseResponse_clear(&resp);
+    return rc;
+}
+
+typedef enum { UA_DEF_NONE, UA_DEF_STRUCT, UA_DEF_ENUM } ua_def_kind_t;
+
+/* A DataType node's browse name and definition, in one Read. With
+ * UA_DEF_STRUCT, *def is a copy the caller clears. */
+static int read_definition(ua_device_t *ua, const UA_NodeId *dt, char *name, size_t namelen,
+                           ua_def_kind_t *kind, UA_StructureDefinition *def, char *err,
+                           size_t errlen) {
+    UA_ReadValueId ids[2];
+    UA_ReadValueId_init(&ids[0]);
+    UA_ReadValueId_init(&ids[1]);
+    ids[0].nodeId = ids[1].nodeId = *dt; /* borrowed: not cleared */
+    ids[0].attributeId = UA_ATTRIBUTEID_BROWSENAME;
+    ids[1].attributeId = UA_ATTRIBUTEID_DATATYPEDEFINITION;
+    UA_ReadResponse resp;
+    if (read_nodes(ua, ids, 2, &resp, err, errlen) != 0)
+        return -1;
+    const UA_Variant *bn = &resp.results[0].value;
+    if (resp.results[0].hasValue && UA_Variant_hasScalarType(bn, &UA_TYPES[UA_TYPES_QUALIFIEDNAME])) {
+        const UA_QualifiedName *q = bn->data;
+        snprintf(name, namelen, "%.*s", (int)q->name.length, (const char *)q->name.data);
+    } else {
+        node_str(dt, name, namelen);
+    }
+    *kind = UA_DEF_NONE;
+    const UA_Variant *v = &resp.results[1].value;
+    const UA_DataType *type = v->type;
+    const void *data = v->data;
+    if (type == &UA_TYPES[UA_TYPES_EXTENSIONOBJECT] && UA_Variant_isScalar(v)) {
+        const UA_ExtensionObject *eo = data;
+        if (eo->encoding >= UA_EXTENSIONOBJECT_DECODED) {
+            type = eo->content.decoded.type;
+            data = eo->content.decoded.data;
+        }
+    }
+    if (resp.results[1].hasValue && UA_Variant_isScalar(v) && data) {
+        if (type == &UA_TYPES[UA_TYPES_STRUCTUREDEFINITION]) {
+            UA_StructureDefinition_copy(data, def);
+            *kind = UA_DEF_STRUCT;
+        } else if (type == &UA_TYPES[UA_TYPES_ENUMDEFINITION]) {
+            *kind = UA_DEF_ENUM;
+        }
+    }
+    UA_ReadResponse_clear(&resp);
+    return 0;
+}
+
+static int struct_of(tdot_device_t *dev, const UA_NodeId *dt, size_t *idx, char *err,
+                     size_t errlen);
+
+/* The type of a structure field: a built-in type, an Enumeration or a
+ * structure. Fills f->kind/builtin/type_name/ref. */
+static int field_type(tdot_device_t *dev, const UA_NodeId *dt, uas_field_t *f, char *err,
+                      size_t errlen) {
+    ua_device_t *ua = dev->proto;
+    if ((f->builtin = builtin_of(dt))) {
+        f->kind = UAS_T_BUILTIN;
+        return 0;
+    }
+    char name[256];
+    ua_def_kind_t kind;
+    UA_StructureDefinition def;
+    UA_StructureDefinition_init(&def);
+    if (read_definition(ua, dt, name, sizeof name, &kind, &def, err, errlen) != 0)
+        return -1;
+    UA_StructureDefinition_clear(&def);
+    if (kind == UA_DEF_STRUCT) {
+        f->kind = UAS_T_STRUCT;
+        return struct_of(dev, dt, &f->ref, err, errlen);
+    }
+    if (kind == UA_DEF_ENUM) {
+        f->kind = UAS_T_ENUM;
+        f->type_name = strdup(name);
+        return 0;
+    }
+    /* A simple subtype (an alias of a built-in type): follow its supertypes. */
+    UA_NodeId current;
+    UA_NodeId_copy(dt, &current);
+    char text[200];
+    for (int hop = 0; hop < UA_MAX_SUPERTYPES; hop++) {
+        UA_NodeId super;
+        UA_StatusCode sc;
+        int rc = browse_inverse(ua, &current, UA_NS0_HASSUBTYPE, &super, &sc);
+        node_str(&current, text, sizeof text);
+        UA_NodeId_clear(&current);
+        if (rc < 0) {
+            snprintf(err, errlen, "browsing the supertype of %s: %s", text, UA_StatusCode_name(sc));
+            return -1;
+        }
+        if (rc > 0) {
+            snprintf(err, errlen, "%s has no supertype", text);
+            return -1;
+        }
+        current = super;
+        if (current.namespaceIndex == 0 && current.identifierType == UA_NODEIDTYPE_NUMERIC &&
+            current.identifier.numeric == UA_NS0_ENUMERATION) {
+            f->kind = UAS_T_ENUM;
+            f->type_name = strdup(name);
+            return 0;
+        }
+        if ((f->builtin = builtin_of(&current))) {
+            UA_NodeId_clear(&current);
+            f->kind = UAS_T_BUILTIN;
+            return 0;
+        }
+    }
+    UA_NodeId_clear(&current);
+    node_str(dt, text, sizeof text);
+    snprintf(err, errlen, "%s (%s) has no definition and no built-in supertype", name, text);
+    return -1;
+}
+
+/* Fill the structure in slot i from its DataType's definition. */
+static int load_struct(tdot_device_t *dev, size_t i, char *err, size_t errlen) {
+    ua_device_t *ua = dev->proto;
+    UA_NodeId dt;
+    UA_NodeId_copy(&ua->tslots[i].id, &dt);
+    char name[256], text[200];
+    ua_def_kind_t kind;
+    UA_StructureDefinition def;
+    UA_StructureDefinition_init(&def);
+    int rc = -1;
+    uas_field_t *fields = NULL;
+    size_t nfields = 0;
+    node_str(&dt, text, sizeof text);
+    if (read_definition(ua, &dt, name, sizeof name, &kind, &def, err, errlen) != 0)
+        goto out;
+    if (kind == UA_DEF_ENUM) {
+        snprintf(err, errlen, "%s is an Enumeration, not a structure", name);
+        goto out;
+    }
+    if (kind == UA_DEF_NONE) {
+        int b = builtin_of(&dt);
+        if (b)
+            snprintf(err, errlen, "the value's DataType is %s, not a structure",
+                     uas_builtin_name(b));
+        else
+            snprintf(err, errlen, "%s (%s) has no DataTypeDefinition", name, text);
+        goto out;
+    }
+    uas_skind_t skind;
+    switch (def.structureType) {
+    case UA_STRUCTURETYPE_STRUCTURE: skind = UAS_STRUCTURE; break;
+    case UA_STRUCTURETYPE_STRUCTUREWITHOPTIONALFIELDS: skind = UAS_OPTIONAL_FIELDS; break;
+    case UA_STRUCTURETYPE_UNION: skind = UAS_UNION; break;
+    case UA_STRUCTURETYPE_STRUCTUREWITHSUBTYPEDVALUES:
+        snprintf(err, errlen, "%s is a StructureWithSubtypedValues, which is not supported", name);
+        goto out;
+    case UA_STRUCTURETYPE_UNIONWITHSUBTYPEDVALUES:
+        snprintf(err, errlen, "%s is a UnionWithSubtypedValues, which is not supported", name);
+        goto out;
+    default:
+        snprintf(err, errlen, "%s is a structure type %d, which is not supported", name,
+                 (int)def.structureType);
+        goto out;
+    }
+    if (!UA_NodeId_isNull(&def.defaultEncodingId))
+        UA_NodeId_copy(&def.defaultEncodingId, &ua->tslots[i].encoding);
+    free(ua->types.structs[i].name);
+    ua->types.structs[i].name = strdup(name);
+    ua->types.structs[i].kind = skind;
+    /* Built apart and assigned at the end: field_type may add structures,
+     * which moves ua->types.structs. */
+    fields = calloc(def.fieldsSize ? def.fieldsSize : 1, sizeof *fields);
+    if (!fields) {
+        snprintf(err, errlen, "out of memory");
+        goto out;
+    }
+    for (size_t j = 0; j < def.fieldsSize; j++) {
+        const UA_StructureField *sf = &def.fields[j];
+        uas_field_t *f = &fields[nfields];
+        f->name = malloc(sf->name.length + 1);
+        if (!f->name) {
+            snprintf(err, errlen, "out of memory");
+            goto out;
+        }
+        memcpy(f->name, sf->name.data, sf->name.length);
+        f->name[sf->name.length] = '\0';
+        nfields++;
+        if (sf->valueRank == 1) {
+            f->array = true;
+        } else if (sf->valueRank != -1) {
+            snprintf(err, errlen,
+                     "field \"%s\" of %s has ValueRank %d, which is not supported", f->name,
+                     name, (int)sf->valueRank);
+            goto out;
+        }
+        f->optional = sf->isOptional;
+        char why[TDOT_ERR_MAX * 2];
+        if (field_type(dev, &sf->dataType, f, why, sizeof why) != 0) {
+            snprintf(err, errlen, "field \"%s\" of %s: %s", f->name, name, why);
+            goto out;
+        }
+    }
+    ua->types.structs[i].fields = fields;
+    ua->types.structs[i].nfields = nfields;
+    fields = NULL;
+    rc = 0;
+out:
+    for (size_t j = 0; fields && j < nfields; j++) {
+        free(fields[j].name);
+        free(fields[j].type_name);
+    }
+    free(fields);
+    UA_StructureDefinition_clear(&def);
+    UA_NodeId_clear(&dt);
+    return rc;
+}
+
+/* Resolve a structure type and every type it contains: its index in
+ * ua->types. A type being resolved further up (a recursive definition) is
+ * returned as is; a failure is remembered for the session. */
+static int struct_of(tdot_device_t *dev, const UA_NodeId *dt, size_t *idx, char *err,
+                     size_t errlen) {
+    ua_device_t *ua = dev->proto;
+    for (size_t i = 0; i < ua->types.n; i++) {
+        if (!UA_NodeId_equal(&ua->tslots[i].id, dt))
+            continue;
+        if (ua->tslots[i].err) {
+            snprintf(err, errlen, "%s", ua->tslots[i].err);
+            return -1;
+        }
+        *idx = i;
+        return 0;
+    }
+    size_t i = ua->types.n;
+    uas_struct_t *structs = realloc(ua->types.structs, (i + 1) * sizeof *structs);
+    if (structs)
+        ua->types.structs = structs;
+    ua_tslot_t *slots = realloc(ua->tslots, (i + 1) * sizeof *slots);
+    if (slots)
+        ua->tslots = slots;
+    if (!structs || !slots) {
+        snprintf(err, errlen, "out of memory");
+        return -1;
+    }
+    memset(&ua->types.structs[i], 0, sizeof ua->types.structs[i]);
+    memset(&ua->tslots[i], 0, sizeof ua->tslots[i]);
+    UA_NodeId_copy(dt, &ua->tslots[i].id);
+    char text[200];
+    node_str(dt, text, sizeof text);
+    ua->types.structs[i].name = strdup(text);
+    ua->types.n++;
+    if (load_struct(dev, i, err, errlen) != 0) {
+        ua->tslots[i].err = strdup(err);
+        return -1;
+    }
+    *idx = i;
+    return 0;
+}
+
+/* The structure inside a value: its encoding id (*enc, borrowed or the
+ * type's) and body (*body; *owned when re-encoded here, then cleared by the
+ * caller). 1 when v holds a structure, 0 when it does not, -1 with err. */
+static int structure_body(const UA_Variant *v, const UA_NodeId **enc, UA_ByteString *body,
+                          bool *owned, char *err, size_t errlen) {
+    *owned = false;
+    UA_ByteString_init(body);
+    if (!v->type || !UA_Variant_isScalar(v))
+        return 0;
+    const UA_DataType *type = v->type;
+    const void *data = v->data;
+    if (type == &UA_TYPES[UA_TYPES_EXTENSIONOBJECT]) {
+        const UA_ExtensionObject *eo = data;
+        switch (eo->encoding) {
+        case UA_EXTENSIONOBJECT_ENCODED_NOBODY:
+            *enc = &eo->content.encoded.typeId;
+            return 1;
+        case UA_EXTENSIONOBJECT_ENCODED_BYTESTRING:
+            *enc = &eo->content.encoded.typeId;
+            *body = eo->content.encoded.body; /* borrowed */
+            return 1;
+        case UA_EXTENSIONOBJECT_ENCODED_XML:
+            snprintf(err, errlen, "the value is an XML-encoded structure, which is not supported");
+            return -1;
+        default:
+            type = eo->content.decoded.type;
+            data = eo->content.decoded.data;
+            break;
+        }
+    } else if (type->typeKind != UA_DATATYPEKIND_STRUCTURE &&
+               type->typeKind != UA_DATATYPEKIND_OPTSTRUCT &&
+               type->typeKind != UA_DATATYPEKIND_UNION) {
+        return 0;
+    }
+    /* A type open62541 knows (namespace 0) arrives decoded: encode it again
+     * for its body, as the Rust module does. */
+    *enc = &type->binaryEncodingId;
+    if (UA_encodeBinary(data, type, body, NULL) != UA_STATUSCODE_GOOD) {
+        snprintf(err, errlen, "re-encoding a %s value failed", type->typeName ? type->typeName : "structure");
+        return -1;
+    }
+    *owned = true;
+    return 1;
+}
+
+/* The DataType of the structure a variable currently holds: its value's
+ * encoding id, and the DataType that encoding belongs to (inverse
+ * HasEncoding). */
+static int concrete_type(tdot_device_t *dev, const UA_NodeId *node, int64_t index, UA_NodeId *out,
+                         char *err, size_t errlen) {
+    ua_device_t *ua = dev->proto;
+    UA_ReadValueId id;
+    UA_ReadValueId_init(&id);
+    id.nodeId = *node; /* borrowed */
+    id.attributeId = UA_ATTRIBUTEID_VALUE;
+    id.indexRange = tdot_ua_index_range(index);
+    UA_ReadResponse resp;
+    int r = read_nodes(ua, &id, 1, &resp, err, errlen);
+    UA_String_clear(&id.indexRange);
+    if (r != 0)
+        return -1;
+    char text[200], enc_text[300];
+    node_str(node, text, sizeof text);
+    UA_Variant el = resp.results[0].value;
+    if (el.type && !UA_Variant_isScalar(&el) && el.arrayLength > 0)
+        UA_Variant_setScalar(&el, el.data, el.type); /* the first element, borrowed */
+    const UA_NodeId *enc = NULL;
+    UA_ByteString body;
+    bool owned;
+    char why[200];
+    int rc = -1;
+    if (structure_body(&el, &enc, &body, &owned, why, sizeof why) != 1) {
+        snprintf(err, errlen,
+                 "%s is declared with an abstract DataType and does not hold a structure", text);
+    } else {
+        UA_NodeId encoding;
+        UA_NodeId_copy(enc, &encoding);
+        if (owned)
+            UA_ByteString_clear(&body);
+        node_str(&encoding, enc_text, sizeof enc_text);
+        UA_StatusCode sc;
+        int b = browse_inverse(ua, &encoding, UA_NS0_HASENCODING, out, &sc);
+        if (b < 0)
+            snprintf(err, errlen, "browsing the DataType of encoding %s: %s", enc_text,
+                     UA_StatusCode_name(sc));
+        else if (b > 0)
+            snprintf(err, errlen,
+                     "%s is declared with an abstract DataType, and the server names no "
+                     "DataType for its encoding %s",
+                     text, enc_text);
+        else
+            rc = 0;
+        UA_NodeId_clear(&encoding);
+    }
+    UA_ReadResponse_clear(&resp);
+    return rc;
+}
+
+/* Resolve one field point against its DataType `dt` (read already). */
+static void resolve_field_point(tdot_device_t *dev, tdot_point_t *pt, const UA_NodeId *node,
+                                const UA_NodeId *dt) {
+    ua_device_t *ua = dev->proto;
+    ua_point_t *up = pt->proto;
+    char why[TDOT_ERR_MAX * 2];
+    UA_NodeId concrete = UA_NODEID_NULL;
+    int b = builtin_of(dt);
+    if (b == UAS_EXTENSIONOBJECT || b == UAS_VARIANT) {
+        /* Declared with the abstract Structure (or BaseDataType): the concrete
+         * type is the one its value is encoded as. */
+        if (concrete_type(dev, node, up->index, &concrete, why, sizeof why) != 0) {
+            snprintf(up->unresolved, sizeof up->unresolved, UA_UNAVAILABLE ": %s", why);
+            return;
+        }
+        dt = &concrete;
+    }
+    size_t root;
+    if (struct_of(dev, dt, &root, why, sizeof why) != 0) {
+        snprintf(up->unresolved, sizeof up->unresolved, UA_UNAVAILABLE ": %s", why);
+    } else {
+        uas_path_t path;
+        if (uas_parse_path(up->field, &path, why, sizeof why) == 0) {
+            tdot_datatype_t datatype =
+                pt->datatype != TDOT_DT_NONE ? pt->datatype : TDOT_DT_FLOAT64;
+            if (uas_compile(&ua->types, root, &path, datatype, &up->plan, why, sizeof why) == 0) {
+                up->has_plan = true;
+                UA_NodeId_copy(&ua->tslots[root].encoding, &up->encoding);
+            }
+            uas_path_free(&path);
+        }
+        if (!up->has_plan)
+            snprintf(up->unresolved, sizeof up->unresolved, "%s", why);
+    }
+    UA_NodeId_clear(&concrete);
+}
+
+/* Resolve, for this session, what the device's field and raw points need
+ * whose node is known (resolve.rs `resolve`): the namespace tables, each
+ * node's DataType in one Read per block, and the definitions the field paths
+ * cross or skip. Points resolved in this session are left alone. Never fails
+ * the link: a failure is the point's bad sample. */
+static void resolve_device(tdot_device_t *dev) {
+    ua_device_t *ua = dev->proto;
+    if (!ua->client || !ua->types_gen)
+        return;
+    size_t want = 0;
+    for (size_t j = 0; j < dev->npoints; j++) {
+        tdot_point_t *pt = &dev->points[j];
+        ua_point_t *up = pt->proto;
+        const char *reason;
+        if (needs_types(pt) && up->gen != ua->types_gen && point_node(up, &reason))
+            want++;
+    }
+    if (!want)
+        return;
+    read_namespaces(ua);
+    size_t block = ua->nodes_per_read ? ua->nodes_per_read : UA_NODES_PER_READ;
+    UA_ReadValueId *ids = calloc(block, sizeof *ids);
+    size_t *at = calloc(block, sizeof *at);
+    if (!ids || !at) {
+        free(ids);
+        free(at);
+        return;
+    }
+    size_t j = 0;
+    while (j < dev->npoints) {
+        size_t n = 0;
+        for (; j < dev->npoints && n < block; j++) {
+            tdot_point_t *pt = &dev->points[j];
+            ua_point_t *up = pt->proto;
+            const char *reason;
+            char *text;
+            if (!needs_types(pt) || up->gen == ua->types_gen || !(text = point_node(up, &reason)))
+                continue;
+            UA_ReadValueId_init(&ids[n]);
+            if (UA_NodeId_parse(&ids[n].nodeId, UA_STRING(text)) != UA_STATUSCODE_GOOD)
+                continue; /* the read path reports it */
+            ids[n].attributeId = UA_ATTRIBUTEID_DATATYPE;
+            at[n++] = j;
+        }
+        if (n == 0)
+            break;
+        char err[200];
+        UA_ReadResponse resp;
+        bool ok = read_nodes(ua, ids, n, &resp, err, sizeof err) == 0;
+        for (size_t k = 0; k < n; k++) {
+            tdot_point_t *pt = &dev->points[at[k]];
+            ua_point_t *up = pt->proto;
+            uas_plan_free(&up->plan);
+            up->has_plan = false;
+            UA_NodeId_clear(&up->encoding);
+            UA_NodeId_clear(&up->data_type);
+            up->unresolved[0] = '\0';
+            up->gen = ua->types_gen;
+            char text[200], why[TDOT_ERR_MAX];
+            node_str(&ids[k].nodeId, text, sizeof text);
+            const UA_DataValue *dv = ok ? &resp.results[k] : NULL;
+            const UA_NodeId *dt = NULL;
+            if (!dv)
+                snprintf(why, sizeof why, "%s", err);
+            else if (dv->hasStatus && !UA_StatusCode_isGood(dv->status))
+                snprintf(why, sizeof why, "reading the DataType of %s: %s", text,
+                         UA_StatusCode_name(dv->status));
+            else if (!UA_Variant_hasScalarType(&dv->value, &UA_TYPES[UA_TYPES_NODEID]))
+                snprintf(why, sizeof why, "%s has no DataType", text);
+            else
+                dt = dv->value.data;
+            if (!up->field[0]) {
+                if (dt)
+                    UA_NodeId_copy(dt, &up->data_type);
+            } else if (!dt) {
+                snprintf(up->unresolved, sizeof up->unresolved, UA_UNAVAILABLE ": %s", why);
+            } else {
+                resolve_field_point(dev, pt, &ids[k].nodeId, dt);
+            }
+        }
+        if (ok)
+            UA_ReadResponse_clear(&resp);
+        for (size_t k = 0; k < n; k++)
+            UA_ReadValueId_clear(&ids[k]);
+    }
+    free(ids);
+    free(at);
+}
+
+static const char *variant_type_name(const UA_Variant *v) {
+    if (!v->type)
+        return "empty";
+    if (!UA_Variant_isScalar(v))
+        return "an array";
+    if (v->type->typeKind <= UA_DATATYPEKIND_DIAGNOSTICINFO)
+        return uas_builtin_name((int)v->type->typeKind + 1);
+    return "ExtensionObject";
+}
+
+/* A decoded walker value into the point's sample, with its transform. */
+static void sample_from(const uas_out_t *o, const tdot_point_t *pt, tdot_sample_t *out) {
+    out->value = o->val;
+    memcpy(out->raw, o->raw, o->raw_len);
+    out->raw_len = o->raw_len;
+    out->raw_group = 1;
+    if (out->value.kind == TDOT_VAL_NUM && pt->has_transform)
+        out->value.num = tdot_transform_apply(&pt->transform, out->value.num);
+}
+
+/* Decode a value as the point selects it (lib.rs decode_value and
+ * build_sample): an array element by index, a structure field, a raw
+ * structure body, a primitive, or a built-in type rendered as an SDK
+ * datatype. Never does I/O: it also runs inside open62541's data-change
+ * callback. Returns 0 (a bad value is a bad sample, not a link fault). */
+static int decode_value(tdot_device_t *dev, tdot_point_t *pt, const UA_Variant *v,
+                        tdot_sample_t *out) {
+    ua_device_t *ua = dev->proto;
+    ua_point_t *up = pt->proto;
+    char err[TDOT_ERR_MAX * 2];
+    UA_Variant el = *v; /* shallow: never cleared */
+    /* A read with an IndexRange returns an array holding just the selected
+     * element. A server that ignores the range returns the whole array: the
+     * element is selected here. Only a one-element array cannot be told
+     * apart, and is taken as the answer. */
+    if (up->index >= 0 && v->type && !UA_Variant_isScalar(v)) {
+        size_t len = v->arrayLength;
+        size_t i = len == 1 ? 0 : (size_t)up->index;
+        if (len == 0) {
+            tdot_sample_bad(out, "index %" PRId64 " out of range (no element returned)", up->index);
+            return 0;
+        }
+        if (i >= len) {
+            tdot_sample_bad(out, "index %" PRId64 " out of range (length %zu)", up->index, len);
+            return 0;
+        }
+        UA_Variant_setScalar(&el, (char *)v->data + i * v->type->memSize, v->type);
+    }
+    bool resolved = ua->types_gen && up->gen == ua->types_gen;
+    const UA_NodeId *enc = NULL;
+    UA_ByteString body;
+    bool owned = false;
+    if (up->field[0]) {
+        if (!resolved) {
+            tdot_sample_bad(out, "%s: not resolved", UA_UNAVAILABLE);
+            return 0;
+        }
+        if (!up->has_plan) {
+            tdot_sample_bad(out, "%s", up->unresolved);
+            return 0;
+        }
+        int s = structure_body(&el, &enc, &body, &owned, err, sizeof err);
+        if (s <= 0) {
+            if (s == 0)
+                tdot_sample_bad(out, "value is %s, not a structure", variant_type_name(&el));
+            else
+                tdot_sample_bad(out, "%s", err);
+            return 0;
+        }
+        if (!UA_NodeId_isNull(&up->encoding) && !UA_NodeId_equal(enc, &up->encoding)) {
+            char got[300], want[300];
+            node_nsu(ua, enc, got, sizeof got);
+            node_nsu(ua, &up->encoding, want, sizeof want);
+            tdot_sample_bad(out, "value is encoded as %s, expected the structure's encoding %s",
+                            got, want);
+        } else {
+            uas_out_t o;
+            if (uas_decode(&up->plan, &ua->types, body.data, body.length,
+                           (const char *const *)ua->srv_ns, ua->nsrv, &o, err, sizeof err) == 0)
+                sample_from(&o, pt, out);
+            else
+                tdot_sample_bad(out, "%s", err);
+        }
+        if (owned)
+            UA_ByteString_clear(&body);
+        return 0;
+    }
+    int s = structure_body(&el, &enc, &body, &owned, err, sizeof err);
+    if (s < 0) {
+        tdot_sample_bad(out, "%s", err);
+        return 0;
+    }
+    if (s > 0) {
+        if (pt->mode == TDOT_MODE_TYPED) {
+            tdot_sample_bad(out, "value is a structure; select one of its fields with address.field");
+        } else if (body.length > TDOT_RAW_MAX) {
+            /* Refused rather than cut (design C5). */
+            tdot_sample_bad(out,
+                            "structure body of %zu bytes is longer than a raw sample holds in "
+                            "the C build (%d bytes)",
+                            body.length, TDOT_RAW_MAX);
+        } else {
+            if (body.length)
+                memcpy(out->raw, body.data, body.length);
+            out->raw_len = body.length;
+            out->raw_group = 1;
+            /* The addr echo with the encoding and the DataType (C7). */
+            cJSON *addr = cJSON_Parse(pt->addr_json ? pt->addr_json : "{}");
+            if (addr) {
+                char text[300];
+                node_nsu(ua, enc, text, sizeof text);
+                cJSON_AddStringToObject(addr, "encoding_id", text);
+                if (resolved && !UA_NodeId_isNull(&up->data_type)) {
+                    node_nsu(ua, &up->data_type, text, sizeof text);
+                    cJSON_AddStringToObject(addr, "data_type", text);
+                }
+                if (cJSON_PrintPreallocated(addr, up->addr_dyn, (int)sizeof up->addr_dyn, 0))
+                    out->addr_json = up->addr_dyn;
+                cJSON_Delete(addr);
+            }
+        }
+        if (owned)
+            UA_ByteString_clear(&body);
+        return 0;
+    }
+    if (el.type && !UA_Variant_isScalar(&el)) {
+        tdot_sample_bad(out, "value is an array; select one element with address.index");
+        return 0;
+    }
+    int b = el.type && el.type->typeKind <= UA_DATATYPEKIND_DIAGNOSTICINFO
+                ? (int)el.type->typeKind + 1
+                : 0;
+    bool primitive = (b >= UAS_BOOLEAN && b <= UAS_STRING) || b == UAS_BYTESTRING;
+    if (!b || primitive)
+        return variant_to_sample(&el, pt, out);
+    /* A built-in type with no SDK primitive of its own: its binary form,
+     * decoded like a field (C4). */
+    uas_leaf_t leaf = {.builtin = b};
+    tdot_datatype_t accepted[2];
+    tdot_datatype_t dt = pt->datatype;
+    if (pt->mode != TDOT_MODE_TYPED || dt == TDOT_DT_NONE) {
+        if (uas_accepted(&leaf, accepted) == 0) {
+            tdot_sample_bad(out, "value is %s, which a point cannot read", uas_builtin_name(b));
+            return 0;
+        }
+        dt = accepted[0];
+    }
+    UA_ByteString bytes = UA_BYTESTRING_NULL;
+    if (UA_encodeBinary(el.data, el.type, &bytes, NULL) != UA_STATUSCODE_GOOD) {
+        tdot_sample_bad(out, "re-encoding a %s value failed", uas_builtin_name(b));
+        return 0;
+    }
+    uas_out_t o;
+    if (uas_decode_builtin(b, bytes.data, bytes.length, dt, (const char *const *)ua->cli_ns,
+                           ua->ncli, &o, err, sizeof err) == 0)
+        sample_from(&o, pt, out);
+    else
+        tdot_sample_bad(out, "%s", err);
+    UA_ByteString_clear(&bytes);
+    return 0;
+}
+
 /* Everything read_point does before its Read: true with the node `pt` reads,
  * or false with *out a bad sample and *rc the outcome read_point returns (0,
  * -1). */
@@ -1975,6 +2929,10 @@ static bool point_read_node(tdot_device_t *dev, tdot_point_t *pt, UA_NodeId *nod
         *rc = 0;
         return false;
     }
+    /* A field or raw point's first read in a session resolves what the
+     * device's points need, in one go (design C2). */
+    if (needs_types(pt) && up->gen != ua->types_gen)
+        resolve_device(dev);
     return true;
 }
 
@@ -1992,14 +2950,22 @@ static bool read_link_lost(UA_StatusCode rc) {
 
 /* The sample of a point whose Read returned `rc` and, when GOOD, `value`;
  * read_point's outcome. */
-static int read_result(UA_StatusCode rc, const UA_Variant *value, tdot_point_t *pt,
-                       tdot_sample_t *out) {
+static int read_result(tdot_device_t *dev, UA_StatusCode rc, const UA_Variant *value,
+                       tdot_point_t *pt, tdot_sample_t *out) {
+    const ua_point_t *up = pt->proto;
+    if (rc == UA_STATUSCODE_BADINDEXRANGENODATA && up->index >= 0) {
+        tdot_sample_bad(out, "index %" PRId64 " out of range (the server reports %s)", up->index,
+                        UA_StatusCode_name(rc));
+        return 0;
+    }
     if (rc != UA_STATUSCODE_GOOD) {
         tdot_sample_bad(out, "bad status: %s", UA_StatusCode_name(rc));
         return read_link_lost(rc) ? -1 : 0;
     }
-    return variant_to_sample(value, pt, out);
+    return decode_value(dev, pt, value, out);
 }
+
+static UA_StatusCode result_status(const UA_DataValue *dv);
 
 static int read_point(tdot_connector_t *self, tdot_device_t *dev,
                       tdot_point_t *pt, tdot_sample_t *out) {
@@ -2010,14 +2976,26 @@ static int read_point(tdot_connector_t *self, tdot_device_t *dev,
     if (!point_read_node(dev, pt, &node, out, &r))
         return r;
 
-    UA_Variant value;
-    UA_Variant_init(&value);
-    UA_StatusCode rc =
-        UA_Client_readValueAttribute(ua->client, node, &value);
-    UA_NodeId_clear(&node);
-
-    r = read_result(rc, &value, pt, out);
-    UA_Variant_clear(&value);
+    /* A Read of one node, with the point's IndexRange: what
+     * UA_Client_readValueAttribute does, which takes none. */
+    UA_ReadValueId id;
+    UA_ReadValueId_init(&id);
+    id.nodeId = node; /* owns it now */
+    id.attributeId = UA_ATTRIBUTEID_VALUE;
+    id.indexRange = tdot_ua_index_range(((ua_point_t *)pt->proto)->index);
+    UA_ReadRequest req;
+    UA_ReadRequest_init(&req);
+    req.nodesToRead = &id;
+    req.nodesToReadSize = 1;
+    req.timestampsToReturn = UA_TIMESTAMPSTORETURN_NEITHER;
+    UA_ReadResponse resp = UA_Client_Service_read(ua->client, req);
+    UA_StatusCode rc = resp.responseHeader.serviceResult;
+    if (rc == UA_STATUSCODE_GOOD && resp.resultsSize != 1)
+        rc = UA_STATUSCODE_BADUNEXPECTEDERROR;
+    r = read_result(dev, rc == UA_STATUSCODE_GOOD ? result_status(&resp.results[0]) : rc,
+                    rc == UA_STATUSCODE_GOOD ? &resp.results[0].value : NULL, pt, out);
+    UA_ReadResponse_clear(&resp);
+    UA_ReadValueId_clear(&id);
     return r;
 }
 
@@ -2032,11 +3010,67 @@ static UA_StatusCode result_status(const UA_DataValue *dv) {
     return dv->status;
 }
 
-/* One Read of the `nnodes` nodes in nodes[], for the points at[j]: fills rc[]
- * for them. Returns the first of them whose rc is -1, or n when there is none.
- * Clears nodes[]. */
+/* The distinct (node, IndexRange) pairs of one block (design C6): an
+ * open-addressing table of slot + 1 over nodes[], so that a block of 500 nodes
+ * and thousands of points finds a shared node without a linear search. With no
+ * table (out of memory) the search is linear. */
+typedef struct {
+    size_t *tab;
+    size_t mask;
+} ua_nodeset_t;
+
+static void nodeset_init(ua_nodeset_t *set, size_t block) {
+    size_t cap = 16;
+    while (cap < 2 * block)
+        cap <<= 1;
+    set->tab = calloc(cap, sizeof *set->tab);
+    set->mask = set->tab ? cap - 1 : 0;
+}
+
+static void nodeset_reset(ua_nodeset_t *set) {
+    if (set->tab)
+        memset(set->tab, 0, (set->mask + 1) * sizeof *set->tab);
+}
+
+static bool same_read(const UA_ReadValueId *r, const UA_NodeId *node, const UA_String *range) {
+    return UA_NodeId_equal(&r->nodeId, node) && UA_String_equal(&r->indexRange, range);
+}
+
+/* The slot of node/range among nodes[0..*nnodes). A new one is added when the
+ * block has room, taking over node and range; returns `block` when it is new
+ * and the block is full. A shared one leaves node and range to the caller. */
+static size_t nodeset_slot(ua_nodeset_t *set, UA_ReadValueId *nodes, size_t *nnodes,
+                           size_t block, UA_NodeId *node, UA_String *range, bool *added) {
+    *added = false;
+    size_t h = 0;
+    if (set->tab) {
+        h = (UA_NodeId_hash(node) * 31u + (uint32_t)range->length) & set->mask;
+        for (; set->tab[h]; h = (h + 1) & set->mask)
+            if (same_read(&nodes[set->tab[h] - 1], node, range))
+                return set->tab[h] - 1;
+    } else {
+        for (size_t j = 0; j < *nnodes; j++)
+            if (same_read(&nodes[j], node, range))
+                return j;
+    }
+    if (*nnodes >= block)
+        return block;
+    size_t slot = (*nnodes)++;
+    UA_ReadValueId_init(&nodes[slot]);
+    nodes[slot].nodeId = *node;      /* owns it now */
+    nodes[slot].indexRange = *range; /* likewise */
+    nodes[slot].attributeId = UA_ATTRIBUTEID_VALUE;
+    if (set->tab)
+        set->tab[h] = slot + 1;
+    *added = true;
+    return slot;
+}
+
+/* One Read of the `nnodes` nodes in nodes[], for the npts points at[m] (each
+ * reading node at[n + m]): fills rc[] for them. Returns the first of them
+ * whose rc is -1, or n when there is none. Clears nodes[]. */
 static size_t read_block(const tdot_ua_blocks_t *io, UA_ReadValueId *nodes,
-                         size_t nnodes, const size_t *at, size_t n, int *rc) {
+                         size_t nnodes, const size_t *at, size_t npts, size_t n, int *rc) {
     UA_ReadRequest req;
     UA_ReadRequest_init(&req);
     req.nodesToRead = nodes;
@@ -2048,48 +3082,68 @@ static size_t read_block(const tdot_ua_blocks_t *io, UA_ReadValueId *nodes,
         service = UA_STATUSCODE_BADUNEXPECTEDERROR;
 
     size_t lost = n;
-    for (size_t j = 0; j < nnodes; j++) {
-        size_t k = at[j];
+    for (size_t m = 0; m < npts; m++) {
+        size_t k = at[m], j = at[n + m];
         if (service != UA_STATUSCODE_GOOD)
             rc[k] = io->result(io->ctx, k, service, NULL);
         else
             rc[k] = io->result(io->ctx, k, result_status(&resp.results[j]),
                                &resp.results[j].value);
-        if (rc[k] == -1 && lost == n)
+        if (rc[k] == -1 && k < lost)
             lost = k;
-        UA_ReadValueId_clear(&nodes[j]);
     }
+    for (size_t j = 0; j < nnodes; j++)
+        UA_ReadValueId_clear(&nodes[j]);
     UA_ReadResponse_clear(&resp);
     return lost;
 }
 
 size_t tdot_ua_read_blocks(const tdot_ua_blocks_t *io, size_t n, size_t block,
                            UA_ReadValueId *nodes, size_t *at, int *rc) {
-    size_t k = 0;
-    while (k < n) {
-        size_t nnodes = 0;
-        size_t stop = n;
-        for (; k < n && nnodes < block; k++) {
-            UA_NodeId node;
-            if (io->prepare(io->ctx, k, &node, &rc[k])) {
-                UA_ReadValueId_init(&nodes[nnodes]);
-                nodes[nnodes].nodeId = node; /* owns it now */
-                nodes[nnodes].attributeId = UA_ATTRIBUTEID_VALUE;
-                at[nnodes++] = k;
-            } else if (rc[k] == -1) {
-                stop = k++;
+    ua_nodeset_t set;
+    nodeset_init(&set, block);
+    size_t nnodes = 0, npts = 0, stop = n;
+    for (size_t k = 0; k < n; k++) {
+        UA_NodeId node;
+        int64_t index = -1;
+        if (!io->prepare(io->ctx, k, &node, &index, &rc[k])) {
+            if (rc[k] == -1) {
+                stop = k;
                 break;
             }
+            continue;
         }
-        if (nnodes > 0) {
-            size_t lost = read_block(io, nodes, nnodes, at, n, rc);
-            if (lost < stop)
-                stop = lost;
+        UA_String range = tdot_ua_index_range(index);
+        bool added;
+        size_t slot = nodeset_slot(&set, nodes, &nnodes, block, &node, &range, &added);
+        if (slot == block) {
+            /* A new node and a full block: read it, then start the next. */
+            size_t lost = read_block(io, nodes, nnodes, at, npts, n, rc);
+            nnodes = npts = 0;
+            nodeset_reset(&set);
+            if (lost < n) {
+                UA_NodeId_clear(&node);
+                UA_String_clear(&range);
+                free(set.tab);
+                return lost + 1;
+            }
+            slot = nodeset_slot(&set, nodes, &nnodes, block, &node, &range, &added);
         }
-        if (stop < n)
-            return stop + 1;
+        if (!added) {
+            UA_NodeId_clear(&node);
+            UA_String_clear(&range);
+        }
+        at[npts] = k;
+        at[n + npts] = slot;
+        npts++;
     }
-    return n;
+    if (npts > 0) {
+        size_t lost = read_block(io, nodes, nnodes, at, npts, n, rc);
+        if (lost < stop)
+            stop = lost;
+    }
+    free(set.tab);
+    return stop < n ? stop + 1 : n;
 }
 
 /* read_points' points, for the tdot_ua_blocks_t callbacks below. */
@@ -2099,9 +3153,12 @@ typedef struct {
     tdot_sample_t *out;
 } poll_ctx_t;
 
-static bool poll_prepare(void *ctx, size_t k, UA_NodeId *node, int *rc) {
+static bool poll_prepare(void *ctx, size_t k, UA_NodeId *node, int64_t *index, int *rc) {
     poll_ctx_t *c = ctx;
-    return point_read_node(c->dev, c->pts[k], node, &c->out[k], rc);
+    if (!point_read_node(c->dev, c->pts[k], node, &c->out[k], rc))
+        return false;
+    *index = ((ua_point_t *)c->pts[k]->proto)->index;
+    return true;
 }
 
 static UA_ReadResponse poll_read(void *ctx, UA_ReadRequest *req) {
@@ -2112,7 +3169,7 @@ static UA_ReadResponse poll_read(void *ctx, UA_ReadRequest *req) {
 
 static int poll_result(void *ctx, size_t k, UA_StatusCode status, const UA_Variant *value) {
     poll_ctx_t *c = ctx;
-    return read_result(status, value, c->pts[k], &c->out[k]);
+    return read_result(c->dev, status, value, c->pts[k], &c->out[k]);
 }
 
 /* Poll pts[0..n) in blocks of at most ua->nodes_per_read nodes, one Read per
@@ -2129,7 +3186,7 @@ static size_t read_points(tdot_connector_t *self, tdot_device_t *dev,
     if (block > n)
         block = n;
     UA_ReadValueId *nodes = calloc(block, sizeof *nodes);
-    size_t *at = calloc(block, sizeof *at);
+    size_t *at = calloc(2 * n, sizeof *at);
     if (!nodes || !at) {
         free(nodes);
         free(at);
@@ -2168,7 +3225,7 @@ static size_t read_points(tdot_connector_t *self, tdot_device_t *dev,
 
 typedef struct {
     UA_ReadValueId *nodes; /* cleared once the block is handled */
-    size_t *at;            /* the points of its nodes, indexes into pts */
+    size_t first;          /* its first point, an index into pts */
     size_t nnodes;
     unsigned tries;
     bool queued;   /* to be sent (again) */
@@ -2227,18 +3284,22 @@ static size_t read_wanted(tdot_connector_t *self, tdot_device_t *dev, size_t n) 
     return n ? (n + block - 1) / block : 1;
 }
 
-/* Publish a handled block's answer into its points' samples. Returns the first
- * of its points whose outcome is -1, or `none`. */
-static size_t block_results(ua_pblock_t *b, UA_StatusCode service, tdot_point_t *const *pts,
-                            tdot_sample_t *out, int *rc, size_t none) {
+/* Publish a handled block's answer into its points' samples: the points
+ * whose blk[] is `bi`, each from its node's result slot[]. Returns the first
+ * of them whose outcome is -1, or `none`. */
+static size_t block_results(tdot_device_t *dev, ua_pblock_t *b, size_t bi, UA_StatusCode service,
+                            tdot_point_t *const *pts, const size_t *blk, const size_t *slot,
+                            size_t n, tdot_sample_t *out, int *rc, size_t none) {
     size_t lost = none;
-    for (size_t j = 0; j < b->nnodes; j++) {
-        size_t k = b->at[j];
+    for (size_t k = b->first; k < n; k++) {
+        if (blk[k] != bi)
+            continue;
+        size_t j = slot[k];
         if (service != UA_STATUSCODE_GOOD)
-            rc[k] = read_result(service, NULL, pts[k], &out[k]);
+            rc[k] = read_result(dev, service, NULL, pts[k], &out[k]);
         else
-            rc[k] = read_result(result_status(&b->resp.results[j]), &b->resp.results[j].value,
-                                pts[k], &out[k]);
+            rc[k] = read_result(dev, result_status(&b->resp.results[j]),
+                                &b->resp.results[j].value, pts[k], &out[k]);
         if (rc[k] == -1 && k < lost)
             lost = k;
     }
@@ -2258,8 +3319,21 @@ static size_t read_points_inflight(tdot_connector_t *self, tdot_device_t *dev,
         return read_points(self, dev, pts, n, out, rc);
     }
     /* Prepare every point; one that cannot be read gets its sample now, and
-     * one that takes the link down ends the call there. */
+     * one that takes the link down ends the call there. Points on the same
+     * node and index share its ReadValueId (design C6): blk[k] is point k's
+     * block (SIZE_MAX: not read), slot[k] its node there. */
+    size_t *blk = malloc(2 * (n ? n : 1) * sizeof *blk);
+    size_t *slot = blk ? blk + n : NULL;
+    ua_nodeset_t set;
+    nodeset_init(&set, block);
+    if (!blk) {
+        free(blocks);
+        free(set.tab);
+        return read_points(self, dev, pts, n, out, rc);
+    }
     size_t nb = 0, lost = n;
+    for (size_t k = 0; k < n; k++)
+        blk[k] = SIZE_MAX;
     for (size_t k = 0; k < n && lost == n; k++) {
         UA_NodeId node;
         if (!point_read_node(dev, pts[k], &node, &out[k], &rc[k])) {
@@ -2267,30 +3341,36 @@ static size_t read_points_inflight(tdot_connector_t *self, tdot_device_t *dev,
                 lost = k;
             continue;
         }
-        ua_pblock_t *b = nb > 0 && blocks[nb - 1].nnodes < block ? &blocks[nb - 1] : NULL;
-        if (!b) {
+        UA_String range = tdot_ua_index_range(((ua_point_t *)pts[k]->proto)->index);
+        ua_pblock_t *b = nb > 0 ? &blocks[nb - 1] : NULL;
+        bool added = false;
+        size_t j = b ? nodeset_slot(&set, b->nodes, &b->nnodes, block, &node, &range, &added)
+                     : block;
+        if (j == block) {
             b = &blocks[nb];
             b->nodes = calloc(block, sizeof *b->nodes);
-            b->at = calloc(block, sizeof *b->at);
-            if (!b->nodes || !b->at) {
-                free(b->nodes);
-                free(b->at);
-                b->nodes = NULL;
-                b->at = NULL;
+            if (!b->nodes) {
                 UA_NodeId_clear(&node);
+                UA_String_clear(&range);
                 tdot_sample_bad(&out[k], "out of memory");
                 rc[k] = -1;
                 lost = k;
                 break;
             }
             b->queued = true;
+            b->first = k;
             nb++;
+            nodeset_reset(&set);
+            j = nodeset_slot(&set, b->nodes, &b->nnodes, block, &node, &range, &added);
         }
-        UA_ReadValueId_init(&b->nodes[b->nnodes]);
-        b->nodes[b->nnodes].nodeId = node; /* owns it now */
-        b->nodes[b->nnodes].attributeId = UA_ATTRIBUTEID_VALUE;
-        b->at[b->nnodes++] = k;
+        if (!added) {
+            UA_NodeId_clear(&node);
+            UA_String_clear(&range);
+        }
+        blk[k] = (size_t)(b - blocks);
+        slot[k] = j;
     }
+    free(set.tab);
 
     size_t sent = 0; /* blocks sent and not yet handled */
     double deadline = mono_s() + 2.0 * (st ? st->request_timeout_s : 5) + 1.0;
@@ -2299,7 +3379,7 @@ static size_t read_points_inflight(tdot_connector_t *self, tdot_device_t *dev,
          * nothing past a point that took the link down. */
         for (size_t i = 0; i < nb && sent < tdot_inflight_current(inflight); i++) {
             ua_pblock_t *b = &blocks[i];
-            if (!b->queued || b->at[0] > lost)
+            if (!b->queued || b->first > lost)
                 continue;
             UA_ReadRequest req;
             UA_ReadRequest_init(&req);
@@ -2341,7 +3421,7 @@ static size_t read_points_inflight(tdot_connector_t *self, tdot_device_t *dev,
                 } else {
                     if (service == UA_STATUSCODE_GOOD)
                         tdot_inflight_ok(inflight);
-                    size_t l = block_results(b, service, pts, out, rc, n);
+                    size_t l = block_results(dev, b, i, service, pts, blk, slot, n, out, rc, n);
                     if (l < lost)
                         lost = l;
                     UA_ReadResponse_clear(&b->resp);
@@ -2350,7 +3430,7 @@ static size_t read_points_inflight(tdot_connector_t *self, tdot_device_t *dev,
                     b->nnodes = 0;
                 }
             }
-            if (b->queued && b->at[0] <= lost)
+            if (b->queued && b->first <= lost)
                 more = true;
         }
         if (sent == 0 && !more)
@@ -2390,10 +3470,10 @@ static size_t read_points_inflight(tdot_connector_t *self, tdot_device_t *dev,
         for (size_t j = 0; j < b->nnodes; j++)
             UA_ReadValueId_clear(&b->nodes[j]);
         free(b->nodes);
-        free(b->at);
     }
     if (!keep)
         free(blocks);
+    free(blk);
     return lost < n ? lost + 1 : n;
 }
 
@@ -2878,13 +3958,20 @@ static void on_data_change(UA_Client *client, UA_UInt32 sub_id,
         return;
     slot->pt = pt;
     tdot_sample_init(&slot->sample);
-    if (!value->hasValue || !UA_Variant_isScalar(&value->value)) {
+    const ua_point_t *up = pt->proto;
+    if (value->hasStatus && value->status == UA_STATUSCODE_BADINDEXRANGENODATA &&
+        up->index >= 0) {
+        tdot_sample_bad(&slot->sample, "index %" PRId64 " out of range (the server reports %s)",
+                        up->index, UA_StatusCode_name(value->status));
+    } else if (!value->hasValue) {
         tdot_sample_bad(&slot->sample, "no scalar value in notification");
     } else if (value->hasStatus && value->status != UA_STATUSCODE_GOOD) {
         tdot_sample_bad(&slot->sample, "%s",
                         UA_StatusCode_name(value->status));
     } else {
-        variant_to_sample(&value->value, pt, &slot->sample);
+        /* Structures were resolved before the items were created
+         * (subscribe_device, retry_pending): no request is made in here. */
+        decode_value(dev, pt, &value->value, &slot->sample);
         /* A pushed value carries when the source saw it (contract §5), as in
          * the Rust module; a polled one carries its read time. */
         slot->sample.source_ts_ms = tdot_ua_source_ts_ms(
@@ -2956,6 +4043,7 @@ static UA_StatusCode monitor_point(tdot_device_t *dev, tdot_point_t *pt,
         return UA_STATUSCODE_BADNODEIDINVALID;
     }
     UA_MonitoredItemCreateRequest mreq = UA_MonitoredItemCreateRequest_default(node);
+    mreq.itemToMonitor.indexRange = tdot_ua_index_range(((ua_point_t *)pt->proto)->index);
     mreq.requestedParameters.samplingInterval = tdot_ua_sampling_interval_ms(pt);
     mreq.requestedParameters.queueSize = ((ua_point_t *)pt->proto)->queue_size;
     mreq.requestedParameters.discardOldest = true;
@@ -2963,6 +4051,7 @@ static UA_StatusCode monitor_point(tdot_device_t *dev, tdot_point_t *pt,
         ua->client, ua->sub_id, UA_TIMESTAMPSTORETURN_BOTH, mreq, pt /*monContext*/,
         on_data_change, NULL);
     UA_NodeId_clear(&node);
+    UA_String_clear(&mreq.itemToMonitor.indexRange);
     UA_StatusCode rc = mres.statusCode;
     if (rc == UA_STATUSCODE_GOOD &&
         tdot_ua_revised(mreq.requestedParameters.samplingInterval,
@@ -2994,6 +4083,7 @@ static void retry_pending(tdot_device_t *dev) {
     if (!any)
         return;
     translate_device(dev, true);
+    resolve_device(dev); /* points that have their node now (design C2) */
     char added[512] = "";
     for (size_t j = 0; j < dev->npoints; j++) {
         tdot_point_t *pt = &dev->points[j];
@@ -3042,6 +4132,8 @@ static int subscribe_device(tdot_connector_t *self, tdot_device_t *dev,
     /* Before any item exists: creating them runs the client, which can
      * already deliver the first start values. */
     ua_ring_reserve(&ua->queue, wanted);
+    /* Structures too: a data-change callback cannot make requests. */
+    resolve_device(dev);
 
     /* One subscription per device, publishing at the fastest requested
      * sampling rate -- the same parameters the Rust module uses. */
@@ -3124,6 +4216,7 @@ static int subscribe_device(tdot_connector_t *self, tdot_device_t *dev,
                 continue; /* the polling path reports this as a bad sample */
             }
             items[n] = UA_MonitoredItemCreateRequest_default(node); /* owns node */
+            items[n].itemToMonitor.indexRange = tdot_ua_index_range(up->index);
             items[n].requestedParameters.samplingInterval =
                 tdot_ua_sampling_interval_ms(pt);
             items[n].requestedParameters.queueSize = up->queue_size;

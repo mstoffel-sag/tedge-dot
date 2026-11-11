@@ -17,7 +17,7 @@ need one of the features only the Rust build has.
 | Package | Implementation | Pick it when |
 |---|---|---|
 | `tedge-dot-c` | C (`impl/c/`) | **Default.** ~25x smaller, a **glibc 2.17** floor (Debian 8 / RHEL 7 era), amd64, arm64 and armhf packages, and every protocol, including the PROFIBUS-DP preview. |
-| `tedge-dot-rs` | Rust (`impl/rust/`) | When you need a feature only the Rust build has: SNMPv3 with SHA-2 or AES-192/256, OPC UA structured values, the deprecated Basic128Rsa15 policy, or CAN FD. |
+| `tedge-dot-rs` | Rust (`impl/rust/`) | When you need a feature only the Rust build has: SNMPv3 with SHA-2 or AES-192/256, the deprecated Basic128Rsa15 policy, or CAN FD. |
 <!-- /site:packages -->
 
 Where the two differ in behaviour, see the parity table in [impl/c/README.md](../impl/c/README.md).

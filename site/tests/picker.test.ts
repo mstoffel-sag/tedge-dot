@@ -24,7 +24,7 @@ describe('package picker', () => {
   });
 
   it('builds Rust from source when PROFIBUS meets a Rust-only feature', () => {
-    const r = recommend(data, { ...base, protocols: ['profibus', 'opcua'], features: ['opcua-structures'] });
+    const r = recommend(data, { ...base, protocols: ['profibus', 'opcua'], features: ['opcua-basic128rsa15'] });
     expect(r.pick).toBe('tedge-dot-rs');
     expect(r.alternative).toContain('--features profibus');
   });
@@ -40,8 +40,8 @@ describe('package picker', () => {
     expect(r.pick).toBe('tedge-dot-rs');
   });
 
-  it('recommends tedge-dot-rs on a modern gateway that needs OPC UA structures, and names the default as the alternative', () => {
-    const r = recommend(data, { ...base, protocols: ['opcua'], features: ['opcua-structures'] });
+  it('recommends tedge-dot-rs on a modern gateway that needs Basic128Rsa15, and names the default as the alternative', () => {
+    const r = recommend(data, { ...base, protocols: ['opcua'], features: ['opcua-basic128rsa15'] });
     expect(r.pick).toBe('tedge-dot-rs');
     expect(r.alternative).toContain('tedge-dot-c');
   });

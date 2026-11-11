@@ -224,10 +224,10 @@ array elements; the declared `datatype` chooses the rendering:
 | ByteString | `bytes` | `deadbeef` (hex) |
 
 Writes are limited to the primitive types and String. The exact rendering rules and messages
-are pinned by the vectors in `doc/contract/test-vectors/opcua-struct/`. The C build does not
-implement this section yet (capability `opcua-structures`, see `impl/c/README.md`), except for a
-top-level ByteString variable: it is read as `bytes` in both builds, and the C build refuses a value
-longer than 127 bytes with a bad sample (its fixed value buffer) instead of truncating it.
+are pinned by the vectors in `doc/contract/test-vectors/opcua-struct/`, which both builds run.
+The C build's fixed-size sample sets three limits (see `impl/c/README.md`): a `bytes` value longer
+than 127 bytes and a raw structure body longer than 256 bytes are bad samples that name the limit,
+never truncated, and a String or LocalizedText value is cut at 255 bytes as every C string is.
 
 ### 3.8 Subscription timing (`sampling_interval`)
 

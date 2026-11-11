@@ -59,7 +59,7 @@ protocol_address = { endpoint = "opc.tcp://ref-all:4840/UA/TestServer", security
   subscribe = false
   address = { node_id = "ns=1;s=TestServer/DataTypes/Scalar/StringValue" }
 
-# Structured values (openspec change opcua-custom-datatypes; Rust build only). The reference
+# Structured values (openspec change opcua-custom-datatypes and opcua-structures-c, both builds). The reference
 # server declares these variables with the abstract Structure DataType, so the connector finds
 # the concrete type (TestPointXYZ, TestRangeStruct) through the value's encoding, then reads its
 # DataTypeDefinition. Nothing about these types is configured or compiled in.

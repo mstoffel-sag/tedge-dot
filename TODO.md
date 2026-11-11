@@ -38,13 +38,12 @@
       each session translates through it. The interop suite now uses one instead of resolving the
       index at startup (`resolve-ns.py` is gone).
 
-* [ ] **OPC UA structured values follow-ups** (openspec change `opcua-custom-datatypes`, Rust
-      only; thin-edge/tedge-dot#57):
-      - **C port.** The C build lists `opcua-structures` as missing (parity table in
-        `impl/c/README.md`). It needs a walker held to `doc/contract/test-vectors/opcua-struct/`,
-        resolution through open62541 (`UA_Client_readDatatypeDefinitionAttribute`), per-tick shared
-        reads like the SNMP module's. (The C SDK has `bytes` now, and a top-level ByteString is
-        already read as `bytes`.)
+* [ ] **OPC UA structured values follow-ups** (openspec changes `opcua-custom-datatypes` and
+      `opcua-structures-c`, both builds; thin-edge/tedge-dot#57):
+      - ~~**C port.**~~ Done (`opcua-structures-c`): the C walker runs the shared vectors. What is
+        left in C: one monitored item per node and index, as Rust does (the C push ring hands
+        each notification to one point), and the fixed-size value limits (raw body 256 bytes,
+        `bytes` 127, strings 255).
       - Writes of a structure field or array element (read-modify-write of the body, or a write
         with `IndexRange` for an element).
       - Whole arrays, arrays whose length is known only at runtime (one sample per element: the

@@ -19,7 +19,7 @@ packages:
     source: impl/rust/
     table:
       pick: >-
-        When you need a feature only the Rust build has: SNMPv3 with SHA-2 or AES-192/256, OPC UA structured values, the deprecated Basic128Rsa15 policy, or CAN FD.
+        When you need a feature only the Rust build has: SNMPv3 with SHA-2 or AES-192/256, the deprecated Basic128Rsa15 policy, or CAN FD.
     architectures: [amd64, arm64]
     # Not pinned: the Rust build is not tested on old distributions.
     glibc_min: null
@@ -28,7 +28,6 @@ packages:
     features:
       - snmpv3-sha2
       - opcua-basic128rsa15
-      - opcua-structures
       - canbus-fd
       - profibus-serial
 
@@ -38,8 +37,6 @@ features:
     label: SNMPv3 with SHA-2 authentication or AES-192/256 privacy
   opcua-basic128rsa15:
     label: OPC UA servers that only offer the deprecated Basic128Rsa15 policy
-  opcua-structures:
-    label: OPC UA structured values (ExtensionObject fields, array elements)
   canbus-fd:
     label: CAN FD frames
   profibus-serial:

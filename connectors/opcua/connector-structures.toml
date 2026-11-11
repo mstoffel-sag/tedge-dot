@@ -1,8 +1,8 @@
 # The `opc3` device of the OPC UA e2e harness: structured values, array elements and the
-# built-in types without an SDK primitive of their own (openspec change opcua-custom-datatypes,
-# Rust build only). It is its own connector instance (entrypoint.sh passes both files), so in the
-# C build -- which runs one loop per file, and reads these nodes only to report them unsupported
-# -- its reads cannot delay the devices of connector.toml.
+# built-in types without an SDK primitive of their own (openspec changes opcua-custom-datatypes
+# and opcua-structures-c, both builds). It is its own connector instance (entrypoint.sh passes both
+# files), so in the C build -- which runs one loop per file -- its reads cannot delay the devices
+# of connector.toml.
 
 [connector]
 protocol      = "opcua"
@@ -178,8 +178,8 @@ default_mode     = "typed"
   datatype  = "string"
   address   = { node_id = "ns=2;s=Ref" }
 
-  # A ByteString: `bytes` (hex) when typed, the bytes themselves as `raw`. Both builds have it,
-  # unlike the types above, so its test is not tagged requires:opcua-structures.
+  # A ByteString: `bytes` (hex) when typed, the bytes themselves as `raw`. Both builds had it
+  # before the structures, so its test is not tagged requires:opcua-structures.
   [[device.point]]
   id        = "blob"
   subscribe = false
