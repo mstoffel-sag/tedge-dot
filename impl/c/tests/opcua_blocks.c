@@ -35,7 +35,7 @@ typedef struct {
     /* Per point: the node it reads (0: its own, k + 1: point k's) and its
      * element index (-1 by default). */
     size_t same_as[MAX_POINTS];
-    long index[MAX_POINTS];
+    int64_t index[MAX_POINTS];
     /* Per Read call: how many of its nodes carry an IndexRange. */
     size_t ranged[MAX_CALLS + 1];
     /* Per point: the status its node's result carries, and whether it has a
@@ -64,7 +64,7 @@ static void fake_init(fake_t *f) {
     }
 }
 
-static bool fake_prepare(void *ctx, size_t k, UA_NodeId *node, long *index, int *rc) {
+static bool fake_prepare(void *ctx, size_t k, UA_NodeId *node, int64_t *index, int *rc) {
     fake_t *f = ctx;
     if (f->prepare[k] != -2) {
         *rc = f->prepare[k];

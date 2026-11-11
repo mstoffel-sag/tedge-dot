@@ -11,6 +11,7 @@
 #include <open62541/plugin/certificategroup_default.h>
 #include <ctype.h>
 #include <errno.h>
+#include <inttypes.h>
 #include <limits.h>
 #include <math.h>
 #include <stdio.h>
@@ -66,7 +67,7 @@ typedef struct {
      * as written ("" for none; parsed again per session, since the runtime
      * frees this struct with a plain free()) and `address.index` (-1: none). */
     char field[256];
-    long index;
+    int64_t index;
     /* This session's resolution, valid when gen == ua_device_t.types_gen:
      * a field point's plan and its structure's expected encoding (null: not
      * named), or why there is none; a raw point's DataType (for the
@@ -1035,7 +1036,7 @@ static int configure_structure(tdot_point_t *pt, ua_point_t *up, char *err, size
                      "point '%s' address: index must be a non-negative integer", pt->id);
             return -1;
         }
-        up->index = (long)i.u.i;
+        up->index = (int64_t)i.u.i;
     }
     if (up->field[0] && pt->mode == TDOT_MODE_RAW) {
         snprintf(err, errlen,
@@ -2549,7 +2550,7 @@ static int structure_body(const UA_Variant *v, const UA_NodeId **enc, UA_ByteStr
 /* The DataType of the structure a variable currently holds: its value's
  * encoding id, and the DataType that encoding belongs to (inverse
  * HasEncoding). */
-static int concrete_type(tdot_device_t *dev, const UA_NodeId *node, long index, UA_NodeId *out,
+static int concrete_type(tdot_device_t *dev, const UA_NodeId *node, int64_t index, UA_NodeId *out,
                          char *err, size_t errlen) {
     ua_device_t *ua = dev->proto;
     UA_ReadValueId id;
@@ -2764,11 +2765,11 @@ static int decode_value(tdot_device_t *dev, tdot_point_t *pt, const UA_Variant *
         size_t len = v->arrayLength;
         size_t i = len == 1 ? 0 : (size_t)up->index;
         if (len == 0) {
-            tdot_sample_bad(out, "index %ld out of range (no element returned)", up->index);
+            tdot_sample_bad(out, "index %" PRId64 " out of range (no element returned)", up->index);
             return 0;
         }
         if (i >= len) {
-            tdot_sample_bad(out, "index %ld out of range (length %zu)", up->index, len);
+            tdot_sample_bad(out, "index %" PRId64 " out of range (length %zu)", up->index, len);
             return 0;
         }
         UA_Variant_setScalar(&el, (char *)v->data + i * v->type->memSize, v->type);
@@ -2953,7 +2954,7 @@ static int read_result(tdot_device_t *dev, UA_StatusCode rc, const UA_Variant *v
                        tdot_point_t *pt, tdot_sample_t *out) {
     const ua_point_t *up = pt->proto;
     if (rc == UA_STATUSCODE_BADINDEXRANGENODATA && up->index >= 0) {
-        tdot_sample_bad(out, "index %ld out of range (the server reports %s)", up->index,
+        tdot_sample_bad(out, "index %" PRId64 " out of range (the server reports %s)", up->index,
                         UA_StatusCode_name(rc));
         return 0;
     }
@@ -3104,7 +3105,7 @@ size_t tdot_ua_read_blocks(const tdot_ua_blocks_t *io, size_t n, size_t block,
     size_t nnodes = 0, npts = 0, stop = n;
     for (size_t k = 0; k < n; k++) {
         UA_NodeId node;
-        long index = -1;
+        int64_t index = -1;
         if (!io->prepare(io->ctx, k, &node, &index, &rc[k])) {
             if (rc[k] == -1) {
                 stop = k;
@@ -3152,7 +3153,7 @@ typedef struct {
     tdot_sample_t *out;
 } poll_ctx_t;
 
-static bool poll_prepare(void *ctx, size_t k, UA_NodeId *node, long *index, int *rc) {
+static bool poll_prepare(void *ctx, size_t k, UA_NodeId *node, int64_t *index, int *rc) {
     poll_ctx_t *c = ctx;
     if (!point_read_node(c->dev, c->pts[k], node, &c->out[k], rc))
         return false;
@@ -3960,7 +3961,7 @@ static void on_data_change(UA_Client *client, UA_UInt32 sub_id,
     const ua_point_t *up = pt->proto;
     if (value->hasStatus && value->status == UA_STATUSCODE_BADINDEXRANGENODATA &&
         up->index >= 0) {
-        tdot_sample_bad(&slot->sample, "index %ld out of range (the server reports %s)",
+        tdot_sample_bad(&slot->sample, "index %" PRId64 " out of range (the server reports %s)",
                         up->index, UA_StatusCode_name(value->status));
     } else if (!value->hasValue) {
         tdot_sample_bad(&slot->sample, "no scalar value in notification");

@@ -18,6 +18,7 @@
 
 #include <stdbool.h>
 #include <stddef.h>
+#include <inttypes.h>
 #include <stdint.h>
 
 #include "tedge_dot/model.h"
@@ -72,7 +73,7 @@ void uas_types_free(uas_types_t *t);
 /* One segment of a `field` path; index -1 for none. */
 typedef struct {
     char *name;
-    long index;
+    int64_t index;
 } uas_seg_t;
 
 typedef struct {
@@ -96,7 +97,7 @@ typedef struct {
 typedef struct {
     size_t s;     /* the structure this step reads from */
     size_t field; /* the position of the selected field in it */
-    long index;   /* -1 for none */
+    int64_t index;/* -1 for none */
 } uas_step_t;
 
 typedef struct {

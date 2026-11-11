@@ -85,7 +85,7 @@ int uas_parse_path(const char *path, uas_path_t *out, char *err, size_t errlen) 
         size_t plen = end ? (size_t)(end - p) : strlen(p);
         const char *open = memchr(p, '[', plen);
         size_t nlen = open ? (size_t)(open - p) : plen;
-        long index = -1;
+        int64_t index = -1;
         if (open) {
             /* digits, then a closing bracket that ends the segment */
             const char *d = open + 1, *stop = p + plen;
@@ -105,7 +105,7 @@ int uas_parse_path(const char *path, uas_path_t *out, char *err, size_t errlen) 
                 fail(err, errlen, "field path \"%s\" has an invalid index", path);
                 goto bad;
             }
-            index = (long)v;
+            index = (int64_t)v;
         }
         if (nlen == 0) {
             fail(err, errlen, "field path \"%s\" has an empty segment", path);
@@ -141,7 +141,7 @@ bad:
 
 static void seg_text(const uas_seg_t *s, char *out, size_t outlen) {
     if (s->index >= 0)
-        snprintf(out, outlen, "%s[%ld]", s->name, s->index);
+        snprintf(out, outlen, "%s[%" PRId64 "]", s->name, s->index);
     else
         snprintf(out, outlen, "%s", s->name);
 }
@@ -1200,7 +1200,7 @@ int uas_decode(const uas_plan_t *plan, const uas_types_t *t, const uint8_t *body
             if (rd_len(&r, &n))
                 return -1;
             if ((size_t)step->index >= n) {
-                fail(err, errlen, "index %ld out of range for \"%s\" (length %zu)", step->index,
+                fail(err, errlen, "index %" PRId64 " out of range for \"%s\" (length %zu)", step->index,
                      field->name, n);
                 return -1;
             }

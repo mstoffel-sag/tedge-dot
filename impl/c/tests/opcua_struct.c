@@ -129,6 +129,12 @@ static void check_paths_parse(void) {
     uas_path_text(&p, text, sizeof text);
     CHECK(!strcmp(text, "Items[12].Value"), "path text %s", text);
     uas_path_free(&p);
+    /* The largest u32 stays an index, also where `long` is 32 bits (armhf). */
+    CHECK(uas_parse_path("A[4294967295]", &p, err, sizeof err) == 0, "%s", err);
+    CHECK(p.n == 1 && p.segs[0].index == 4294967295LL, "A[4294967295] parsed wrong");
+    uas_path_text(&p, text, sizeof text);
+    CHECK(!strcmp(text, "A[4294967295]"), "path text %s", text);
+    uas_path_free(&p);
     /* An index beyond u32, as Rust's parse::<u32>() refuses it. */
     CHECK(uas_parse_path("A[4294967296]", &p, err, sizeof err) != 0 &&
               !strcmp(err, "field path \"A[4294967296]\" has an invalid index"),

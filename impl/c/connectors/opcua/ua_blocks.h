@@ -10,6 +10,7 @@
 #ifndef TDOT_UA_BLOCKS_H
 #define TDOT_UA_BLOCKS_H
 
+#include <inttypes.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdio.h>
@@ -17,11 +18,11 @@
 #include <open62541/types.h>
 
 /* The IndexRange text of an element index ("3"), or none for -1. */
-static inline UA_String tdot_ua_index_range(long index) {
+static inline UA_String tdot_ua_index_range(int64_t index) {
     char buf[24];
     if (index < 0)
         return UA_STRING_NULL;
-    snprintf(buf, sizeof buf, "%ld", index);
+    snprintf(buf, sizeof buf, "%" PRId64, index);
     return UA_STRING_ALLOC(buf);
 }
 
@@ -32,7 +33,7 @@ typedef struct {
      * *index the array element it reads (-1 for the whole value), or false
      * with point k's read_point outcome in *rc (0 or -1) when it is not read
      * at all (a method, an untranslated namespace, an invalid node id). */
-    bool (*prepare)(void *ctx, size_t k, UA_NodeId *node, long *index, int *rc);
+    bool (*prepare)(void *ctx, size_t k, UA_NodeId *node, int64_t *index, int *rc);
     /* One Read request. The caller clears the response. */
     UA_ReadResponse (*read)(void *ctx, UA_ReadRequest *req);
     /* Point k's read_point outcome for a Read of its node that returned

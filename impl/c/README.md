@@ -458,7 +458,9 @@ of truth. Limitations of this build that are NOT parity gaps:
   either.
 - **Fixed-size buffers** cap string values at 255 bytes and raw values at
   256 bytes (`tdot_value_t.str`, `TDOT_RAW_MAX`), where the Rust model is
-  unbounded.
+  unbounded. A `bytes` value (hex in that string) holds at most 127 bytes; a
+  longer one, like a raw OPC UA structure body over 256 bytes, is a bad sample
+  that names the limit rather than a truncated value.
 - **`stale` quality** (last-good cache) is not implemented — nor is it in the
   Rust build; the contract allows it, neither emits it.
 
