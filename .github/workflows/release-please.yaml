@@ -6,6 +6,11 @@ name: Release Please
 # the release, creates the GitHub release with the changelog section as its notes, and then
 # runs the release workflow on the new tag to build, attach and publish both packages.
 #
+# The release is created as a DRAFT ("draft" in release-please-config.json) so nobody sees
+# it before its assets are attached; the release workflow makes it public as its last step.
+# "force-tag-creation" makes release-please push the tag anyway (a draft release has no tag
+# of its own until published), which the build checks out and the next release diffs from.
+#
 # The release workflow is CALLED here rather than left to a tag-push trigger: a tag created
 # with the default GITHUB_TOKEN never triggers another workflow, and one created with the
 # personal token used here would otherwise trigger it a second time alongside this call.
@@ -24,6 +29,8 @@ on:
 permissions:
   contents: write
   pull-requests: write
+  # the called release workflow dispatches the docs deploy
+  actions: write
 
 concurrency:
   group: release-please

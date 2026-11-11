@@ -15,8 +15,9 @@ name: Release
 # push) from both sets of assets, with one SHA256SUMS covering everything.
 #
 #   * called by release-please.yaml with the tag it just created
-#                         -> deb/rpm/apk + tarballs for both packages attached to the GitHub
-#                            release release-please made, plus the Cloudsmith push
+#                         -> deb/rpm/apk + tarballs for both packages attached to the draft GitHub
+#                            release release-please made, plus the Cloudsmith push;
+#                            then the release is made public
 #   * run manually        -> builds both and uploads them to the run; optionally refreshes the
 #                            rolling `snapshot` pre-release so the latest build is one download
 #                            away. Given an existing `tag`, it (re)builds and publishes that
@@ -45,6 +46,8 @@ on:
 
 permissions:
   contents: write
+  # `gh workflow run docs.yaml` once the release is public
+  actions: write
 
 # Two tags pushed close together would otherwise race over the rolling `snapshot` release and
 # over ci/publish.sh. Releases are cheap to redo and expensive to corrupt, so queue them.
@@ -474,3 +477,22 @@ jobs:
             exit 0
           fi
           ./ci/publish.sh --path ./dist
+
+      # Last, so the release only becomes visible once every asset is attached and the
+      # packages are in Cloudsmith. release-please creates it as a draft; a failed step above
+      # leaves it a draft, and a re-run with the tag finishes the job.
+      - name: Make the release public
+        if: needs.version.outputs.release == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.rel.outputs.tag }}
+        run: gh release edit "$TAG" --repo "${{ github.repository }}" --draft=false --latest
+
+      # A release published with GITHUB_TOKEN does not trigger docs.yaml's `release` event,
+      # so ask for the deploy explicitly: What's new groups highlights by release tag. It runs
+      # on main, which the github-pages environment allows (a tag ref is rejected).
+      - name: Redeploy the docs site
+        if: needs.version.outputs.release == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh workflow run docs.yaml --repo "${{ github.repository }}" --ref main

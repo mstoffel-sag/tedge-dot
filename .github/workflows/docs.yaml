@@ -1,7 +1,8 @@
 name: Docs
 
 # The documentation site (site/): built and checked on every pull request that touches what it
-# renders, and deployed to GitHub Pages from main, on every published release and on demand.
+# renders, and deployed to GitHub Pages from main and on demand (the release workflow asks for
+# one after it publishes a release).
 on:
   pull_request:
     paths:
@@ -19,8 +20,6 @@ on:
       - ".github/workflows/docs.yaml"
   push:
     branches: [main]
-  release:
-    types: [published]
   workflow_dispatch:
 
 concurrency:
