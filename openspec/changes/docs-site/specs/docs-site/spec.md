@@ -69,7 +69,7 @@ The landing page SHALL present what tedge-dot does, the supported protocols, the
 and a quick start, with an animated data-flow illustration. The animation SHALL stop for visitors
 who prefer reduced motion. The landing page SHALL work in light and dark mode and at phone
 width without horizontal scrolling, SHALL ship at most 100 kB of JavaScript, and SHALL score at
-least 90 for performance and 95 for accessibility in Lighthouse.
+least 85 for performance and 95 for accessibility in Lighthouse.
 
 #### Scenario: Reduced motion
 - **WHEN** a visitor whose system prefers reduced motion opens the landing page

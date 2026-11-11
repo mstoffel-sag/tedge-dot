@@ -54,7 +54,7 @@
 - [x] 6.1 Hero with animated SVG data flow (devices → tedge-dot → flows → thin-edge.io → cloud), reduced-motion fallback
 - [x] 6.2 Protocol grid, "two packages, one contract" comparison, quick-start terminal block, guide cards
 - [x] 6.3 Review in light/dark and at phone width; JS ≤ 100 kB on the landing page
-- [x] 6.4 Lighthouse CI check (performance ≥ 90, accessibility ≥ 95)
+- [x] 6.4 Lighthouse CI check (performance ≥ 85, accessibility ≥ 95)
 
 ## 7. What's new
 

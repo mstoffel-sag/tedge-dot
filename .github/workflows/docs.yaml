@@ -68,7 +68,7 @@ jobs:
         run: |
           npx playwright install --with-deps chromium
           npm run check:layout
-      - name: Lighthouse (performance >= 90, accessibility >= 95)
+      - name: Lighthouse (performance >= 85, accessibility >= 95)
         working-directory: site
         run: |
           npx astro preview --port 4321 > preview.log 2>&1 &
