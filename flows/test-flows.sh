@@ -347,7 +347,7 @@ UTA="$(unit_sample t '°C' 23.4 '"meta":{"measurement":{"type":"c8y_Combined","f
 UTB="$(unit_sample b '%' 85 '"meta":{"measurement":{"type":"c8y_Combined","fragment":"c8y_Battery","series":"level"}}' 1)"
 check "units: two fragments of one type share one message" ot-measurement \
   "$(printf '[te/device/plc1/ot/modbus/sample/t] %s\n[te/device/plc1/ot/modbus/sample/b] %s' "$UTA" "$UTB")" \
-  '[te/device/plc1///m/c8y_Combined/meta] {"c8y_Battery.level":{"unit":"%"},"c8y_Environmental.temperature":{"unit":"°C"}}'
+  '[te/device/plc1///m/c8y_Combined/meta] {"c8y_Environmental.temperature":{"unit":"°C"},"c8y_Battery.level":{"unit":"%"}}'
 
 # meta.measurement = false: the signal stays off the measurements entirely — a parameter whose
 # value belongs on its twin fragment only. Without it (the default), a parameter is published both
