@@ -114,6 +114,8 @@ export function resolveTarget(url, ctx, isImage = false) {
   if (!url || /^[a-z][a-z0-9+.-]*:/i.test(url) || url.startsWith('//') || url.startsWith('#')) {
     return { url };
   }
+  // Already a site link (e.g. one the sync script adds): no repository path to resolve.
+  if (ctx.base && (url === ctx.base || url.startsWith(`${ctx.base}/`))) return { url };
   const [, rawPath, suffix = ''] = /^([^?#]*)(.*)$/.exec(url);
   const anchor = suffix.includes('#') ? suffix.slice(suffix.indexOf('#')) : '';
   const decoded = safeDecode(rawPath);

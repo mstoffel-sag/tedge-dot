@@ -84,6 +84,11 @@ describe('rewriteLinks', () => {
     expect(rewrite(md)).toBe(md);
   });
 
+  it('leaves site links under the base path alone', () => {
+    const md = '[picker](/tedge-dot/tools/package-picker/) [home](/tedge-dot/)';
+    expect(rewrite(md)).toBe(md);
+  });
+
   it('does not touch links inside code', () => {
     const md = '`[a](doc/reducing-data-volume.md)`\n\n```md\n[a](doc/reducing-data-volume.md)\n```\n';
     expect(rewrite(md)).toBe(md);
