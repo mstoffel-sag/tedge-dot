@@ -51,3 +51,4 @@
 .cb-section > :not(summary), .cb-sub > :not(summary) { margin: 0 !important; }
 .cb-sub { display: grid; gap: 0.6rem; }
 .cb-sub:not([open]), .cb-section:not([open]) { display: block; }
+.cb-deprecated { font-size: var(--sl-text-xs); color: var(--td-muted); margin: 0.25rem 0; }

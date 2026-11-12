@@ -14,7 +14,7 @@ The normative rules are in [contract §5.3](contract/ot-connector-contract.md#53
 This guide explains how to use them.
 
 A policy drops readings, and what it drops never reaches the cloud. When you would rather keep
-the trend between published values, a connector in measurement output can publish the
+the trend between published values, a connector in grouped output can publish the
 time-weighted mean, minimum and maximum of each period instead: see
 [aggregating](measurement-output.md#aggregating-the-mean-minimum-and-maximum-of-each-period).
 

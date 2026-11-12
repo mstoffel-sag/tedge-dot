@@ -76,7 +76,10 @@ die() {
 #       "offset" is a decimal-point shift, applied by the legacy reader as value * 10^offset,
 #       which is exactly the SDK's 10^decimal_shift term (NOT transform.offset).
 #   unit                  -> unit
-#   measurementMapping    -> meta.measurement = { group: .type, series: .series }
+#   measurementMapping    -> meta.measurement = { type: .type, fragment: .type, series: .series }
+#                            (the legacy plugin used the type as both the measurement type and the
+#                            fragment; fragment is written out so the point reads the same either
+#                            way ot-measurement or the runtime's grouped output resolves it)
 #   holding registers get access read_write (legacy c8y_SetRegister writability parity).
 # Coil mapping (beyond legacy parity — the legacy plugin ignored c8y_Coils):
 #   number -> address.address, input -> table (discrete_input|coil), datatype bool,
@@ -85,7 +88,8 @@ die() {
 JQ_TRANSLATE='
 def meta_of($r):
   if ($r.measurementMapping.type? // "") != ""
-  then { meta: { measurement: { group: $r.measurementMapping.type,
+  then { meta: { measurement: { type: $r.measurementMapping.type,
+                                fragment: $r.measurementMapping.type,
                                 series: ($r.measurementMapping.series // $r.name) } } }
   else {} end;
 

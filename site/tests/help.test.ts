@@ -10,17 +10,18 @@ const PATHS: Record<string, string> = { connection: '/connection', protocol_addr
 const missing = (keys: string[], prefix: string) => keys.filter((k) => !HELP[`${prefix}.${k}`]);
 
 describe('help texts', () => {
-  it('cover every key the config builder offers in [connector], [[device]], points, report and batch', () => {
+  it('cover every key the config builder offers in [connector], [[device]], points, report, grouping and measurement', () => {
     // The builder's fields; the rest of the schema has no field (yet) and needs no text.
-    const connector = ['protocol', 'service_name', 'poll_interval', 'sampling_interval', 'log_level', 'output', 'max_inflight', 'max_inflight_total', 'report', 'batch'];
+    const connector = ['protocol', 'service_name', 'poll_interval', 'sampling_interval', 'log_level', 'output', 'max_inflight', 'max_inflight_total', 'report', 'grouping', 'measurement'];
     const device = ['name', 'poll_interval', 'type', 'default_mode', 'max_inflight', 'points_from'];
-    const point = ['id', 'datatype', 'access', 'unit', 'poll_interval', 'sampling_interval', 'subscribe', 'report', 'batch'];
+    const point = ['id', 'datatype', 'access', 'unit', 'poll_interval', 'sampling_interval', 'subscribe', 'report', 'grouping'];
     for (const k of [...connector, ...device, ...point]) expect(k in s.properties.connector.properties || k in s.$defs.device.properties || k in s.$defs.point.properties, k).toBe(true);
     expect(missing(connector, 'connector')).toEqual([]);
     expect(missing(device, 'device')).toEqual([]);
     expect(missing(point, 'point')).toEqual([]);
     expect(missing(Object.keys(s.$defs.report.properties), 'report')).toEqual([]);
-    expect(missing(['group_by', 'window', 'every', 'aggregate'], 'batch')).toEqual([]);
+    expect(missing(['by', 'window', 'every', 'aggregate'], 'grouping')).toEqual([]);
+    expect(missing(['type', 'fragment', 'point_separator'], 'measurement')).toEqual([]);
   });
 
   it("cover every key of every protocol's protocol_address, address and connection", () => {

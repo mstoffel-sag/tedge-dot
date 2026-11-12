@@ -1,6 +1,6 @@
-# Measurement-output test vectors (contract §5.5)
+# Grouped-output test vectors (contract §5.5)
 
-`vectors.json` pins what a connector in measurement output publishes for given readings: the
+`vectors.json` pins what a connector in grouped output publishes for given readings: the
 measurement messages, their grouping and splits, the units metadata, and which readings still
 publish a sample. The Rust SDK (`impl/rust/crates/sdk/src/measure.rs`) and the C SDK
 (`impl/c/sdk/src/measure.c`, run by `impl/c/tests/measure.c`) both run every case in their unit
@@ -11,12 +11,12 @@ Each case has these fields:
 | Field | Meaning |
 | --- | --- |
 | `name` | What the case shows. |
-| `config` | A complete connector configuration (TOML), loaded by the build's own loader. Its `[connector]` sets `output = "measurements"`. |
-| `generate` | Optional. Points appended to the configuration: `count` points of `datatype`, with ids from the `id` pattern, where `{i:04}` is the point's index with four digits. |
+| `config` | A complete connector configuration (TOML), loaded by the build's own loader. Its `[connector]` sets `output = "group"` (one case keeps the deprecated `"measurements"` and `batch` to pin that they still work). |
+| `generate` | Optional. Points appended to the configuration: `count` points of `datatype`, with ids from the `id` pattern, where every `{i:04}` is the point's index with four digits. |
 | `steps` | Events in order. `at` is the device clock in milliseconds since the point tables were built. |
 | `messages` | The messages published, in order: `topic`, `retain`, and `payload` as JSON (`""` for an empty, clearing payload). Compared as JSON, not as text. |
 | `routing` | One entry per `read` step: `sample` (the sample envelope is published) and `measured` (the reading also became a series, so the envelope carries `"measured": true`). |
-| `split` | Instead of `messages` and `routing`, for a case too large to list: the `topic` of every message and the number of `series` in each, in order. |
+| `split` | Instead of `messages` and `routing`, for a case too large to list: the `topic` of every message and the number of `series` in each, summed over its fragments, in order. |
 
 A step is one of the following:
 
@@ -38,5 +38,7 @@ and otherwise in the shortest form that reads back as the same double, laid out 
 prints it (`1e20`, `1.5e-7`, `0.0001`). Both builds format them alike, so their size estimates and
 split points agree.
 
-The `split` case checks the size budget: 2,000 series of about 65 bytes each split into messages
-of 191 series, the most that keeps the thin-edge size plus 12 bytes per series under 15,000 bytes.
+The `split` cases check the size budget. 2,000 series of about 65 bytes each in one fragment split
+into messages of 191 series, the most that keeps the thin-edge size plus 12 bytes per series under
+15,000 bytes. 400 points that each have their own fragment split into messages of 182, 182 and 36
+series, because every fragment adds its quoted name, `:{`, `}` and a comma to the size.

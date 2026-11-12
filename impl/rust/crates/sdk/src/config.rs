@@ -74,17 +74,20 @@ pub struct ConnectorSection {
     /// Default reporting policy for every point (§5.3), as written.
     #[serde(default)]
     pub report: Option<serde_json::Value>,
-    /// What readings are published as (§5.5): `"samples"` (the default) or `"measurements"`.
-    /// Read it through [`crate::measure::Output::of`].
+    /// What readings are published as (§5.5): `"single"` (the default) or `"group"`, or their
+    /// deprecated names `"samples"` and `"measurements"`. Read it through
+    /// [`crate::measure::Output::of`].
     #[serde(default)]
     pub output: Option<String>,
-    /// Measurement naming for measurement output (§5.5): `group`, `series`, `point_separator`
-    /// and `include_boolean`, as the `ot-measurement` flow's parameters of the same names.
+    /// Measurement naming for grouped output (§5.5): `type`, `fragment`, `series`, `group` (the
+    /// deprecated name of type and fragment together), `point_separator` and `include_boolean`,
+    /// as the `ot-measurement` flow's parameters of the same names.
     #[serde(default)]
     pub measurement: Option<serde_json::Value>,
-    /// Default grouping policy for every point in measurement output (§5.5), as written.
+    /// Default grouping policy for every point in grouped output (§5.5), as written (a
+    /// deprecated `batch` table was rewritten as `grouping` by the loader).
     #[serde(default)]
-    pub batch: Option<serde_json::Value>,
+    pub grouping: Option<serde_json::Value>,
     /// Requests in flight to one endpoint (§5.6), unless a device sets its own; see
     /// [`crate::concurrency`].
     #[serde(default)]
@@ -146,9 +149,14 @@ pub struct DeviceConfig {
     /// Default reporting policy for this device's points (§5.3), as written.
     #[serde(default)]
     pub report: Option<serde_json::Value>,
-    /// Default grouping policy for this device's points in measurement output (§5.5).
+    /// Default grouping policy for this device's points in grouped output (§5.5).
     #[serde(default)]
-    pub batch: Option<serde_json::Value>,
+    pub grouping: Option<serde_json::Value>,
+    /// Measurement naming for this device's points in grouped output (§5.5): `type`,
+    /// `fragment`, `series` and `group`, between the points' `meta.measurement` and
+    /// `[connector] measurement`.
+    #[serde(default)]
+    pub measurement: Option<serde_json::Value>,
     /// Requests in flight to this device's endpoint (§5.6); devices sharing an endpoint use the
     /// smallest value among them.
     #[serde(default)]
@@ -182,7 +190,8 @@ impl fmt::Debug for DeviceConfig {
             .field("points_from", &self.points_from)
             .field("points", &self.points)
             .field("report", &self.report)
-            .field("batch", &self.batch)
+            .field("grouping", &self.grouping)
+            .field("measurement", &self.measurement)
             .finish()
     }
 }
@@ -258,11 +267,11 @@ pub struct PointConfig {
     /// This point's reporting policy (§5.3), as written (merged with a library's).
     #[serde(default)]
     pub report: Option<serde_json::Value>,
-    /// This point's grouping policy in measurement output (§5.5), as written (merged with a
+    /// This point's grouping policy in grouped output (§5.5), as written (merged with a
     /// library's).
     #[serde(default)]
-    pub batch: Option<serde_json::Value>,
-    /// In measurement output, whether this point still publishes samples (§5.5): `true` for a
+    pub grouping: Option<serde_json::Value>,
+    /// In grouped output, whether this point still publishes samples (§5.5): `true` for a
     /// consumer other than the flows, `false` to publish none. Unset, the runtime decides.
     #[serde(default)]
     pub sample: Option<bool>,
@@ -304,12 +313,13 @@ impl ConnectorConfig {
         table
     }
 
-    /// The merged `batch` table of one point (§5.5), merged like [`ConnectorConfig::report_table`].
-    pub fn batch_table(&self, device: &DeviceConfig, point: &PointConfig) -> serde_json::Map<String, serde_json::Value> {
+    /// The merged `grouping` table of one point (§5.5), merged like
+    /// [`ConnectorConfig::report_table`].
+    pub fn grouping_table(&self, device: &DeviceConfig, point: &PointConfig) -> serde_json::Map<String, serde_json::Value> {
         let mut table = serde_json::Map::new();
-        crate::measure::merge_batch_level(&mut table, self.connector.batch.as_ref());
-        crate::measure::merge_batch_level(&mut table, device.batch.as_ref());
-        crate::measure::merge_batch_level(&mut table, point.batch.as_ref());
+        crate::measure::merge_grouping_level(&mut table, self.connector.grouping.as_ref());
+        crate::measure::merge_grouping_level(&mut table, device.grouping.as_ref());
+        crate::measure::merge_grouping_level(&mut table, point.grouping.as_ref());
         table
     }
 

@@ -1911,8 +1911,8 @@ impl Publisher {
     /// published (the units), so a reload does not publish it again.
     fn new(protocol: &str, config: &ConnectorConfig, previous: Option<Publisher>) -> Self {
         let batcher = match Output::of(config) {
-            Output::Samples => None,
-            Output::Measurements => Some(Batcher::new(
+            Output::Single => None,
+            Output::Group => Some(Batcher::new(
                 config,
                 Instant::now(),
                 previous.and_then(|p| p.batcher),

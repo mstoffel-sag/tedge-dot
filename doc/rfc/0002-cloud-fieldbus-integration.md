@@ -113,7 +113,8 @@ execution point the legacy Python plugin used. On a Cloud Fieldbus assignment it
    `number`/`startBit`/`noBits`/`signed`/`input` → `address` + `datatype`,
    `multiplier`/`divisor`/`offset` → `transform` (Cloud Fieldbus `offset` is a decimal shift,
    i.e. `transform.decimal_shift`), `unit` → `unit`, and `measurementMapping.type/series` →
-   `meta.measurement.group/series`, which `ot-measurement` now honours per signal;
+   `meta.measurement.type/fragment/series` (the type is both the measurement type and the
+   fragment, as in the legacy plugin), which `ot-measurement` now honours per signal;
 3. publishes one `ot_define_device` command and waits for the connector to persist the TOML
    (so the cloud operation only turns SUCCESSFUL once the config file is updated).
 

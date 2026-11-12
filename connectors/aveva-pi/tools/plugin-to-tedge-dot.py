@@ -98,7 +98,7 @@ def main(argv=None):
         'protocol      = "aveva-pi"',
         'service_name  = "tedge-dot-aveva-pi"',
         f'poll_interval = "{int(pi.get("POLL_INTERVAL", 60))}s"',
-        'output        = "measurements"',
+        'output        = "group"',
         "",
         "[connection]",
         f'auth = {{ method = "basic", username = {toml_str(user)}, '

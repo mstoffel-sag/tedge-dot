@@ -1,28 +1,34 @@
 /** @jsxImportSource preact */
-// The batching playground: what the configured points publish, batched by the configuration's
-// `batch` policy into thin-edge measurements, and what Cumulocity receives. Each measurement is
-// drawn with one cell per signal, so a signal missing from it shows. The `batch` form here edits
-// `[connector] batch` of the shared configuration. The engine is src/lib/batch.ts, which runs
-// the contract's measurement-output vectors in CI.
+// The grouping playground: what the configured points publish, grouped by the configuration's
+// `grouping` policy into thin-edge measurements, and what Cumulocity receives. Each measurement
+// is drawn with one cell per signal, so a signal missing from it shows. The `grouping` form here
+// edits `[connector] grouping` of the shared configuration, and the fragment layout the points'
+// `meta.measurement`. The engine is src/lib/batch.ts, which runs the contract's grouped-output
+// vectors in CI.
 
 import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import {
   AGGREGATES,
-  batchTable,
-  batchToml,
   c8yMeasurement,
+  connectorToml,
   EVERY,
-  isoAt,
+  FRAGMENT_LAYOUTS,
+  fragmentWrites,
+  groupingTable,
+  layoutOf,
   POLICIES,
+  seriesOf,
   simulate,
+  tedgeMeasurement,
   WINDOWS,
-  type BatchForm,
-  type BatchRun,
+  withLayout,
+  type GroupingForm,
+  type GroupRun,
   type Measurement,
 } from '../../lib/batching';
 import { fmtTime, timeTicks } from '../../lib/chart';
 import { setAt } from '../../lib/config-builder';
-import { expandLibraries, formOfBatch, hasOwnBatch, resolve, withBatch } from '../../lib/gateway';
+import { expandLibraries, formOfGrouping, hasOwnGrouping, resolve, withGrouping } from '../../lib/gateway';
 import { outageWindow, simulateSignal } from '../../lib/playground';
 import { usePlayground } from '../../lib/signals-store';
 import { HELP } from '../../lib/help';
@@ -48,10 +54,13 @@ export default function BatchPlayground() {
   const config = useMemo(() => expandLibraries(state.config), [state.config]);
   const signals = useMemo(() => resolve(config, state.sims).specs, [JSON.stringify(config), JSON.stringify(state.sims)]);
   // The durations a policy does not use are kept here, so switching back restores them.
-  const [memory, setMemory] = useState<BatchForm>({ group_by: 'time', window: '500ms', every: '5s', aggregate: 'none' });
-  const form = formOfBatch(config.connector?.batch, memory);
-  const measurementOutput = config.connector?.output === 'measurements';
-  const ownBatch = hasOwnBatch(config);
+  const [memory, setMemory] = useState<GroupingForm>({ by: 'time', window: '500ms', every: '5s', aggregate: 'none' });
+  const form = formOfGrouping(config.connector, memory);
+  // "measurements" is the deprecated name of "group".
+  const groupedOutput = config.connector?.output === 'group' || config.connector?.output === 'measurements';
+  const ownGrouping = hasOwnGrouping(config);
+  const layout = layoutOf(state.config);
+  const type: string = config.connector?.measurement?.type || config.connector?.measurement?.group || config.connector?.protocol || '';
   const [spanMs, setSpanMs] = useState(30_000);
   const [start, setStart] = useState(0);
   const [selected, setSelected] = useState(0);
@@ -67,19 +76,19 @@ export default function BatchPlayground() {
 
   const reports = useMemo(() => signals.map((s) => simulateSignal(s, durationMs)), [JSON.stringify(signals), durationMs]);
   const compare = useMemo(
-    () => POLICIES.map((p) => ({ id: p.id, run: simulate(signals, durationMs, withBatch(config, { ...form, group_by: p.id }), reports) })),
+    () => POLICIES.map((p) => ({ id: p.id, run: simulate(signals, durationMs, withGrouping(config, { ...form, by: p.id }), reports) })),
     [reports, JSON.stringify(config), form.window, form.every, form.aggregate],
   );
-  // The detail runs the configuration as it is, with any device or point `batch` tables.
+  // The detail runs the configuration as it is, with any device or point `grouping` tables.
   const run = useMemo(
-    () => (ownBatch ? simulate(signals, durationMs, config, reports) : compare.find((c) => c.id === form.group_by)!.run),
-    [compare, ownBatch],
+    () => (ownGrouping ? simulate(signals, durationMs, config, reports) : compare.find((c) => c.id === form.by)!.run),
+    [compare, ownGrouping],
   );
 
   const span = Math.min(spanMs, durationMs);
   const from = Math.max(0, Math.min(start, durationMs - span));
   const to = from + span;
-  useEffect(() => setSelected(0), [form.group_by, from, span, JSON.stringify(signals)]);
+  useEffect(() => setSelected(0), [form.by, from, span, JSON.stringify(signals)]);
   const inView = (t: number) => t >= from && t <= to;
   const visible = run.measurements.map((m, i) => ({ m, i })).filter(({ m }) => inView(m.time));
   const sel = visible[Math.min(selected, visible.length - 1)];
@@ -88,11 +97,16 @@ export default function BatchPlayground() {
   const left = narrow ? 98 : PAD.left;
   const x = (t: number) => left + ((t - from) / span) * (W - left - PAD.right);
   const N = signals.length;
-  const set = <K extends keyof BatchForm>(key: K, value: BatchForm[K]) => {
+  const set = <K extends keyof GroupingForm>(key: K, value: GroupingForm[K]) => {
     const next = { ...form, [key]: value };
     setMemory(next);
-    setState((s) => ({ ...s, config: setAt(s.config, '/connector/batch', batchTable(next)) }));
+    setState((s) => {
+      // The deprecated `batch` gives way to the `grouping` written here.
+      const { batch: _, ...connector } = s.config.connector ?? {};
+      return { ...s, config: setAt({ ...s.config, connector }, '/connector/grouping', groupingTable(next)) };
+    });
   };
+  const setLayout = (id: 'type' | 'signal') => setState((s) => ({ ...s, config: withLayout(s.config, id) }));
   const policyName = (id: string) => (id === 'frame' ? `frame ${form.window}` : id === 'sample' ? `sample ${form.every}` : 'time');
   const fmt = (v: number) => String(Number(v.toFixed(3)));
   const ticks = timeTicks(span, narrow ? 3 : 6, from);
@@ -119,22 +133,22 @@ export default function BatchPlayground() {
 
   return (
     <div class="td-tool not-content bp">
-      {!measurementOutput && (
+      {!groupedOutput && (
         <p class="td-panel bp-notice">
-          The configuration publishes samples (<code>output = "{config.connector?.output ?? 'samples'}"</code>): every published reading is its own message, and
-          nothing is batched. The view below shows what <code>output = "measurements"</code> would send.{' '}
-          <button type="button" class="td-btn" onClick={() => setState((s) => ({ ...s, config: setAt(s.config, '/connector/output', 'measurements') }))}>
-            Set output = "measurements"
+          The configuration publishes samples (<code>output = "{config.connector?.output ?? 'single'}"</code>): every published reading is its own message, and
+          nothing is grouped. The view below shows what <code>output = "group"</code> would send.{' '}
+          <button type="button" class="td-btn" onClick={() => setState((s) => ({ ...s, config: setAt(s.config, '/connector/output', 'group') }))}>
+            Set output = "group"
           </button>
         </p>
       )}
       {signals.length === 0 && <p class="td-panel bp-notice">No point of the configuration reads a signal.</p>}
 
       <fieldset class="td-panel bp-fieldset">
-        <legend><code>batch</code> on <code>[connector]</code><Help text={HELP['batch.group_by']} label="group_by" /></legend>
-        <div class="bp-choices" role="radiogroup" aria-label="group_by">
+        <legend><code>grouping</code> on <code>[connector]</code><Help text={HELP['grouping.by']} label="by" /></legend>
+        <div class="bp-choices" role="radiogroup" aria-label="by">
           {POLICIES.map((p) => (
-            <button type="button" role="radio" aria-checked={form.group_by === p.id} class="td-btn" onClick={() => set('group_by', p.id)}><code>{p.id}</code></button>
+            <button type="button" role="radio" aria-checked={form.by === p.id} class="td-btn" onClick={() => set('by', p.id)}><code>{p.id}</code></button>
           ))}
         </div>
         <div class="bp-row">
@@ -149,9 +163,20 @@ export default function BatchPlayground() {
             onChange={(v) => set('aggregate', v)}
           />
         </div>
-        <small>{POLICIES.find((p) => p.id === form.group_by)!.text}</small>
-        {ownBatch && <small>Some devices or points set their own <code>batch</code> in the configuration; the chart below runs them as configured, the strip compares the policies for every point.</small>}
-        <pre class="rp-toml bp-toml" aria-label="The batch table in TOML"><code>{`[connector]\noutput = "measurements"\n${batchToml(form)}`}</code></pre>
+        <small>{POLICIES.find((p) => p.id === form.by)!.text}</small>
+        {ownGrouping && <small>Some devices or points set their own <code>grouping</code> in the configuration; the chart below runs them as configured, the strip compares the policies for every point.</small>}
+        <div class="bp-choices" role="radiogroup" aria-label="Fragments">
+          <span>Fragments of <code>{type}</code><Help text={HELP['workbench.fragments']} label="Fragments" /></span>
+          {FRAGMENT_LAYOUTS.map((l) => (
+            <button type="button" role="radio" aria-checked={layout === l.id} class="td-btn" onClick={() => setLayout(l.id)}>{l.label}</button>
+          ))}
+        </div>
+        <small>
+          {layout === 'custom'
+            ? <>The points name their own fragments in <code>meta.measurement</code>; the views run them as configured.</>
+            : FRAGMENT_LAYOUTS.find((l) => l.id === layout)!.text}
+        </small>
+        <pre class="rp-toml bp-toml" aria-label="The grouping settings in TOML"><code>{connectorToml(form, type, layout)}</code></pre>
       </fieldset>
 
       <div class="bp-view" role="group" aria-label="Part of the run to show">
@@ -175,7 +200,7 @@ export default function BatchPlayground() {
           signal, in the order of the configured points: a hollow cell is a signal missing from that measurement.
         </figcaption>
         <div ref={chartRef}>
-          <svg viewBox={`0 0 ${W} ${CH}`} role="img" aria-label="The samples and the measurements each group_by makes of them">
+          <svg viewBox={`0 0 ${W} ${CH}`} role="img" aria-label="The samples and the measurements each grouping policy makes of them">
             <text x={left - 8} y={10} class="bp-label" text-anchor="end" dominant-baseline="middle">samples</text>
             <line x1={left} x2={W - PAD.right} y1={10} y2={10} class="rp-grid-line" />
             {!tooMany && run.inputs.map((r) => (inView(r.ts) && r.quality === 'good' ? <circle cx={x(r.ts)} cy={10} r={2.5} class="bp-input" /> : null))}
@@ -183,7 +208,7 @@ export default function BatchPlayground() {
               const y = rowY(i);
               const ms = c.run.measurements.filter((m) => inView(m.time));
               return (
-                <g class={`bp-row-g ${c.id === form.group_by ? 'on' : ''}`} onClick={() => set('group_by', c.id)}>
+                <g class={`bp-row-g ${c.id === form.by ? 'on' : ''}`} onClick={() => set('by', c.id)}>
                   <rect x={0} y={y - rowH / 2 + 1} width={W} height={rowH - 2} class="bp-row-bg" />
                   <text x={left - 8} y={y} class="bp-label" text-anchor="end" dominant-baseline="middle">{narrow ? c.id : policyName(c.id)}</text>
                   <line x1={left} x2={W - PAD.right} y1={y} y2={y} class="rp-grid-line" />
@@ -204,7 +229,7 @@ export default function BatchPlayground() {
             const ms = c.run.measurements;
             return (
               <li>
-                <button type="button" class="td-btn" aria-pressed={c.id === form.group_by} onClick={() => set('group_by', c.id)}>
+                <button type="button" class="td-btn" aria-pressed={c.id === form.by} onClick={() => set('by', c.id)}>
                   <code>{policyName(c.id)}</code>
                   <span>{ms.length} measurement{ms.length === 1 ? '' : 's'} in the run; {c.run.missing} time{c.run.missing === 1 ? '' : 's'} a signal is missing from one</span>
                   <span>
@@ -221,7 +246,7 @@ export default function BatchPlayground() {
       <Stats run={run} />
 
       <div class="bp-chart">
-        <svg viewBox={`0 0 ${W} ${H}`} role="img" aria-label={`Timeline of ${policyName(form.group_by)}: ${run.inputs.length} samples of ${N} signals become ${run.measurements.length} measurements.`}>
+        <svg viewBox={`0 0 ${W} ${H}`} role="img" aria-label={`Timeline of ${policyName(form.by)}: ${run.inputs.length} samples of ${N} signals become ${run.measurements.length} measurements.`}>
           {run.windows.filter((w) => w.to >= from && w.from <= to).map((w) => (
             <rect x={x(Math.max(from, w.from))} width={Math.max(1, x(Math.min(to, w.to)) - x(Math.max(from, w.from)))} y={PAD.top} height={N * LANE} class="bp-window" />
           ))}
@@ -301,8 +326,8 @@ export default function BatchPlayground() {
         <li><svg width="12" height="12" aria-hidden="true"><circle cx="6" cy="6" r="1.5" class="bp-withheld" /></svg>Reading held back by <code>report</code></li>
         <li><svg width="12" height="12" aria-hidden="true"><path d="M3,3l6,6m0,-6l-6,6" class="bp-bad bp-bad-pub" /></svg>Read failed</li>
         <li><svg width="12" height="16" aria-hidden="true"><rect x="2" y="1" width="8" height="6" class="bp-cell c0" /><rect x="2" y="9" width="8" height="6" class="bp-cell-missing c0" /></svg>Measurement: a cell per signal, hollow when missing</li>
-        {form.group_by === 'frame' && <li><svg width="16" height="12" aria-hidden="true"><rect width="16" height="12" class="bp-window" /></svg>Frame window</li>}
-        {form.group_by === 'sample' && <li><svg width="16" height="12" aria-hidden="true"><line x1="8" x2="8" y1="0" y2="12" class="bp-sample" /></svg>Sample time</li>}
+        {form.by === 'frame' && <li><svg width="16" height="12" aria-hidden="true"><rect width="16" height="12" class="bp-window" /></svg>Frame window</li>}
+        {form.by === 'sample' && <li><svg width="16" height="12" aria-hidden="true"><line x1="8" x2="8" y1="0" y2="12" class="bp-sample" /></svg>Sample time</li>}
       </ul>
 
       <div class="bp-out">
@@ -327,9 +352,8 @@ export default function BatchPlayground() {
                   {signals.map((s, k) => (
                     <td class={m.has[k] ? '' : 'bp-missing'}>
                       {m.has[k]
-                        ? Object.entries(m.series)
-                            .filter(([name]) => name === s.id || name.startsWith(`${s.id}_`))
-                            .map(([name, v]) => (name === s.id ? fmt(v) : `${name.slice(s.id.length + 1)} ${fmt(v)}`))
+                        ? seriesOf(m, run.names[k])
+                            .map(([name, v]) => (name === run.names[k].series ? fmt(v) : `${name.slice(run.names[k].series.length + 1)} ${fmt(v)}`))
                             .join(', ')
                         : 'missing'}
                     </td>
@@ -346,7 +370,7 @@ export default function BatchPlayground() {
   );
 }
 
-function describe(m: Measurement, run: BatchRun): string {
+function describe(m: Measurement, run: GroupRun): string {
   const ids = (has: boolean) => run.signals.filter((_, s) => m.has[s] === has).map((s) => s.id).join(', ');
   return m.has.includes(false) ? `${ids(true)}; missing ${ids(false)}` : ids(true);
 }
@@ -364,22 +388,23 @@ function Cells(props: { x: number; y: number; m: Measurement; size: number; w: n
   );
 }
 
-function Stats({ run }: { run: BatchRun }) {
+function Stats({ run }: { run: GroupRun }) {
   const readings = run.reports.reduce((n, r) => n + r.readings.length, 0);
-  const series = run.measurements.reduce((n, m) => n + Object.keys(m.series).length, 0);
+  const series = run.measurements.reduce((n, m) => n + Object.values(m.fragments).reduce((k, f) => k + Object.keys(f).length, 0), 0);
   return (
     <dl class="rp-stats bp-stats">
       <div><dt>Readings</dt><dd>{readings}</dd></div>
       <div><dt>Samples after report</dt><dd>{run.inputs.length}</dd></div>
       <div><dt>Measurements</dt><dd>{run.measurements.length}</dd></div>
       <div><dt>Series sent</dt><dd>{series}</dd></div>
+      <div><dt>Fragments sent<Help text={HELP['workbench.fragment_writes']} label="Fragments sent" /></dt><dd>{fragmentWrites(run)}</dd></div>
       <div><dt>Signal missing</dt><dd>{run.missing}</dd></div>
       <div><dt>Samples not sent</dt><dd>{run.dropped.length}</dd></div>
     </dl>
   );
 }
 
-function Json({ m, index, run }: { m: Measurement; index: number; run: BatchRun }) {
+function Json({ m, index, run }: { m: Measurement; index: number; run: GroupRun }) {
   const missing = run.signals.filter((_, s) => !m.has[s]).map((s) => s.id);
   return (
     <div class="bp-json">
@@ -390,8 +415,8 @@ function Json({ m, index, run }: { m: Measurement; index: number; run: BatchRun 
           Not in it: {missing.map((id, i) => <>{i ? ', ' : ''}<code>{id}</code></>)}. Cumulocity stores nothing for {missing.length === 1 ? 'that series' : 'those series'} at this time.
         </p>
       )}
-      <p>From the connector, published at {fmtTime(m.publishedAt, true)} on <code>{run.topic}</code>:</p>
-      <pre class="rp-toml"><code>{JSON.stringify({ time: isoAt(m.time), [run.group]: m.series })}</code></pre>
+      <p>From the connector, published at {fmtTime(m.publishedAt, true)} on <code>{`te/device/${run.device}///m/${m.type}`}</code>:</p>
+      <pre class="rp-toml"><code>{JSON.stringify(tedgeMeasurement(m))}</code></pre>
     </div>
   );
 }
@@ -399,7 +424,7 @@ function Json({ m, index, run }: { m: Measurement; index: number; run: BatchRun 
 function Select(props: { label: string; note: string; value: string; options: string[]; names?: Record<string, string>; onChange: (v: string) => void }) {
   return (
     <label class="td-field bp-select">
-      <span><code>{props.label}</code> <small>({props.note})</small><Help text={HELP[`batch.${props.label}`]} label={props.label} /></span>
+      <span><code>{props.label}</code> <small>({props.note})</small><Help text={HELP[`grouping.${props.label}`]} label={props.label} /></span>
       <select value={props.value} onChange={(e) => props.onChange((e.currentTarget as HTMLSelectElement).value)}>
         {props.options.map((o) => <option value={o}>{props.names?.[o] ?? `"${o}"`}</option>)}
       </select>

@@ -2,7 +2,7 @@
 // (src/components/tools/Help.tsx). A test holds the config builder's texts to the contract schema
 // and the builder's protocol shapes, so a new key gets a text.
 //
-// Keys: "<section>.<key>" for the configuration (connector, mqtt, device, point, report, batch),
+// Keys: "<section>.<key>" for the configuration (connector, mqtt, device, point, report, grouping, measurement),
 // "<protocol>.<table>.<key>" for protocol-specific tables (protocol_address, address,
 // connection), and "workbench.<name>" / "picker.<name>" for the tools' own fields.
 
@@ -13,11 +13,12 @@ export const HELP: Record<string, string> = {
   'connector.poll_interval': 'How often a polled point is read, unless its device or the point sets its own. Default 2s.',
   'connector.sampling_interval': 'How often the OPC UA server samples a subscribed point, unless the device or point sets one. Default: the poll_interval.',
   'connector.log_level': 'How much the service logs: error, warn, info, debug or trace.',
-  'connector.output': '"samples" publishes each reading as its own message; "measurements" batches readings into thin-edge measurements.',
+  'connector.output': '"single" publishes each reading as its own sample; "group" puts many series into each thin-edge measurement.',
   'connector.max_inflight': 'Requests the connector keeps in flight to one endpoint at a time.',
   'connector.max_inflight_total': 'Requests the connector keeps in flight across all endpoints at a time.',
   'connector.report': 'The reporting policy of every point that does not set its own: which readings are published.',
-  'connector.batch': 'How measurement output groups readings into measurements, for every point that does not set its own.',
+  'connector.grouping': 'How grouped output puts readings into measurements, for every point that does not set its own.',
+  'connector.measurement': 'How grouped output names the measurements: type, fragment and series.',
 
   // [mqtt]
   'mqtt.host': 'The MQTT broker the connector publishes to, usually the thin-edge.io broker on the gateway.',
@@ -31,7 +32,7 @@ export const HELP: Record<string, string> = {
   'device.max_inflight': 'Requests in flight to this device at a time, over [connector] max_inflight.',
   'device.points_from': 'Point libraries the device takes its points from, in order. Its own points apply over them, by id.',
   'device.report': "This device's reporting policy, merged over [connector]'s.",
-  'device.batch': "This device's grouping in measurement output, merged over [connector]'s.",
+  'device.grouping': "This device's grouping in grouped output, merged over [connector]'s.",
 
   // [[device.point]]
   'point.id': 'The point id: its series name and MQTT topic segment. In the workbench, the signal with this name is what it reads.',
@@ -42,7 +43,7 @@ export const HELP: Record<string, string> = {
   'point.sampling_interval': 'How often the OPC UA server samples this point when subscribed. "0" asks for its fastest rate.',
   'point.subscribe': 'On: the server pushes the value when it changes. Off: the connector polls it every poll_interval.',
   'point.report': "This point's reporting policy, merged key by key over its device's and [connector]'s.",
-  'point.batch': "This point's grouping in measurement output, merged over its device's and [connector]'s.",
+  'point.grouping': "This point's grouping in grouped output, merged over its device's and [connector]'s.",
 
   // report
   'report.on_change': 'Publish a reading only when its value differs from the last one published.',
@@ -51,11 +52,16 @@ export const HELP: Record<string, string> = {
   'report.max_interval': 'Heartbeat: publish at least once per interval, even when nothing changed. "0" switches it off.',
   'report.debounce': 'Publish a change only once the value has stayed for this long.',
 
-  // batch
-  'batch.group_by': 'time: readings with the same timestamp share a measurement. frame: readings within a window. sample: every value at a fixed period.',
-  'batch.window': 'frame: readings within this window share a measurement stamped with its first time.',
-  'batch.every': 'sample: the period at which every point sends the value it holds.',
-  'batch.aggregate': 'sample: send the mean, min, max or last of each period instead of the value held at the sample time.',
+  // grouping
+  'grouping.by': 'time: readings with the same timestamp share a measurement. frame: readings within a window. sample: every value at a fixed period.',
+  'grouping.window': 'frame: readings within this window share a measurement stamped with its first time.',
+  'grouping.every': 'sample: the period at which every point sends the value it holds.',
+  'grouping.aggregate': 'sample: send the mean, min, max or last of each period instead of the value held at the sample time.',
+
+  // measurement (naming in grouped output)
+  'measurement.type': 'The measurement type: the topic m/<type> and the Cumulocity type. Default: the protocol.',
+  'measurement.fragment': 'The fragment that holds the series in the measurement body. Default: the type.',
+  'measurement.point_separator': 'Split a point id at this text: the part before names the fragment (and the type, if unset), the rest the series.',
 
   // Modbus
   'modbus.protocol_address.transport': 'tcp for Modbus TCP, rtu for a serial line.',
@@ -154,8 +160,10 @@ export const HELP: Record<string, string> = {
   'workbench.signal': 'The signal name. The config point with the same id reads it.',
   'workbench.behaviour': 'How the value moves over the run. The unit becomes the point unit.',
   'workbench.outage': 'A part of the run in which every read of this signal fails (quality "bad").',
-  'workbench.duration': 'How long the simulation runs, for every point and the batching view.',
-  'workbench.span': 'How much of the run the batching charts and the table show.',
+  'workbench.duration': 'How long the simulation runs, for every point and the grouping view.',
+  'workbench.span': 'How much of the run the grouping charts and the table show.',
+  'workbench.fragments': 'How the series are split into fragments of the measurement. Several fragments of one type share a measurement.',
+  'workbench.fragment_writes': 'The fragments in all measurements. Streaming Lake Ingestion writes each fragment of a measurement separately.',
   'workbench.from': 'Where the part of the run that is shown starts.',
 
   // The package picker
@@ -172,7 +180,9 @@ export function helpForPath(path: string, protocol: string): string | undefined 
   const key = keys.at(-1) ?? '';
   const table = keys.at(-2) ?? '';
   if (['protocol_address', 'address', 'connection'].includes(table)) return HELP[`${protocol}.${table}.${key}`];
-  if (table === 'report' || table === 'batch') return HELP[`${table}.${key}`];
+  if (table === 'report' || table === 'grouping' || table === 'measurement') return HELP[`${table}.${key}`];
+  // The deprecated `batch` table is `grouping`, with `group_by` named `by`.
+  if (table === 'batch') return HELP[`grouping.${key === 'group_by' ? 'by' : key}`];
   if (table === 'point') return HELP[`point.${key}`];
   if (table === 'device') return HELP[`device.${key}`];
   return HELP[`${table}.${key}`];

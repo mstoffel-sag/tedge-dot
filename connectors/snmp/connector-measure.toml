@@ -1,8 +1,8 @@
-# The `snmpm` device of the SNMP e2e harness, in measurement output (contract §5.5, openspec
-# change native-batched-output): the connector publishes the thin-edge measurements itself,
-# batched, and samples only for the points a flow reads. `output` is a connector setting, so the
-# device is a connector instance of its own, which entrypoint.sh starts next to the main one. It
-# polls the v2c agent (agent/agent.py seeds):
+# The `snmpm` device of the SNMP e2e harness, in grouped output (contract §5.5, openspec change
+# native-batched-output): the connector publishes the thin-edge measurements itself, several
+# series per message, and samples only for the points a flow reads. `output` is a connector
+# setting, so the device is a connector instance of its own, which entrypoint.sh starts next to
+# the main one. It polls the v2c agent (agent/agent.py seeds):
 #
 #   int_negative  -42, a unit             -> a series of m/snmp, and the units metadata
 #   gauge_float   42, declares an alarm   -> a series, and a sample marked "measured" that
@@ -16,7 +16,7 @@ protocol      = "snmp"
 service_name  = "tedge-dot-measure"
 log_level     = "info"
 poll_interval = "1s"
-output        = "measurements"
+output        = "group"
 
 [mqtt]
 host = "broker"
@@ -54,7 +54,7 @@ default_mode     = "typed"
   id       = "int_seed"
   datatype = "int16"
   address  = { oid = "1.3.6.1.4.1.99999.1.2.0" }
-  meta     = { measurement = { group = "Agent", series = "Seed" } }
+  meta     = { measurement = { type = "Agent", series = "Seed" } }
 
   [[device.point]]
   id       = "sys_descr"

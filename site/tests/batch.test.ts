@@ -1,9 +1,9 @@
 // Every case of doc/contract/test-vectors/measurements/vectors.json, as the Rust and C SDKs run
-// them: the batching playground's engine cannot drift from the SDKs unnoticed.
+// them: the grouping playground's engine cannot drift from the SDKs unnoticed.
 import { readFileSync } from 'node:fs';
 import { parse } from 'smol-toml';
 import { describe, expect, it } from 'vitest';
-import { Batcher, SERIES_OVERHEAD, formatNumber, type Message, type Reading, type Routing } from '../src/lib/batch';
+import { Batcher, SERIES_OVERHEAD, SIZE_BUDGET, formatNumber, type Message, type Reading, type Routing } from '../src/lib/batch';
 
 const doc = JSON.parse(
   readFileSync(new URL('../../doc/contract/test-vectors/measurements/vectors.json', import.meta.url), 'utf8'),
@@ -15,7 +15,7 @@ function configOf(c: any): any {
   let text: string = c.config;
   if (c.generate) {
     for (let i = 0; i < c.generate.count; i++) {
-      const id = c.generate.id.replace('{i:04}', String(i).padStart(4, '0'));
+      const id = c.generate.id.replaceAll('{i:04}', String(i).padStart(4, '0'));
       text += `[[device.point]]\nid = "${id}"\ndatatype = "${c.generate.datatype}"\naddress = {}\n`;
     }
   }
@@ -36,7 +36,7 @@ function readingOf(config: any, r: any): Reading {
   };
 }
 
-describe('measurement-output vectors', () => {
+describe('grouped-output vectors', () => {
   expect(doc.cases.length).toBeGreaterThan(0);
   for (const c of doc.cases) {
     it(c.name, () => {
@@ -63,9 +63,13 @@ describe('measurement-output vectors', () => {
       if (c.split) {
         const counts = out.map((m) => {
           expect(m.topic).toBe(c.split.topic);
-          expect(new TextEncoder().encode(m.payload).length + SERIES_OVERHEAD * 200).toBeLessThan(16_184);
+          // Every fragment's series count, and the estimate stays within the budget.
           const body = JSON.parse(m.payload);
-          return Object.keys(Object.entries(body).find(([k]) => k !== 'time')![1] as object).length;
+          const n = Object.entries(body)
+            .filter(([k]) => k !== 'time')
+            .reduce((sum, [, f]) => sum + Object.keys(f as object).length, 0);
+          expect(new TextEncoder().encode(m.payload).length + SERIES_OVERHEAD * n).toBeLessThanOrEqual(SIZE_BUDGET);
+          return n;
         });
         expect(counts).toEqual(c.split.series);
         return;

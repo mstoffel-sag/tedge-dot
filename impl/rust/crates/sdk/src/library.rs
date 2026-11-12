@@ -54,7 +54,8 @@ const CONNECTOR_ONLY_KEYS: [&str; 4] = ["connector", "mqtt", "connection", "devi
 /// Point fields that are merged key by key when a later definition overrides an earlier one.
 /// Everything else — `address` included — is replaced wholesale, because a partial protocol
 /// address is not a meaningful thing to inherit.
-const DEEP_MERGED_KEYS: [&str; 4] = ["meta", "transform", "report", "batch"];
+/// A point's deprecated `batch` is rewritten as `grouping` before any merge.
+const DEEP_MERGED_KEYS: [&str; 4] = ["meta", "transform", "report", "grouping"];
 
 // The keys a contract-level table may carry (§3.3). Anything else is refused, with the nearest
 // known key suggested, so a misspelt setting — `polling_interval` for `poll_interval` — is
@@ -74,6 +75,7 @@ const CONNECTOR_KEYS: &[&str] = &[
     "report",
     "output",
     "measurement",
+    "grouping",
     "batch",
     "max_inflight",
     "max_inflight_total",
@@ -90,6 +92,8 @@ const DEVICE_KEYS: &[&str] = &[
     "point",
     "enabled",
     "report",
+    "measurement",
+    "grouping",
     "batch",
     "max_inflight",
 ];
@@ -112,6 +116,7 @@ const POINT_KEYS: &[&str] = &[
     "enabled",
     "report",
     "map",
+    "grouping",
     "batch",
     "sample",
 ];
@@ -193,6 +198,9 @@ fn check_document(doc: &Value) -> Result<(), String> {
         if let Some(report) = connector.get("report") {
             check_keys(report, crate::report::REPORT_KEYS, "the report of [connector]")?;
         }
+        if let Some(grouping) = connector.get("grouping") {
+            check_keys(grouping, crate::measure::GROUPING_KEYS, "the grouping of [connector]")?;
+        }
         if let Some(batch) = connector.get("batch") {
             check_keys(batch, crate::measure::BATCH_KEYS, "the batch of [connector]")?;
         }
@@ -208,6 +216,16 @@ fn check_document(doc: &Value) -> Result<(), String> {
         check_keys(device, DEVICE_KEYS, &format!("device '{name}'"))?;
         if let Some(report) = device.get("report") {
             check_keys(report, crate::report::REPORT_KEYS, &format!("the report of device '{name}'"))?;
+        }
+        if let Some(measurement) = device.get("measurement") {
+            check_keys(
+                measurement,
+                crate::measure::DEVICE_MEASUREMENT_KEYS,
+                &format!("the measurement of device '{name}'"),
+            )?;
+        }
+        if let Some(grouping) = device.get("grouping") {
+            check_keys(grouping, crate::measure::GROUPING_KEYS, &format!("the grouping of device '{name}'"))?;
         }
         if let Some(batch) = device.get("batch") {
             check_keys(batch, crate::measure::BATCH_KEYS, &format!("the batch of device '{name}'"))?;
@@ -228,6 +246,9 @@ fn check_point_keys(point: &Value) -> Result<(), String> {
     }
     if let Some(report) = point.get("report") {
         check_keys(report, crate::report::REPORT_KEYS, &format!("the report of point '{id}'"))?;
+    }
+    if let Some(grouping) = point.get("grouping") {
+        check_keys(grouping, crate::measure::GROUPING_KEYS, &format!("the grouping of point '{id}'"))?;
     }
     if let Some(batch) = point.get("batch") {
         check_keys(batch, crate::measure::BATCH_KEYS, &format!("the batch of point '{id}'"))?;
@@ -341,7 +362,7 @@ fn check_point_values(point: &Value) -> Result<(), String> {
     check_type(point, "enabled", Value::is_bool, "true or false")?;
     check_type(point, "sample", Value::is_bool, "true or false")?;
     check_report(point)?;
-    check_batch(point)?;
+    check_grouping(point)?;
     check_map(point)
 }
 
@@ -398,7 +419,7 @@ fn check_resolved_methods(config: &crate::config::ConnectorConfig) -> Result<(),
                 ("sampling_interval", point.sampling_interval.is_some()),
                 ("subscribe", point.subscribe.is_some()),
                 ("report", point.report.is_some()),
-                ("batch", point.batch.is_some()),
+                ("grouping", point.grouping.is_some()),
                 ("sample", point.sample.is_some()),
                 ("meta.parameter", parameter),
             ];
@@ -418,18 +439,39 @@ fn check_report(table: &Value) -> Result<(), String> {
     table.get("report").map_or(Ok(()), crate::report::check_values)
 }
 
-/// The `batch` table of a connector, device or point (§5.5), when present.
-fn check_batch(table: &Value) -> Result<(), String> {
-    table.get("batch").map_or(Ok(()), crate::measure::check_values)
+/// The `grouping` table of a connector, device or point (§5.5), when present. A deprecated
+/// `batch` was rewritten as `grouping` before this runs ([`rewrite_batches`]).
+fn check_grouping(table: &Value) -> Result<(), String> {
+    table.get("grouping").map_or(Ok(()), crate::measure::check_values)
+}
+
+/// Rewrite every deprecated `batch` table of a configuration as `grouping` (§5.5): `[connector]`,
+/// each device (disabled ones included) and each inline point. Runs after the keys were checked
+/// as written and before any value is. Returns whether it rewrote one.
+fn rewrite_batches(doc: &mut Value) -> Result<bool, String> {
+    let mut rewrote = false;
+    if let Some(connector) = doc.get_mut("connector") {
+        rewrote |= crate::measure::rewrite_batch(connector).map_err(|e| format!("[connector] {e}"))?;
+    }
+    for device in doc.get_mut("device").and_then(Value::as_array_mut).into_iter().flatten() {
+        let name = device.get("name").and_then(Value::as_str).unwrap_or("<unnamed>").to_string();
+        rewrote |= crate::measure::rewrite_batch(device).map_err(|e| format!("device '{name}': {e}"))?;
+        for point in device.get_mut("point").and_then(Value::as_array_mut).into_iter().flatten() {
+            let id = point.get("id").and_then(Value::as_str).unwrap_or("<unnamed>").to_string();
+            rewrote |= crate::measure::rewrite_batch(point)
+                .map_err(|e| format!("device '{name}': point '{id}': {e}"))?;
+        }
+    }
+    Ok(rewrote)
 }
 
 /// The grouping policy every point ends up with (§5.5): what only the merge of `[connector]`,
-/// device and point `batch` tables decides — the duration its `group_by` needs is there, and no
+/// device and point `grouping` tables decides — the duration its `by` needs is there, and no
 /// key of another policy is. Checked on the typed configuration, like the maps.
-fn check_resolved_batches(config: &crate::config::ConnectorConfig) -> Result<(), String> {
+fn check_resolved_groupings(config: &crate::config::ConnectorConfig) -> Result<(), String> {
     for device in &config.devices {
         for point in &device.points {
-            crate::measure::GroupBy::from_table(&config.batch_table(device, point))
+            crate::measure::GroupBy::from_table(&config.grouping_table(device, point))
                 .map_err(|e| format!("device '{}': point '{}': {e}", device.name, point.id))?;
         }
     }
@@ -559,14 +601,17 @@ pub fn resolve(text: &str, base_dir: &Path) -> Result<ConnectorConfig, String> {
     let mut doc: Value =
         toml::from_str(text).map_err(|e| format!("failed to parse config: {}", toml_error(text, &e)))?;
     check_document(&doc)?;
+    if rewrite_batches(&mut doc)? {
+        tracing::warn!("{}", crate::measure::BATCH_DEPRECATED);
+    }
     // Before the devices, as the C loader reads it; the typed parse would only catch a non-string.
     if let Some(connector) = doc.get("connector") {
         check_duration(connector, "poll_interval")
             .and_then(|()| check_duration(connector, "sampling_interval"))
             .and_then(|()| check_report(connector))
             .and_then(|()| check_one_of(connector, "output", crate::measure::OUTPUTS))
-            .and_then(|()| connector.get("measurement").map_or(Ok(()), crate::measure::check_measurement))
-            .and_then(|()| check_batch(connector))
+            .and_then(|()| connector.get("measurement").map_or(Ok(()), |m| crate::measure::check_measurement(m, true)))
+            .and_then(|()| check_grouping(connector))
             .and_then(|()| crate::concurrency::check_positive(connector, "max_inflight"))
             .and_then(|()| crate::concurrency::check_positive(connector, "max_inflight_total"))
             .map_err(|e| format!("[connector] {e}"))?;
@@ -577,7 +622,10 @@ pub fn resolve(text: &str, base_dir: &Path) -> Result<ConnectorConfig, String> {
         .map_err(|e: toml::de::Error| format!("failed to parse config: {e}"))?;
     check_resolved_maps(&config)?;
     check_resolved_methods(&config)?;
-    check_resolved_batches(&config)?;
+    check_resolved_groupings(&config)?;
+    if let Some(warning) = crate::measure::deprecated_output(&config) {
+        tracing::warn!("{warning}");
+    }
     // Absolute, so a later change of working directory cannot move what it points at.
     config.base_dir = Some(std::path::absolute(base_dir).unwrap_or_else(|_| base_dir.to_path_buf()));
     Ok(config)
@@ -636,7 +684,8 @@ fn expand(doc: &mut Value, base_dir: &Path) -> Result<(), String> {
             .and_then(|()| check_duration(device, "poll_interval"))
             .and_then(|()| check_duration(device, "sampling_interval"))
             .and_then(|()| check_report(device))
-            .and_then(|()| check_batch(device))
+            .and_then(|()| check_grouping(device))
+            .and_then(|()| device.get("measurement").map_or(Ok(()), |m| crate::measure::check_measurement(m, false)))
             .and_then(|()| crate::concurrency::check_positive(device, "max_inflight"))
             .map_err(|e| format!("device '{name}': {e}"))?;
         // Checked here rather than left to the typed parse, because an empty string would
@@ -1106,20 +1155,29 @@ fn read_library(path: &Path, protocol: &str) -> Result<Library, String> {
 
     // Within one library a repeated id is a mistake, not an override: there is no meaningful
     // order to apply and the second definition would silently win.
-    let mut seen: HashSet<&str> = HashSet::new();
-    for point in points {
-        check_point_keys(point)
-            .and_then(|()| check_point_fields(point))
-            .map_err(|e| format!("point library '{where_}': {e}"))?;
+    let mut seen: HashSet<String> = HashSet::new();
+    let mut points = points.clone();
+    let mut rewrote = false;
+    for point in &mut points {
+        check_point_keys(point).map_err(|e| format!("point library '{where_}': {e}"))?;
+        // The deprecated `batch` becomes `grouping` before its values are checked and before
+        // the point is merged with another definition (§5.5).
+        let named = point.get("id").and_then(Value::as_str).unwrap_or("<unnamed>").to_string();
+        rewrote |= crate::measure::rewrite_batch(point)
+            .map_err(|e| format!("point library '{where_}': point '{named}': {e}"))?;
+        check_point_fields(point).map_err(|e| format!("point library '{where_}': {e}"))?;
         let id = point
             .get("id")
             .and_then(Value::as_str)
             .ok_or_else(|| format!("point library '{where_}': a point is missing its id"))?;
-        if !seen.insert(id) {
+        if !seen.insert(id.to_string()) {
             return Err(format!(
                 "point library '{where_}' declares point '{id}' twice"
             ));
         }
+    }
+    if rewrote {
+        tracing::warn!("point library '{where_}': {}", crate::measure::BATCH_DEPRECATED);
     }
     // Each point carries the `[library]` table its address belongs to, so a protocol can read
     // the library's address settings per point after the points of several libraries and the
@@ -1299,6 +1357,33 @@ points_from      = [{refs}]
         assert_eq!(ids, ["boiler_temp", "pump_run"]);
         assert_eq!(device.points[0].unit.as_deref(), Some("°C"));
         assert_eq!(device.points[1].access.as_deref(), Some("read_write"));
+    }
+
+    /// A library's deprecated `batch` is rewritten as `grouping` before the merge, so a site
+    /// definition's `grouping` merges with it key by key (§5.5).
+    #[test]
+    fn a_library_batch_merges_with_a_site_grouping() {
+        let dir = Dir::new("grouping");
+        dir.write(
+            "modbus/framed.toml",
+            "[library]\nprotocol = \"modbus\"\n\n[[point]]\nid = \"t\"\ndatatype = \"float32\"\n\
+             address = { table = \"holding\", address = 7, count = 2 }\nbatch = { group_by = \"frame\", window = \"100ms\" }\n",
+        );
+        let cfg = resolve_in(dir.path(), "\"framed\"", "[[device.point]]\nid = \"t\"\ngrouping = { window = \"200ms\" }\n").unwrap();
+        assert_eq!(
+            cfg.devices[0].points[0].grouping,
+            Some(serde_json::json!({ "by": "frame", "window": "200ms" }))
+        );
+        dir.write(
+            "modbus/both.toml",
+            "[library]\nprotocol = \"modbus\"\n\n[[point]]\nid = \"t\"\ndatatype = \"float32\"\n\
+             address = { table = \"holding\", address = 7, count = 2 }\nbatch = {}\ngrouping = {}\n",
+        );
+        let err = resolve_in(dir.path(), "\"both\"", "").unwrap_err();
+        assert!(
+            err.ends_with("point 't': batch and grouping cannot both be set (batch is the deprecated name of grouping)"),
+            "{err}"
+        );
     }
 
     /// What the `run` service watches for a config: the library files `load` would read, and

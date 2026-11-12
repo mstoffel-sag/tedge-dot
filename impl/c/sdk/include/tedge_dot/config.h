@@ -47,11 +47,11 @@ typedef enum {
 #define TDOT_FIELD_SAMPLING_INTERVAL 0x080
 #define TDOT_FIELD_SUBSCRIBE 0x100
 #define TDOT_FIELD_REPORT 0x200
-#define TDOT_FIELD_BATCH 0x400
+#define TDOT_FIELD_GROUPING 0x400
 #define TDOT_FIELD_SAMPLE 0x800
 
-/* When a point's readings are published in measurement output, and with which
- * time (contract §5.5, `batch.group_by`): grouped by exact time, by a frame of
+/* When a point's readings are published in grouped output, and with which
+ * time (contract §5.5, `grouping.by`): grouped by exact time, by a frame of
  * `ms` milliseconds, or sampled every `ms` milliseconds. */
 typedef enum {
     TDOT_GROUP_TIME = 0,
@@ -64,7 +64,17 @@ typedef struct {
     long long ms; /* the frame's window or the sample period; 0 for time */
 } tdot_group_by_t;
 
-/* What a `"sample"` point publishes for each period (`batch.aggregate`). */
+/* The names one level gives a series (contract §5.5): a point's
+ * meta.measurement, a device's or [connector]'s `measurement` table. `group`
+ * fills the type and the fragment of a level that does not name them itself.
+ * Each NULL when the level does not name it (empty strings count as unset). */
+typedef struct {
+    char *type;
+    char *fragment;
+    char *series;
+} tdot_naming_t;
+
+/* What a `"sample"` point publishes for each period (`grouping.aggregate`). */
 typedef enum {
     TDOT_AGG_MEAN = 0,
     TDOT_AGG_MIN,
@@ -133,13 +143,14 @@ typedef struct tdot_point {
     /* Effective policy: [connector] report, then the device's, then the
      * point's, merged key by key (tdot_config_report_table). */
     tdot_report_policy_t report;
-    /* The point's own `batch` table (§5.5) as written, merged with a library's
-     * like report_table; NULL when none. */
-    struct cJSON *batch_table;
-    /* Effective grouping policy in measurement output: [connector] batch, then
-     * the device's, then the point's (tdot_config_batch_table). */
+    /* The point's own `grouping` table (§5.5) as written (a deprecated `batch`
+     * read as `grouping`, group_by as by), merged with a library's like
+     * report_table; NULL when none. */
+    struct cJSON *grouping_table;
+    /* Effective grouping policy in grouped output: [connector] grouping, then
+     * the device's, then the point's (tdot_config_grouping_table). */
     tdot_group_by_t group_by;
-    /* Under group_by = "sample": the aggregates of `batch.aggregate`, in order
+    /* Under by = "sample": the aggregates of `grouping.aggregate`, in order
      * (naggregates 0 without one), and whether a list named them, so their
      * series are suffixed `_<aggregate>`. */
     tdot_aggregate_t aggregates[TDOT_MAX_AGGREGATES];
@@ -209,8 +220,12 @@ typedef struct tdot_device {
     /* The device's `report` table (§5.3) as written, as a cJSON object (see
      * tdot_point_t.report_table); NULL when none. */
     struct cJSON *report_table;
-    /* The device's `batch` table (§5.5) as written; NULL when none. */
-    struct cJSON *batch_table;
+    /* The device's `grouping` table (§5.5) as written (or its deprecated
+     * `batch`, group_by as by); NULL when none. */
+    struct cJSON *grouping_table;
+    /* The device's `measurement` table (§5.5): the names of its points between
+     * their meta.measurement and [connector] measurement. */
+    tdot_naming_t measurement;
     /* Concurrent reads (§5.6): the device's max_inflight; 0 when unset. */
     long max_inflight;
 
@@ -269,16 +284,17 @@ typedef struct tdot_config {
      * as a cJSON object (see tdot_point_t.report_table); NULL when none. */
     struct cJSON *report_table;
 
-    /* Measurement output (contract §5.5): [connector] output = "measurements". */
-    bool output_measurements;
+    /* Grouped output (contract §5.5): [connector] output = "group" (or its
+     * deprecated name "measurements"). */
+    bool output_group;
     /* [connector] measurement: the naming settings, as the ot-measurement
      * flow's parameters of the same names. NULL strings for unset. */
-    char *measurement_group;
-    char *measurement_series;
+    tdot_naming_t measurement;
     char *measurement_separator;
     bool include_boolean; /* default true */
-    /* [connector] batch (§5.5) as written; NULL when none. */
-    struct cJSON *batch_table;
+    /* [connector] grouping (§5.5) as written (or its deprecated `batch`,
+     * group_by as by); NULL when none. */
+    struct cJSON *grouping_table;
     /* Concurrent reads (§5.6): [connector] max_inflight and max_inflight_total;
      * 0 when unset (the runtime's defaults apply, concurrency.h). */
     long max_inflight;
@@ -342,16 +358,16 @@ int tdot_reject_local_only_settings(const struct cJSON *before, const struct cJS
 struct cJSON *tdot_config_report_table(const tdot_config_t *cfg, const tdot_device_t *dev,
                                        const tdot_point_t *pt);
 
-/* The merged `batch` table of one point (contract §5.5), merged like
+/* The merged `grouping` table of one point (contract §5.5), merged like
  * tdot_config_report_table. Caller cJSON_Delete()s. Mirrors
- * ConnectorConfig::batch_table (Rust). */
-struct cJSON *tdot_config_batch_table(const tdot_config_t *cfg, const tdot_device_t *dev,
-                                      const tdot_point_t *pt);
+ * ConnectorConfig::grouping_table (Rust). */
+struct cJSON *tdot_config_grouping_table(const tdot_config_t *cfg, const tdot_device_t *dev,
+                                         const tdot_point_t *pt);
 
 /* The capability descriptor's `outputs` array (contract §7): each device's
- * output and its merged `batch` table ([connector], then the device), with the
- * default group_by filled in. NULL for a connector in samples output that sets
- * no batch anywhere. Caller cJSON_Delete()s. Mirrors measure::describe (Rust). */
+ * output ("single" or "group") and its merged `grouping` table ([connector],
+ * then the device), with the default `by` filled in. NULL for a connector in
+ * single output that sets no grouping (or batch) anywhere. Caller cJSON_Delete()s. Mirrors measure::describe (Rust). */
 struct cJSON *tdot_config_outputs(const tdot_config_t *cfg);
 
 /* The capability descriptor's `reports` object (contract §7): `default` (the

@@ -37,18 +37,22 @@ debounce = ""
 #   meta = { on_change = true, deadband = 0.5, min_interval = "10s" }
 # (deprecated: the equivalent today is report = { deadband = 0.5, min_interval = "10s" }).
 
-# Batch every series of a device into a single measurement message, flushed every
-# combine_interval. Reduces the number of measurements created in the cloud. "true" or "false".
+# Group every series of a device and type into a single measurement message, flushed every
+# combine_interval. Series of several fragments of one type share that message. Reduces the
+# number of measurements created in the cloud. "true" or "false".
 combine = "false"
 combine_interval = "10s"
 
 # Output measurement shaping.
-#   target_topic - where to publish. Empty -> te/device/<device>///m/<group>
-#   group        - measurement group (the outer JSON key). Empty -> the sample's protocol
+#   target_topic - where to publish. Empty -> te/device/<device>///m/<type>
+#   type         - measurement type (the topic, the Cumulocity type). Empty -> the sample's protocol
+#   fragment     - fragment (the outer JSON key). Empty -> the type
 #   series       - series name (inner JSON key). Empty -> the sample's point id
+#   group        - DEPRECATED: sets both type and fragment. Use type (and fragment) instead.
 # A signal can also name its own measurement through the point's meta table (wins over the
-# flow-wide group/series, like the other meta overrides):
-#   meta = { measurement = { group = "Environment", series = "Temperature" } }
+# flow-wide type/fragment/series, like the other meta overrides):
+#   meta = { measurement = { type = "c8y_Combined", fragment = "c8y_Battery", series = "level" } }
+# (meta.measurement.group is the deprecated name that sets the type and the fragment.)
 # ...or keep it out of the measurements altogether, e.g. a parameter whose value should reach
 # only its twin fragment (ot-parameter-state) instead of also being stored as a time series:
 #   meta = { measurement = false }
@@ -56,12 +60,16 @@ combine_interval = "10s"
 # echoed in the sample. The series value stays a bare number; the unit is published as retained
 # measurement metadata on <measurement topic>/meta, which thin-edge.io 2.x adds to the measurement.
 target_topic = ""
-group = ""
+type = ""
+fragment = ""
 series = ""
+group = ""
 
 # Remap signals by point-id naming convention. When set, a point id containing this separator is
-# split once into "<group><sep><series>" (e.g. "." maps "Environment.Temperature" -> group
-# "Environment", series "Temperature"). Explicit group/series above still win. Empty = disabled,
+# split once into "<prefix><sep><suffix>": the prefix names the type and the fragment, the suffix
+# the series (e.g. "." maps "Environment.Temperature" -> type and fragment "Environment", series
+# "Temperature"). With type set, the prefix names the fragment only. Explicit type/fragment/series
+# above still win. Empty = disabled,
 # so point ids that already contain dots are left untouched.
 point_separator = ""
 

@@ -28,10 +28,11 @@ protocol      = "aveva-pi"
 service_name  = "tedge-dot-aveva-pi"
 poll_interval = "10s"
 log_level     = "info"
-# Measurement output batches a device's samples (doc/contract/ot-connector-contract.md §5.5).
-# Keep the default grouping by time: it never moves a backfilled event's time.
-# output = "measurements"
-# batch  = { group_by = "time" }
+# Grouped output puts a device's series into one measurement per type and time
+# (doc/contract/ot-connector-contract.md §5.5). Keep the default grouping by time: it never moves
+# a backfilled event's time.
+# output   = "group"
+# grouping = { by = "time" }
 
 # Heartbeat (reporting policy, see doc/reducing-data-volume.md). Left out by default; with a
 # change filter on a device, set it so a flat value is still published now and then.

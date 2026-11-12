@@ -1,17 +1,17 @@
-# Measurement output: batched measurements from the connector
+# Grouped output: measurements from the connector
 
 By default a connector publishes one sample per reading, and the `ot-measurement` flow in the
 thin-edge.io mapper turns each sample into a measurement. That works for a few thousand readings
 per second. Every sample is a message, and every message runs JavaScript in the mapper: about
 0.5 ms of mapper CPU per reading with the `ot-*` flows installed.
 
-With **measurement output** the connector publishes the thin-edge measurements itself, hundreds
+With **grouped output** the connector publishes the thin-edge measurements itself, hundreds
 of readings per message, and publishes samples only for the points a flow still needs. No
 JavaScript runs for a measurement, and the mapper only converts it. In the performance harness
 (`doc/performance.md`) this took the mapper from about 145 % of a core at 4,000 readings/s to
 about 10 % at 100,000 readings/s.
 
-The normative rules are in [contract §5.5](contract/ot-connector-contract.md#55-measurement-output).
+The normative rules are in [contract §5.5](contract/ot-connector-contract.md#55-grouped-output).
 This guide explains how to use them.
 
 ## Switching it on
@@ -21,35 +21,45 @@ Set `output` in the `[connector]` table and leave the flows installed:
 ```toml
 [connector]
 protocol = "opcua"
-output   = "measurements"
+output   = "group"
 ```
 
 Both builds support it, for every protocol, and nothing else in the configuration changes. To
-switch back, remove the key or set `output = "samples"`. The flows still handle samples.
+switch back, remove the key or set `output = "single"`. The flows still handle samples.
 
 What changes on the broker:
 
-| | `output = "samples"` (default) | `output = "measurements"` |
+| | `output = "single"` (default) | `output = "group"` |
 | --- | --- | --- |
-| Measurements on `te/device/<device>///m/<group>` | One per reading, from `ot-measurement` | Batched, from the connector |
-| Units on `te/device/<device>///m/<group>/meta` | From `ot-measurement` | From the connector |
+| Measurements on `te/device/<device>///m/<type>` | One per reading, from `ot-measurement` | Many series per message, from the connector |
+| Units on `te/device/<device>///m/<type>/meta` | From `ot-measurement` | From the connector |
 | Samples on `te/device/<device>/ot/<protocol>/sample/<point>` | Every reading | Only for points that flows read, or `sample = true` |
 | Link status, capability descriptor, commands | Unchanged | Unchanged |
 
 ## Naming
 
-A reading becomes the series `<group>.<series>` with the rules the `ot-measurement` flow uses, so
-the cloud sees the same names in both modes:
+A reading becomes one series of a measurement. Three names place it:
 
-1. the point's `meta.measurement.group` and `meta.measurement.series`
-2. the `[connector]` table's `measurement.group` and `measurement.series`
-3. the point id split at `measurement.point_separator`, when one is set and the id contains it
-4. the protocol id as the group and the point id as the series
+| Name | Where it goes | Default |
+| --- | --- | --- |
+| `type` | The topic `te/device/<device>///m/<type>`, and the Cumulocity measurement `type` | The protocol id |
+| `fragment` | The key in the measurement body: `{"<fragment>": {"<series>": …}}` | The type |
+| `series` | The key inside the fragment | The point id |
+
+Each name is resolved on its own, and the first level that sets it wins:
+
+1. the point's `meta.measurement`
+2. the device's `measurement` table
+3. the `[connector]` table's `measurement`
+4. the point id split once at `measurement.point_separator`, when one is set and the id has text
+   on both sides of it: the part before names the type and the fragment, the part after the
+   series
+5. the defaults above
 
 ```toml
 [connector]
 protocol    = "modbus"
-output      = "measurements"
+output      = "group"
 measurement = { point_separator = "." }   # "Environment.Temperature" -> Environment / Temperature
 
 [[device]]
@@ -61,27 +71,92 @@ protocol_address = { transport = "tcp", host = "10.0.0.5", port = 502, unit_id =
   datatype = "float32"
   unit     = "°C"
   address  = { table = "holding", address = 7, count = 2 }
-  meta     = { measurement = { group = "Boiler", series = "Temperature" } }
+  meta     = { measurement = { type = "Boiler", series = "Temperature" } }
 ```
+
+With a type set at any level, the `point_separator` prefix names only the fragment: under
+`measurement = { type = "Combined", point_separator = "." }` the point `c8y_Battery.level`
+publishes `{"c8y_Battery": {"level": …}}` on `m/Combined`.
+
+`group` is the deprecated name for the type and the fragment together. A level that sets `group`
+sets both at that level, unless it also sets `type` or `fragment` itself, so a configuration that
+uses `group` publishes the same topics and bodies as before. A point's
+`meta.measurement.group` still wins over a `type` on the device or the connector.
 
 Only a `good` reading of a number or a boolean becomes a series. A boolean is published as 1 or 0
 unless `measurement.include_boolean = false`. Strings, 64-bit integers outside the JavaScript safe
 range, `raw` points and points with `meta.measurement = false` never become series.
 
 The `[connector] measurement` keys are the `ot-measurement` flow's parameters of the same names.
-The flow's own `params.toml` does not apply to a connector in measurement output, so copy any
-`group`, `series`, `point_separator` or `include_boolean` you set there into the connector's
-configuration.
+The flow's own `params.toml` does not apply to a connector in grouped output, so copy any `type`,
+`fragment`, `series`, `group`, `point_separator` or `include_boolean` you set there into the
+connector's configuration. The flow has no device level.
+
+### Several fragments in one measurement
+
+Series of one device with the same type and the same time go into one message, whatever their
+fragments. This builds a Cumulocity measurement with several fragments:
+
+```toml
+[[device]]
+name        = "sensor1"
+measurement = { type = "c8y_CombinedSensorReading" }
+
+  [[device.point]]
+  id       = "t"
+  datatype = "float32"
+  unit     = "°C"
+  address  = { table = "holding", address = 0, count = 2 }
+  meta     = { measurement = { fragment = "c8y_Environmental", series = "temperature" } }
+
+  [[device.point]]
+  id       = "b"
+  datatype = "uint16"
+  unit     = "%"
+  address  = { table = "holding", address = 2, count = 1 }
+  meta     = { measurement = { fragment = "c8y_Battery", series = "level" } }
+```
+
+A polled pass publishes one message on `te/device/sensor1///m/c8y_CombinedSensorReading`:
+
+```json
+{"time":"2026-11-12T12:23:00.000Z","c8y_Environmental":{"temperature":23.4},"c8y_Battery":{"level":85}}
+```
+
+and Cumulocity stores:
+
+```json
+{
+  "time": "2026-11-12T12:23:00.000Z",
+  "type": "c8y_CombinedSensorReading",
+  "c8y_Environmental": { "temperature": { "value": 23.4, "unit": "°C" } },
+  "c8y_Battery": { "level": { "value": 85, "unit": "%" } }
+}
+```
+
+The units of every fragment of a type share one retained message on `<topic>/meta`, keyed
+`<fragment>.<series>`: `{"c8y_Battery.level":{"unit":"%"},"c8y_Environmental.temperature":{"unit":"°C"}}`.
+
+### Choosing the fragment layout for Streaming Lake Ingestion
+
+With Cumulocity Streaming Lake Ingestion each fragment is a table, and each fragment of a
+measurement is a separate write. The fragment layout is therefore a storage decision:
+
+- One fragment that holds all series of a type gives one table and one write per measurement.
+- A fragment per series gives a table per series and one write per series.
+
+Grouping several fragments into one measurement reduces the number of measurements sent to
+Cumulocity, not the number of lake writes.
 
 ## Timestamps and grouping
 
 A thin-edge measurement has one `time`, so readings share a message only when they share a time.
-Which time a reading has, and how readings are grouped, is the point's `batch` policy. Set it on
-`[connector]`, a device or a point; it is merged key by key like `report`.
+Which time a reading has, and how readings are grouped, is the point's `grouping` policy. Set it
+on `[connector]`, a device or a point; it is merged key by key like `report`.
 
-| `group_by` | Message time | Loss | Use it for |
+| `by` | Message time | Loss | Use it for |
 | --- | --- | --- | --- |
-| `"time"` (default) | The reading's own time | None, and no time is moved | Polled points. A polled pass shares one read time, so it is one message per device and group. |
+| `"time"` (default) | The reading's own time | None, and no time is moved | Polled points. A polled pass shares one read time, so it is one message per device and type. |
 | `"frame"`, `window = "500ms"` | Each layer's first reading's time in the window | None. A time moves by less than `window` | Pushed points whose source times differ by a few milliseconds |
 | `"sample"`, `every = "1s"` | The sample time | Readings superseded between two samples | A fixed rate per point, whatever the source sends |
 
@@ -89,8 +164,8 @@ Which time a reading has, and how readings are grouped, is the point's `batch` p
 
 Readings with the same timestamp, at millisecond precision, go into one message. A polled read
 returns all its points with the completion time of the read call, so a pass over a device is one
-message per group. Pushed values carry the time the source reports (an OPC UA source timestamp),
-so pushed points batch only as far as their times coincide. No reading is lost and no time is
+message per type. Pushed values carry the time the source reports (an OPC UA source timestamp),
+so pushed points share a message only as far as their times coincide. No reading is lost and no time is
 changed.
 
 ### `frame`: a window of the device clock
@@ -98,7 +173,7 @@ changed.
 ```toml
 [[device]]
 name  = "line1"
-batch = { group_by = "frame", window = "500ms" }
+grouping = { by = "frame", window = "500ms" }
 ```
 
 Readings that arrive within `window` share a message stamped with the first reading's time, and
@@ -111,7 +186,7 @@ The price is the time: a reading can be published with a time up to `window` ear
 own, and a repeated point's earlier value waits for the end of the window. Choose a window
 shorter than the time resolution you care about. 500 ms suits most pushed telemetry. With a
 shorter window each device publishes at least one message per window: ten per second at 100 ms
-against two at 500 ms, whatever the batching. The mapper's cost is per message.
+against two at 500 ms, however many series each one holds. The mapper's cost is per message.
 
 Each layer is stamped with its first reading's time. When source times jitter, that time can be
 earlier than the previous layer's; the layer is then stamped 1 ms after the previous one, so a
@@ -126,7 +201,7 @@ within one window, so its frame is always a single message.
 ```toml
 [[device]]
 name  = "line1"
-batch = { group_by = "sample", every = "1s" }
+grouping = { by = "sample", every = "1s" }
 ```
 
 Every `every`, the connector publishes the latest good value of every point, stamped with the
@@ -144,10 +219,10 @@ of the period instead:
 ```toml
 [[device]]
 name  = "line1"
-batch = { aggregate = ["mean", "min", "max"], every = "1s" }
+grouping = { aggregate = ["mean", "min", "max"], every = "1s" }
 ```
 
-`aggregate` implies `group_by = "sample"`, so the `every` is all it needs. Each second the
+`aggregate` implies `by = "sample"`, so the `every` is all it needs. Each second the
 connector then publishes, for every point of `line1`:
 
 | Series | Value |
@@ -159,8 +234,8 @@ connector then publishes, for every point of `line1`:
 - A single name, such as `aggregate = "mean"`, publishes the mean under the point's own series
   name, so dashboards and alarms on that series keep working.
 - A list publishes each aggregate with the suffix `_<aggregate>`, and the units message gives each
-  of them the point's unit. A suffixed name that is already another series of the device's group
-  is refused when the configuration loads.
+  of them the point's unit. A suffixed name that is already another series of the device in the
+  same type and fragment is refused when the configuration loads.
 - A boolean counts as 1 or 0, so its mean is the fraction of the period it was true: a duty
   cycle.
 - Time while the point is stale (its device link is down, its subscription failed its check, or
@@ -184,7 +259,7 @@ meaningfully. A point with an `aggregate` cannot have a `report` policy (see abo
 
 ## Samples and the flows
 
-In measurement output a point still publishes samples when a flow reads them:
+In grouped output a point still publishes samples when a flow reads them:
 
 - `meta.alarm` (the `ot-alarm` flow) or `meta.event` (`ot-event`)
 - `meta.parameter`, or `write` or `read_write` access (`ot-parameter-state`)
@@ -208,8 +283,8 @@ even when a flow would read them.
 
 `ot-alarm` and `ot-event` used to subscribe to every measurement, for their measurement-series
 mode: one series watched with a threshold, or an event on every change of one series. With the
-connector publishing batches, that would run both flows on every batch. That mode is now the
-separate flows `ot-alarm-series` and `ot-event-series`, with the same parameters:
+connector publishing grouped measurements, that would run both flows on every one of them. That
+mode is now the separate flows `ot-alarm-series` and `ot-event-series`, with the same parameters:
 
 - The package installs them from `/usr/share/tedge-dot/flows/` into the mapper only when an
   existing `ot-alarm` or `ot-event` `params.toml` sets `series`, and copies that params file over.
@@ -225,7 +300,7 @@ device's output and grouping policy:
 
 ```json
 "outputs": [
-  { "device": "line1", "output": "measurements", "batch": { "group_by": "frame", "window": "500ms" } }
+  { "device": "line1", "output": "group", "grouping": { "by": "frame", "window": "500ms" } }
 ]
 ```
 
@@ -236,15 +311,31 @@ tedge mqtt sub 'te/device/+///m/#'
 ```
 
 A message is split before its Cumulocity size passes about 15,000 bytes, so a device with
-thousands of points in one group sends several messages per pass, each with the same `time`.
+thousands of points of one type sends several messages per pass, each with the same `time`.
 The mapper rejects nothing: its limit is 16,184 bytes.
 
 ## Limits
 
 - The `ot-measurement` flow's deprecated filters (`on_change`, `deadband`, `min_interval`,
-  `debounce`) and its `combine` mode do not apply to a connector in measurement output. Use the
-  point's `report` table and `batch` instead.
+  `debounce`) and its `combine` mode do not apply to a connector in grouped output. Use the
+  point's `report` table and `grouping` instead.
 - `tedge-dot run --output stdout` prints samples in both modes.
 - Units are published per measurement topic from the connector's configuration. Two connectors
-  that publish the same device and group overwrite each other's units message; give their points
-  different groups.
+  that publish the same device and type overwrite each other's units message; give their points
+  different types.
+
+## Deprecated names
+
+Earlier versions used other names. They still work, and each logs a warning when the
+configuration loads:
+
+| Deprecated | Use | Notes |
+| --- | --- | --- |
+| `output = "samples"` | `output = "single"` | |
+| `output = "measurements"` | `output = "group"` | |
+| `batch = { group_by = … }` | `grouping = { by = … }` | `window`, `every` and `aggregate` are unchanged. A level that sets both `batch` and `grouping` is refused. |
+| `measurement.group`, `meta.measurement.group` | `type` (and `fragment` when it differs) | `group` sets both at its level. |
+
+The capability descriptor reports the new names only: `"output": "group"` and a `grouping` table
+with `by`, never `batch` or `group_by`. A tool that reads `outputs[].batch` or compares
+`outputs[].output` with `"measurements"` must read `grouping` and `"group"`.

@@ -1,4 +1,4 @@
-# The `pim` device of the AVEVA PI e2e harness, in measurement output (contract §5.5): the
+# The `pim` device of the AVEVA PI e2e harness, in grouped output (contract §5.5): the
 # connector publishes the thin-edge measurements itself. `output` is a connector setting, so the
 # device is a connector instance of its own, which entrypoint.sh starts next to the main one. Its
 # simulator (`sim-measure`) is used by no other device, so other tests' faults never reach it.
@@ -14,7 +14,7 @@ protocol      = "aveva-pi"
 service_name  = "tedge-dot-measure"
 poll_interval = "2s"
 log_level     = "info"
-output        = "measurements"
+output        = "group"
 
 [mqtt]
 host = "broker"
@@ -45,4 +45,4 @@ protocol_address = { base_url = "http://sim-measure:8080/piwebapi", data_server 
   id       = "named"
   datatype = "float64"
   address  = { tag = "FROZEN" }
-  meta     = { measurement = { group = "Tank", series = "Level" } }
+  meta     = { measurement = { type = "Tank", series = "Level" } }

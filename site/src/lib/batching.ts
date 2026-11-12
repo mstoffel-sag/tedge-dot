@@ -1,20 +1,23 @@
-// Simulation behind the batching playground: take what each signal's reporting policy published
-// (src/lib/playground.ts), feed it to the measurement-output batcher (src/lib/batch.ts) with the
+// Simulation behind the grouping playground: take what each signal's reporting policy published
+// (src/lib/playground.ts), feed it to the grouped-output engine (src/lib/batch.ts) with the
 // connector configuration, and trace which reading went into which measurement and which signals
 // each measurement is missing.
 
-import { Batcher, groupByOf, mergeBatchLevel, resolveName, type Message } from './batch';
+import { Batcher, groupByOf, groupingOf, levelNaming, mergeGroupingLevel, resolveName, type Name, type Message } from './batch';
 import { parseDuration } from './report';
 import { simulateSignal, type Run, type SignalSpec } from './playground';
 
-/** Every `batch.group_by`, as the playground offers them (a test holds them to the schema). */
+/** The `output` values the tools offer; "samples" and "measurements" are their deprecated names. */
+export const OUTPUTS = ['single', 'group'];
+
+/** Every `grouping.by`, as the playground offers them (a test holds them to the schema). */
 export const POLICIES: { id: 'time' | 'frame' | 'sample'; text: string }[] = [
   { id: 'time', text: 'Readings with the same timestamp share a measurement. Nothing is lost, no time is moved. A signal that published nothing at that time is not in the measurement.' },
   { id: 'frame', text: 'Readings within a window share a measurement stamped with its first time. Nothing is lost; a time moves by less than the window. A signal that published nothing in the window is not in it.' },
   { id: 'sample', text: 'Every period, the value each signal holds, stamped with the sample time, whether it changed or not. Readings in between are not sent. A signal with no good value (never read, or in an outage) is left out.' },
 ];
 
-/** The `batch.aggregate` choices under "sample" (a test checks they cover every aggregate). */
+/** The `grouping.aggregate` choices under "sample" (a test checks they cover every aggregate). */
 export const AGGREGATES: { id: string; label: string; value: string | string[] | null }[] = [
   { id: 'none', label: 'none (sample and hold)', value: null },
   { id: 'mean', label: '"mean"', value: 'mean' },
@@ -25,27 +28,88 @@ export const AGGREGATES: { id: string; label: string; value: string | string[] |
 export const WINDOWS = ['100ms', '250ms', '500ms', '1s', '2s', '5s'];
 export const EVERY = ['500ms', '1s', '5s', '10s', '30s', '1m'];
 
-export interface BatchForm {
-  group_by: (typeof POLICIES)[number]['id'];
+export interface GroupingForm {
+  by: (typeof POLICIES)[number]['id'];
   window: string;
   every: string;
   /** An `AGGREGATES` id. */
   aggregate: string;
 }
 
-export function batchTable(form: BatchForm): Record<string, unknown> {
-  if (form.group_by === 'frame') return { group_by: 'frame', window: form.window };
-  if (form.group_by === 'sample') {
+export function groupingTable(form: GroupingForm): Record<string, unknown> {
+  if (form.by === 'frame') return { by: 'frame', window: form.window };
+  if (form.by === 'sample') {
     const aggregate = AGGREGATES.find((a) => a.id === form.aggregate)?.value ?? null;
-    return aggregate === null ? { group_by: 'sample', every: form.every } : { aggregate, every: form.every };
+    return aggregate === null ? { by: 'sample', every: form.every } : { aggregate, every: form.every };
   }
-  return { group_by: 'time' };
+  return { by: 'time' };
 }
 
-export function batchToml(form: BatchForm): string {
-  const t = batchTable(form);
-  const parts = Object.entries(t).map(([k, v]) => `${k} = ${Array.isArray(v) ? `[${v.map((x) => JSON.stringify(x)).join(', ')}]` : JSON.stringify(v)}`);
-  return `batch = { ${parts.join(', ')} }`;
+const inline = (t: Record<string, unknown>) =>
+  Object.entries(t)
+    .map(([k, v]) => `${k} = ${Array.isArray(v) ? `[${v.map((x) => JSON.stringify(x)).join(', ')}]` : JSON.stringify(v)}`)
+    .join(', ');
+
+export function groupingToml(form: GroupingForm): string {
+  return `grouping = { ${inline(groupingTable(form))} }`;
+}
+
+/**
+ * How the playground lays out the fragments of its measurements (contract §5.5 naming):
+ * - `type`: one fragment named after the type, holding every series;
+ * - `signal`: a fragment per signal (`meta.measurement.fragment = "<id>"`, series `value`), all
+ *   of one type, so a measurement holds several fragments;
+ * - `custom`: the points name their fragments otherwise; the playground runs them as they are.
+ */
+export type FragmentLayout = 'type' | 'signal' | 'custom';
+
+export const FRAGMENT_LAYOUTS: { id: Exclude<FragmentLayout, 'custom'>; label: string; text: string }[] = [
+  {
+    id: 'type',
+    label: 'one fragment',
+    text: 'Every series in one fragment named after the type. In Streaming Lake Ingestion: one table, and one write per measurement.',
+  },
+  {
+    id: 'signal',
+    label: 'a fragment per signal',
+    text: 'Each signal in a fragment of its own, all of one type, so a measurement holds several fragments. In Streaming Lake Ingestion: a table per signal, and one write per fragment of each measurement.',
+  },
+];
+
+/** The series name a point gets in the `signal` layout. */
+export const SIGNAL_SERIES = 'value';
+
+/** The fragment layout of a configuration's first device. */
+export function layoutOf(config: Record<string, any>): FragmentLayout {
+  const points = ((config.device?.[0]?.point ?? []) as any[]);
+  const names = points.map((p) => p.meta?.measurement);
+  if (names.every((m) => m === undefined)) return 'type';
+  if (points.every((p) => p.meta?.measurement?.fragment === p.id && p.meta.measurement.series === SIGNAL_SERIES && Object.keys(p.meta.measurement).length === 2)) {
+    return 'signal';
+  }
+  return 'custom';
+}
+
+/** The configuration with its first device's points laid out as `layout` says. */
+export function withLayout(config: Record<string, any>, layout: Exclude<FragmentLayout, 'custom'>): Record<string, any> {
+  const device = config.device?.[0];
+  if (!device) return config;
+  const point = ((device.point ?? []) as any[]).map((p) => {
+    const { measurement: _, ...meta } = p.meta ?? {};
+    const next = layout === 'signal' ? { ...meta, measurement: { fragment: p.id, series: SIGNAL_SERIES } } : meta;
+    const { meta: __, ...rest } = p;
+    return Object.keys(next).length ? { ...rest, meta: next } : rest;
+  });
+  return { ...config, device: [{ ...device, point }, ...(config.device ?? []).slice(1)] };
+}
+
+/** The `[connector]` lines and a point's `meta` the playground's settings stand for. */
+export function connectorToml(form: GroupingForm, type: string, layout: FragmentLayout): string {
+  const lines = ['[connector]', 'output = "group"', `measurement = { type = ${JSON.stringify(type)} }`, groupingToml(form)];
+  if (layout === 'signal') {
+    lines.push('', '[[device.point]]', 'id = "temperature"', `meta = { measurement = { fragment = "temperature", series = "${SIGNAL_SERIES}" } }`);
+  }
+  return lines.join('\n');
 }
 
 /** One sample the reporting policy published: an input of the batcher. */
@@ -65,15 +129,17 @@ export interface Measurement {
   time: number;
   /** When the connector published it, ms from the start. */
   publishedAt: number;
-  /** Series name → value. */
-  series: Record<string, number>;
+  /** Its type: the topic's last segment and the Cumulocity `type`. */
+  type: string;
+  /** Fragment → series name → value, in the order the connector wrote them. */
+  fragments: Record<string, Record<string, number>>;
   /** For each signal: whether it has a series in this measurement. */
   has: boolean[];
   /** Indexes into the inputs that went into it (for an aggregate: every input of the period). */
   from: number[];
 }
 
-export interface BatchRun {
+export interface GroupRun {
   signals: SignalSpec[];
   /** Each signal's readings and what its reporting policy published. */
   reports: Run[];
@@ -89,19 +155,31 @@ export interface BatchRun {
   missing: number;
   /** The largest distance between a reading's time and its measurement's time. */
   maxShift: number;
+  /** `<fragment>.<series>` → unit, from the units metadata. */
   units: Record<string, string>;
-  /** The device the measurements are for, and their topic and group. */
+  /** Each signal's type, fragment and series. */
+  names: Name[];
+  /** The device the measurements are for, and the topic and type of the first signal's. */
   device: string;
   topic: string;
-  group: string;
+  type: string;
 }
 
 const BASE = Date.parse('2026-01-01T08:00:00.000Z');
 export const isoAt = (t: number) => new Date(BASE + t).toISOString();
 
-/** The signal a series belongs to: its series name itself, or `<series>_<aggregate>`. */
-function signalOfSeries(names: string[], series: string): number {
-  return names.findIndex((n) => series === n || series.startsWith(`${n}_`));
+/** Whether `series` is the series `name` or one of its aggregates, `<name>_<aggregate>`. */
+export const isSeriesOf = (name: string, series: string) => series === name || series.startsWith(`${name}_`);
+
+/** The signal a series of a fragment belongs to. */
+function signalOfSeries(names: Name[], type: string, fragment: string, series: string): number {
+  return names.findIndex((n) => n.type === type && n.fragment === fragment && isSeriesOf(n.series, series));
+}
+
+/** The series and values of `m` that belong to `name`. */
+export function seriesOf(m: Measurement, name: Name): [string, number][] {
+  if (m.type !== name.type) return [];
+  return Object.entries(m.fragments[name.fragment] ?? {}).filter(([s]) => isSeriesOf(name.series, s));
 }
 
 /**
@@ -109,7 +187,7 @@ function signalOfSeries(names: string[], series: string): number {
  * `config` (a connector configuration as TOML parses it). The signals are the points of its
  * first device, by id.
  */
-export function simulate(signals: SignalSpec[], durationMs: number, config: Record<string, any>, reports?: Run[]): BatchRun {
+export function simulate(signals: SignalSpec[], durationMs: number, config: Record<string, any>, reports?: Run[]): GroupRun {
   reports ??= signals.map((s) => simulateSignal(s, durationMs));
   const inputs: Input[] = reports
     .flatMap((run, signal) =>
@@ -125,11 +203,12 @@ export function simulate(signals: SignalSpec[], durationMs: number, config: Reco
   const deviceName: string = device.name ?? '';
   const points = signals.map((s) => ((device.point ?? []) as any[]).find((p) => p.id === s.id) ?? { id: s.id });
   const m = connector.measurement ?? {};
-  const naming = { group: m.group ?? '', series: m.series ?? '', separator: m.point_separator ?? '' };
-  const names = points.map((p) => resolveName(naming, connector.protocol ?? '', p));
-  const group = names[0]?.[0] ?? connector.protocol ?? '';
-  // The playground's chart marks follow the first point's batch policy.
-  const policy = groupByOf([connector.batch, device.batch, points[0]?.batch].reduce(mergeBatchLevel, {})) ?? { kind: 'time' };
+  const naming = { connector: levelNaming(m), separator: typeof m.point_separator === 'string' ? m.point_separator : '' };
+  const names = points.map((p) => resolveName(naming, connector.protocol ?? '', device, p));
+  const type = names[0]?.type ?? connector.protocol ?? '';
+  // The playground's chart marks follow the first point's grouping policy.
+  const mergedOf = (point: any) => [connector, device, point].map(groupingOf).reduce(mergeGroupingLevel, {});
+  const policy = groupByOf(mergedOf(points[0])) ?? { kind: 'time' };
 
   const batcher = new Batcher(config, 0);
   const out: Message[] = [];
@@ -143,7 +222,8 @@ export function simulate(signals: SignalSpec[], durationMs: number, config: Reco
   const drain = (at: number) => {
     for (const message of out.splice(0)) {
       if (message.topic.endsWith('/meta')) {
-        units = Object.fromEntries(Object.entries(JSON.parse(message.payload)).map(([k, v]: [string, any]) => [k.split('.').slice(1).join('.'), v.unit]));
+        const meta = message.payload ? JSON.parse(message.payload) : {};
+        units = { ...units, ...Object.fromEntries(Object.entries(meta).map(([k, v]: [string, any]) => [k, v.unit])) };
       } else published.push({ message, at });
     }
   };
@@ -173,19 +253,21 @@ export function simulate(signals: SignalSpec[], durationMs: number, config: Reco
 
   const measurements: Measurement[] = published.map(({ message, at }) => {
     const body = JSON.parse(message.payload);
-    const series: Record<string, number> = Object.assign({}, ...Object.entries(body).filter(([k]) => k !== 'time').map(([, v]) => v));
+    const mtype = message.topic.split('/').at(-1)!;
+    const fragments: Record<string, Record<string, number>> = Object.fromEntries(Object.entries(body).filter(([k]) => k !== 'time')) as any;
     const has = signals.map(() => false);
-    for (const s of Object.keys(series)) {
-      const i = signalOfSeries(names.map((n) => n[1]), s);
-      if (i >= 0) has[i] = true;
+    for (const [fragment, series] of Object.entries(fragments)) {
+      for (const s of Object.keys(series)) {
+        const i = signalOfSeries(names, mtype, fragment, s);
+        if (i >= 0) has[i] = true;
+      }
     }
-    return { time: Date.parse(body.time) - BASE, publishedAt: at, series, has, from: [] };
+    return { time: Date.parse(body.time) - BASE, publishedAt: at, type: mtype, fragments, has, from: [] };
   });
 
   // Trace each input to its measurement.
   if (policy.kind === 'sample') {
-    const merged = [connector.batch, device.batch, points[0]?.batch].reduce(mergeBatchLevel, {});
-    const aggregated = merged.aggregate !== undefined;
+    const aggregated = mergedOf(points[0]).aggregate !== undefined;
     const bySignal = signals.map((_, s) => inputs.map((x, i) => (x.signal === s ? i : -1)).filter((i) => i >= 0));
     const lastAt = (s: number, time: number) => {
       const list = bySignal[s];
@@ -231,23 +313,35 @@ export function simulate(signals: SignalSpec[], durationMs: number, config: Reco
   if (policy.kind !== 'sample') {
     for (const m of measurements) for (const i of m.from) maxShift = Math.max(maxShift, Math.abs(inputs[i].ts - m.time));
   }
-  const topic = `te/device/${deviceName}///m/${group}`;
-  return { signals, reports, inputs, measurements, windows, samples, dropped, missing, maxShift, units, device: deviceName, topic, group };
+  const topic = `te/device/${deviceName}///m/${type}`;
+  return { signals, reports, inputs, measurements, windows, samples, dropped, missing, maxShift, units, names, device: deviceName, topic, type };
+}
+
+/** The measurement as the connector publishes it on its topic. */
+export function tedgeMeasurement(m: Measurement) {
+  return { time: isoAt(m.time), ...m.fragments };
 }
 
 /** The measurement as the thin-edge.io Cumulocity mapper sends it (units from the meta topic). */
-export function c8yMeasurement(m: Measurement, run: Pick<BatchRun, 'units' | 'group'>) {
-  const { units, group } = run;
-  return {
-    type: group,
-    time: isoAt(m.time),
-    [group]: Object.fromEntries(
-      Object.entries(m.series).map(([s, value]) => [s, units[s] ? { value, unit: units[s] } : { value }]),
-    ),
-  };
+export function c8yMeasurement(m: Measurement, run: Pick<GroupRun, 'units'>) {
+  const { units } = run;
+  const out: Record<string, any> = { type: m.type, time: isoAt(m.time) };
+  for (const [fragment, series] of Object.entries(m.fragments)) {
+    out[fragment] = Object.fromEntries(
+      Object.entries(series).map(([s, value]) => {
+        const unit = units[`${fragment}.${s}`];
+        return [s, unit ? { value, unit } : { value }];
+      }),
+    );
+  }
+  return out;
 }
 
-/** Example devices for the batching playground: they replace the signals. */
+/** How many fragments the measurements of a run hold: a Streaming Lake Ingestion write each. */
+export const fragmentWrites = (run: Pick<GroupRun, 'measurements'>) =>
+  run.measurements.reduce((n, m) => n + Object.keys(m.fragments).length, 0);
+
+/** Example devices for the grouping playground: they replace the signals. */
 export const EXAMPLES: { label: string; protocol: 'modbus' | 'opcua'; durationMs: number; signals: SignalSpec[] }[] = [
   {
     label: 'Three polled points, filtered',

@@ -21,7 +21,7 @@ AVEVA, PI System and PI Web API are trademarks of AVEVA Group Limited or its sub
 | `verify=False`: TLS certificates are not checked | TLS verified against the system store or your CA bundle |
 | Password in `pi_config.json`, base64-encoded | Password, token or key in a file the config names; client certificates and Bearer tokens supported |
 | Read only | Writes, and PI points as Cumulocity device parameters |
-| A batch ledger file to stay under 16 KB per message | Measurement output (`output = "measurements"`) batches samples |
+| A batch ledger file to stay under 16 KB per message | Grouped output (`output = "group"`) puts many series in one measurement and splits it before the size limit |
 | Measurements on the gateway device | Measurements on a child device per PI Web API endpoint, with a link status and availability |
 
 ## Configuration mapping
@@ -33,7 +33,7 @@ AVEVA, PI System and PI Web API are trademarks of AVEVA Group Limited or its sub
 | `POLL_INTERVAL` | `[connector] poll_interval` (snapshot delivery); with Channels, values arrive as PI archives them |
 | `RECORDING_AT_TIME` | Not needed: the connector reads current values with `streamsets/value` and history with `streamsets/recorded` |
 | `datapoints.json` (a list of tag names) | One `[[device.point]]` per tag, `address = { tag = "<TAG>" }`, with a `datatype` |
-| `tag_batches.json` ledger | `output = "measurements"` |
+| `tag_batches.json` ledger | `output = "group"` |
 
 The plugin found each tag by name across the server. The connector needs the PI Data Archive
 the tags live in (`protocol_address.data_server`); a tag on another server is addressed with its
@@ -72,7 +72,7 @@ device; dashboards and data exports that read it need to point at the new device
 | | Plugin | Connector |
 | --- | --- | --- |
 | Device | The gateway (main device): the plugin publishes to `c8y/measurement/measurements/create` | A child device per `[[device]]`, external id `<gateway>:device:<name>`, registered by the `ot-registration` flow |
-| Measurement type and fragment | `pi_historianMeasurement_batch<N>`, from the plugin's batch ledger | `aveva-pi` (the protocol), or a point's `meta.measurement.group` |
+| Measurement type and fragment | `pi_historianMeasurement_batch<N>`, from the plugin's batch ledger | `aveva-pi` (the protocol), or a `measurement.type` and `measurement.fragment` on the connector, device or point (`meta.measurement`) |
 | Series | Tag name with `.` replaced by `_` | The point id; the script writes the same names |
 | Unit | PI `EngineeringUnits`, in every measurement | The same unit, published once as metadata; the c8y mapper adds it to the series |
 | Digital tag | `value` = state code, plus `stringValue` = state name | `value` = state code (`datatype = "int32"`); the name is not sent |

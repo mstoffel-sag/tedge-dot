@@ -46,7 +46,7 @@ ${COUNTER64}            9007199254740993
 ...                     rw-priv-pass-1    sha2-auth-pass-1    sha2-priv-pass-1    wrong-password-9
 
 ${READY_TIMEOUT}        90
-# Measurement output (connector-measure.toml, openspec native-batched-output): the `snmpm` device.
+# Grouped output (connector-measure.toml, openspec native-batched-output): the `snmpm` device.
 ${MEASURE_TOPIC}            te/device/snmpm///m/${PROTOCOL}
 ${MEASURE_SAMPLE_PREFIX}    te/device/snmpm/ot/${PROTOCOL}/sample
 # The flows container installs thin-edge from the main channel at build time; give it time.

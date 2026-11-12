@@ -19,7 +19,7 @@ import {
   type FieldError,
   type ProtocolId,
 } from '../../lib/config-builder';
-import { AGGREGATES } from '../../lib/batching';
+import { AGGREGATES, OUTPUTS, POLICIES } from '../../lib/batching';
 import { REPORT_FIELDS } from '../../lib/playground';
 import { isPushed, setLibraries, signalsFor, switchProtocol } from '../../lib/gateway';
 import { MAX_SIGNALS, usePlayground } from '../../lib/signals-store';
@@ -30,6 +30,9 @@ import './config-builder.css';
 const POINT = SCHEMA.$defs.point.properties;
 const DEVICE = SCHEMA.$defs.device.properties;
 const CONNECTOR = SCHEMA.properties.connector.properties;
+const DEPRECATED_OUTPUT: Record<string, string> = { samples: 'single', measurements: 'group' };
+/** Whether a configuration's connector publishes grouped measurements. */
+const grouped = (config: Config) => config.connector?.output === 'group' || config.connector?.output === 'measurements';
 
 interface Ctx {
   config: Config;
@@ -151,12 +154,21 @@ export default function ConfigBuilder({ demos, libraries }: { demos: Record<stri
               <Choice ctx={ctx} path="/connector/log_level" label="log_level" options={CONNECTOR.log_level.enum} />
             </div>
             <div class="cb-row">
-              <Choice ctx={ctx} path="/connector/output" label="output" options={CONNECTOR.output.enum} />
+              <Choice ctx={ctx} path="/connector/output" label="output" options={DEPRECATED_OUTPUT[config.connector?.output] ? [...OUTPUTS, config.connector.output] : OUTPUTS} />
               <Text ctx={ctx} path="/connector/max_inflight" label="max_inflight" type="integer" placeholder="4" />
               <Text ctx={ctx} path="/connector/max_inflight_total" label="max_inflight_total" type="integer" placeholder="32" />
             </div>
             <Report ctx={ctx} base="/connector/report" level="connector" />
-            {(config.connector?.output === 'measurements' || config.connector?.batch) && <Batch ctx={ctx} base="/connector/batch" level="connector" />}
+            {DEPRECATED_OUTPUT[config.connector?.output] && (
+              <p class="cb-deprecated">
+                <code>output = "{config.connector.output}"</code> is deprecated: it means <code>"{DEPRECATED_OUTPUT[config.connector.output]}"</code>.{' '}
+                <button type="button" class="td-btn" onClick={() => ctx.set('/connector/output', DEPRECATED_OUTPUT[config.connector.output])}>
+                  Use output = "{DEPRECATED_OUTPUT[config.connector.output]}"
+                </button>
+              </p>
+            )}
+            {grouped(config) && <Measurement ctx={ctx} base="/connector/measurement" />}
+            {(grouped(config) || config.connector?.grouping || config.connector?.batch) && <Grouping ctx={ctx} base="/connector" level="connector" />}
           </fieldset>
 
           <details class="td-panel cb-section">
@@ -216,7 +228,7 @@ export default function ConfigBuilder({ demos, libraries }: { demos: Record<stri
                   </div>
                   <Shape ctx={ctx} base={`/device/${d}/point/${p}/address`} schema={info?.address} legend="address" />
                   <Report ctx={ctx} base={`/device/${d}/point/${p}/report`} level="point" />
-                  {config.connector?.output === 'measurements' && <Batch ctx={ctx} base={`/device/${d}/point/${p}/batch`} level="point" />}
+                  {grouped(config) && <Grouping ctx={ctx} base={`/device/${d}/point/${p}`} level="point" />}
                   <button type="button" class="td-btn cb-remove" onClick={() => ctx.set(`/device/${d}/point`, device.point.filter((_: any, i: number) => i !== p))}>
                     Remove point
                   </button>
@@ -266,7 +278,7 @@ function pointSummary(config: Config, device: any, point: any): string {
   if (isPushed(protocol, point)) parts.push(`subscribed${point.sampling_interval ? ` ${point.sampling_interval}` : ''}`);
   else parts.push(interval ? `polled ${interval}` : 'polled');
   if (point.report) parts.push('own report');
-  if (point.batch) parts.push('own batch');
+  if (point.grouping || point.batch) parts.push('own grouping');
   return parts.join(' · ');
 }
 
@@ -440,30 +452,64 @@ function Report(props: { ctx: Ctx; base: string; level: 'connector' | 'point' })
   );
 }
 
-function Batch(props: { ctx: Ctx; base: string; level: 'connector' | 'point' }) {
-  const { ctx, base, level } = props;
-  const groupBy = getAt(ctx.config, `${base}/group_by`);
-  const aggregate = getAt(ctx.config, `${base}/aggregate`);
-  const sample = groupBy === 'sample' || (groupBy === undefined && aggregate !== undefined);
-  const id = fieldId(`${base}/aggregate`);
-  const current = AGGREGATES.find((a) => JSON.stringify(a.value) === JSON.stringify(aggregate ?? null));
+/** The naming of grouped output (`[connector] measurement`): type, fragment and the point id split. */
+function Measurement(props: { ctx: Ctx; base: string }) {
+  const { ctx, base } = props;
   return (
     <details class="cb-report" open={getAt(ctx.config, base) !== undefined}>
-      <summary><code>batch</code><Help text={HELP[`${level}.batch`]} label="batch" /> — {level === 'point' ? "this point's grouping, over [connector]'s" : 'grouping in measurement output'}</summary>
+      <summary><code>measurement</code><Help text={HELP['connector.measurement']} label="measurement" /> — the type and fragment of the measurements</summary>
       <div class="cb-row">
-        <Choice ctx={ctx} path={`${base}/group_by`} label="group_by" options={SCHEMA.$defs.batch.properties.group_by.enum} />
-        {groupBy === 'frame' && <Text ctx={ctx} path={`${base}/window`} label="window" placeholder="500ms" />}
+        <Text ctx={ctx} path={`${base}/type`} label="type" placeholder={ctx.config.connector?.protocol ?? 'protocol'} />
+        <Text ctx={ctx} path={`${base}/fragment`} label="fragment" placeholder="the type" />
+        <Text ctx={ctx} path={`${base}/point_separator`} label="point_separator" placeholder="off" />
+      </div>
+      {getAt(ctx.config, `${base}/group`) !== undefined && (
+        <small><code>group</code> is deprecated: it sets the type and the fragment. Set <code>type</code> (and <code>fragment</code>) instead.</small>
+      )}
+      <small>A point names its own with <code>meta = {'{'} measurement = {'{'} fragment = "…", series = "…" {'}'} {'}'}</code>.</small>
+    </details>
+  );
+}
+
+/** The `grouping` table of `[connector]` or a point (`base` is the table holding it). */
+function Grouping(props: { ctx: Ctx; base: string; level: 'connector' | 'point' }) {
+  const { ctx, level } = props;
+  const owner = getAt(ctx.config, props.base) ?? {};
+  const base = `${props.base}/grouping`;
+  const by = getAt(ctx.config, `${base}/by`);
+  const aggregate = getAt(ctx.config, `${base}/aggregate`);
+  const sample = by === 'sample' || (by === undefined && aggregate !== undefined);
+  const id = fieldId(`${base}/aggregate`);
+  const current = AGGREGATES.find((a) => JSON.stringify(a.value) === JSON.stringify(aggregate ?? null));
+  // A deprecated `batch` table: the same policy, `group_by` named `by`.
+  const renameBatch = () => {
+    const { group_by, ...rest } = owner.batch ?? {};
+    const grouping = group_by === undefined ? rest : { ...rest, by: group_by };
+    ctx.set(props.base, { ...Object.fromEntries(Object.entries(owner).filter(([k]) => k !== 'batch')), grouping });
+  };
+  return (
+    <details class="cb-report" open={getAt(ctx.config, base) !== undefined || owner.batch !== undefined}>
+      <summary><code>grouping</code><Help text={HELP[`${level}.grouping`]} label="grouping" /> — {level === 'point' ? "this point's grouping, over [connector]'s" : 'which readings share a measurement'}</summary>
+      {owner.batch !== undefined && (
+        <p class="cb-deprecated">
+          <code>batch</code> is the deprecated name of <code>grouping</code>.{' '}
+          {owner.grouping === undefined && <button type="button" class="td-btn" onClick={renameBatch}>Rename it to grouping</button>}
+        </p>
+      )}
+      <div class="cb-row">
+        <Choice ctx={ctx} path={`${base}/by`} label="by" options={POLICIES.map((p) => p.id)} />
+        {by === 'frame' && <Text ctx={ctx} path={`${base}/window`} label="window" placeholder="500ms" />}
         {sample && <Text ctx={ctx} path={`${base}/every`} label="every" placeholder="1s" />}
         {sample && (
           <div class="td-field">
-            <label for={id}><code>aggregate</code><Help text={HELP['batch.aggregate']} label="aggregate" /></label>
+            <label for={id}><code>aggregate</code><Help text={HELP['grouping.aggregate']} label="aggregate" /></label>
             <select id={id} value={current?.id ?? 'none'} onChange={(e) => ctx.set(`${base}/aggregate`, AGGREGATES.find((a) => a.id === (e.currentTarget as HTMLSelectElement).value)?.value ?? undefined)}>
               {AGGREGATES.map((a) => <option value={a.id}>{a.label}</option>)}
             </select>
           </div>
         )}
       </div>
-      <small>See how each policy groups readings in the batching view below.</small>
+      <small>See how each policy groups readings in the grouping view below.</small>
     </details>
   );
 }

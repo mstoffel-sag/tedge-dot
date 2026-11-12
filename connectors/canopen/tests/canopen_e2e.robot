@@ -32,7 +32,7 @@ ${HEALTH_TOPIC}         te/device/main/service/${SERVICE}/status/health
 # CANopen is poll-based (1 s interval); allow a generous startup timeout.
 ${READY_TIMEOUT}        90
 ${SAMPLE_TIMEOUT}       10
-# Measurement output (connector-measure.toml, openspec native-batched-output): the `com` device.
+# Grouped output (connector-measure.toml, openspec native-batched-output): the `com` device.
 ${MEASURE_TOPIC}            te/device/com///m/${PROTOCOL}
 ${MEASURE_SAMPLE_PREFIX}    te/device/com/ot/${PROTOCOL}/sample
 

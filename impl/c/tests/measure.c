@@ -1,4 +1,4 @@
-/* Measurement output runner: drives the C batcher (sdk/src/measure.c) through
+/* Grouped output runner: drives the C batcher (sdk/src/measure.c) through
  * the shared vectors (doc/contract/test-vectors/measurements/vectors.json) the
  * Rust SDK's measure.rs runs too, so the two publish the same measurements, in
  * the same messages, with the same units metadata. Payloads are compared as
@@ -57,6 +57,8 @@ static double parse_ms(const char *s) {
 
 typedef struct {
     cJSON *messages; /* array of {topic, retain, payload} */
+    cJSON *lengths;  /* the payload text length of each message */
+    char *last;      /* the last payload as text */
 } collect_t;
 
 static void collect(void *ctx, const char *topic, const char *payload, bool retain) {
@@ -72,10 +74,15 @@ static void collect(void *ctx, const char *topic, const char *payload, bool reta
     }
     cJSON_AddItemToObject(m, "payload", body);
     cJSON_AddItemToArray(c->messages, m);
+    if (c->lengths)
+        cJSON_AddItemToArray(c->lengths, cJSON_CreateNumber((double)strlen(payload)));
+    free(c->last);
+    c->last = strdup(payload);
 }
 
 /* The case's configuration, written to a file for the loader, with the points
- * `generate` asks for appended. */
+ * `generate` asks for appended: every `{i:04}` of its id pattern is the
+ * point's index. */
 static tdot_config_t *config_of(const cJSON *c, char *err, size_t errlen) {
     char path[] = "/tmp/tedge-dot-measure-XXXXXX";
     int fd = mkstemp(path);
@@ -86,12 +93,20 @@ static tdot_config_t *config_of(const cJSON *c, char *err, size_t errlen) {
     const cJSON *g = cJSON_GetObjectItem(c, "generate");
     if (g) {
         const char *pattern = cJSON_GetObjectItem(g, "id")->valuestring;
-        const char *at = strstr(pattern, "{i:04}");
         int count = cJSON_GetObjectItem(g, "count")->valueint;
-        for (int i = 0; i < count; i++)
-            fprintf(fp, "[[device.point]]\nid = \"%.*s%04d%s\"\ndatatype = \"%s\"\naddress = {}\n",
-                    (int)(at - pattern), pattern, i, at + 6,
+        for (int i = 0; i < count; i++) {
+            fputs("[[device.point]]\nid = \"", fp);
+            for (const char *p = pattern; *p;) {
+                if (strncmp(p, "{i:04}", 6) == 0) {
+                    fprintf(fp, "%04d", i);
+                    p += 6;
+                } else {
+                    fputc(*p++, fp);
+                }
+            }
+            fprintf(fp, "\"\ndatatype = \"%s\"\naddress = {}\n",
                     cJSON_GetObjectItem(g, "datatype")->valuestring);
+        }
     }
     fclose(fp);
     tdot_config_t *cfg = tdot_config_load(path, err, errlen);
@@ -145,7 +160,7 @@ static void run_case(const cJSON *c) {
     }
     double wall0 = parse_ms("2026-01-01T00:00:00.000Z");
     tdot_batcher_t *b = tdot_batcher_new(cfg, 0, NULL);
-    collect_t out = {.messages = cJSON_CreateArray()};
+    collect_t out = {.messages = cJSON_CreateArray(), .lengths = cJSON_CreateArray()};
     cJSON *routing = cJSON_CreateArray();
     const cJSON *step;
     cJSON_ArrayForEach(step, cJSON_GetObjectItem(c, "steps")) {
@@ -188,9 +203,15 @@ static void run_case(const cJSON *c) {
             CHECK(strcmp(cJSON_GetObjectItem(m, "topic")->valuestring,
                          cJSON_GetObjectItem(split, "topic")->valuestring) == 0,
                   "%s: topic", name);
-            const cJSON *payload = cJSON_GetObjectItem(m, "payload"), *group = NULL, *x;
-            cJSON_ArrayForEach(x, payload) if (strcmp(x->string, "time") != 0) group = x;
-            int n = group ? cJSON_GetArraySize(group) : 0;
+            /* Every fragment's series count, and the estimate stays within
+             * the budget. */
+            const cJSON *payload = cJSON_GetObjectItem(m, "payload"), *x;
+            int n = 0;
+            cJSON_ArrayForEach(x, payload) if (strcmp(x->string, "time") != 0) n +=
+                cJSON_GetArraySize(x);
+            int len = cJSON_GetArrayItem(out.lengths, i)->valueint;
+            CHECK(len + TDOT_SERIES_OVERHEAD * n <= TDOT_SIZE_BUDGET, "%s: message %d is %d bytes",
+                  name, i, len);
             CHECK(n == cJSON_GetArrayItem(want, i)->valueint, "%s: message %d has %d series, want %d",
                   name, i, n, cJSON_GetArrayItem(want, i)->valueint);
         }
@@ -211,6 +232,8 @@ static void run_case(const cJSON *c) {
         }
     }
     cJSON_Delete(out.messages);
+    cJSON_Delete(out.lengths);
+    free(out.last);
     cJSON_Delete(routing);
     tdot_batcher_free(b);
     tdot_config_free(cfg);
@@ -258,9 +281,138 @@ static void split_frame_layer_parts_share_its_time(void) {
           last ? last : "(none)");
     cJSON_Delete(r);
     cJSON_Delete(out.messages);
+    free(out.last);
     tdot_batcher_free(b);
     tdot_config_free(cfg);
     cJSON_Delete(c);
+}
+
+/* Two fragments of one type and time share one message, as text: the
+ * fragments in the order their first point is configured, each fragment's
+ * series in the order they were added. As several_fragments_share_a_message in
+ * measure.rs. */
+static void several_fragments_share_a_message(void) {
+    cJSON *c = cJSON_CreateObject();
+    cJSON_AddStringToObject(
+        c, "config",
+        "[connector]\nprotocol = \"opcua\"\noutput = \"group\"\n"
+        "measurement = { type = \"Combined\", point_separator = \".\" }\n\n"
+        "[[device]]\nname = \"plc1\"\nprotocol_address = {}\n"
+        "[[device.point]]\nid = \"c8y_Environmental.temperature\"\ndatatype = \"float64\"\naddress = {}\n"
+        "[[device.point]]\nid = \"c8y_Battery.level\"\ndatatype = \"float64\"\naddress = {}\n"
+        "[[device.point]]\nid = \"c8y_Battery.voltage\"\ndatatype = \"float64\"\naddress = {}\n");
+    char err[512];
+    tdot_config_t *cfg = c ? config_of(c, err, sizeof err) : NULL;
+    CHECK(cfg, "several fragments: config: %s", c ? err : "not JSON");
+    if (!cfg) {
+        cJSON_Delete(c);
+        return;
+    }
+    tdot_batcher_t *b = tdot_batcher_new(cfg, 0, NULL);
+    collect_t out = {.messages = cJSON_CreateArray()};
+    static const struct {
+        size_t k;
+        const char *value;
+    } reads[] = {{1, "85"}, {0, "23.4"}, {2, "3.7"}};
+    for (size_t i = 0; i < 3; i++) {
+        char text[128];
+        snprintf(text, sizeof text, "{\"value\":%s,\"ts\":\"2026-11-12T12:23:00.000Z\"}",
+                 reads[i].value);
+        cJSON *r = cJSON_Parse(text);
+        offer(b, cfg, 0, reads[i].k, r, 0, &out);
+        cJSON_Delete(r);
+    }
+    tdot_batcher_end_of_pass(b, collect, &out);
+    const char *want = "{\"time\":\"2026-11-12T12:23:00.000Z\",\"c8y_Environmental\":{"
+                       "\"temperature\":23.4},\"c8y_Battery\":{\"level\":85,\"voltage\":3.7}}";
+    CHECK(cJSON_GetArraySize(out.messages) == 1 && out.last && strcmp(out.last, want) == 0,
+          "several fragments: %d messages, last %s", cJSON_GetArraySize(out.messages),
+          out.last ? out.last : "(none)");
+    CHECK(strcmp(cJSON_GetObjectItem(cJSON_GetArrayItem(out.messages, 0), "topic")->valuestring,
+                 "te/device/plc1///m/Combined") == 0,
+          "several fragments: topic");
+    cJSON_Delete(out.messages);
+    free(out.last);
+    tdot_batcher_free(b);
+    tdot_config_free(cfg);
+    cJSON_Delete(c);
+}
+
+/* The type, fragment and series one reading of a point is published under:
+ * the topic's last level, the body's fragment and its series. */
+static void name_of(const char *connector, const char *device, const char *point_id,
+                    const char *meta, char *out, size_t outlen) {
+    char config[2048];
+    snprintf(config, sizeof config,
+             "[connector]\nprotocol = \"opcua\"\noutput = \"group\"\n%s\n[[device]]\n"
+             "name = \"plc\"\nprotocol_address = {}\n%s\n[[device.point]]\nid = \"%s\"\n"
+             "datatype = \"float64\"\naddress = {}\n%s\n",
+             connector, device, point_id, meta);
+    cJSON *c = cJSON_CreateObject();
+    cJSON_AddStringToObject(c, "config", config);
+    char err[512];
+    tdot_config_t *cfg = config_of(c, err, sizeof err);
+    cJSON_Delete(c);
+    snprintf(out, outlen, "config: %s", cfg ? "" : err);
+    if (!cfg)
+        return;
+    tdot_batcher_t *b = tdot_batcher_new(cfg, 0, NULL);
+    collect_t got = {.messages = cJSON_CreateArray()};
+    cJSON *r = cJSON_Parse("{\"value\":1,\"ts\":\"2026-01-01T00:00:00.000Z\"}");
+    offer(b, cfg, 0, 0, r, 0, &got);
+    tdot_batcher_end_of_pass(b, collect, &got);
+    const cJSON *m;
+    cJSON_ArrayForEach(m, got.messages) {
+        if (cJSON_IsTrue(cJSON_GetObjectItem(m, "retain")))
+            continue;
+        const char *topic = cJSON_GetObjectItem(m, "topic")->valuestring;
+        const char *type = strstr(topic, "///m/");
+        const cJSON *f = NULL, *x;
+        cJSON_ArrayForEach(x, cJSON_GetObjectItem(m, "payload")) if (strcmp(x->string, "time") != 0) f = x;
+        snprintf(out, outlen, "%s|%s|%s", type ? type + 5 : topic, f ? f->string : "",
+                 f && f->child ? f->child->string : "");
+    }
+    cJSON_Delete(r);
+    cJSON_Delete(got.messages);
+    free(got.last);
+    tdot_batcher_free(b);
+    tdot_config_free(cfg);
+}
+
+/* The names a point gets (§5.5), key by key: point meta, device, connector, the
+ * separator, then the defaults; `group` names the type and the fragment of its
+ * level. As names_resolve_key_by_key in measure.rs. */
+static void names_resolve_key_by_key(void) {
+    static const struct {
+        const char *connector, *device, *point, *meta, *want;
+    } cases[] = {
+        {"", "", "flow", "", "opcua|opcua|flow"},
+        /* The fragment defaults to the type. */
+        {"", "measurement = { type = \"c8y_Sensor\" }", "flow", "", "c8y_Sensor|c8y_Sensor|flow"},
+        {"measurement = { type = \"Combined\" }", "", "b",
+         "meta = { measurement = { fragment = \"c8y_Battery\", series = \"level\" } }",
+         "Combined|c8y_Battery|level"},
+        /* The separator names the fragment under a type, and the type too
+         * without one. */
+        {"measurement = { type = \"Combined\", point_separator = \".\" }", "", "c8y_Battery.level",
+         "", "Combined|c8y_Battery|level"},
+        {"measurement = { point_separator = \".\" }", "", "Environment.Temperature", "",
+         "Environment|Environment|Temperature"},
+        /* `group` sets both at its level and wins over a lower level's type. */
+        {"measurement = { type = \"Combined\" }", "", "p",
+         "meta = { measurement = { group = \"Env\" } }", "Env|Env|p"},
+        {"measurement = { group = \"G\", fragment = \"F\" }", "", "p", "", "G|F|p"},
+        /* The device sits between the point and the connector. */
+        {"measurement = { type = \"C\", series = \"s\" }", "measurement = { type = \"D\" }", "p",
+         "meta = { measurement = { series = \"m\" } }", "D|D|m"},
+    };
+    for (size_t i = 0; i < sizeof cases / sizeof *cases; i++) {
+        char got[512];
+        name_of(cases[i].connector, cases[i].device, cases[i].point, cases[i].meta, got,
+                sizeof got);
+        CHECK(strcmp(got, cases[i].want) == 0, "names case %zu: %s, want %s", i, got,
+              cases[i].want);
+    }
 }
 
 /* The significant digits of a number's text, without sign, point, exponent,
@@ -354,6 +506,8 @@ int main(int argc, char **argv) {
     }
     numbers();
     split_frame_layer_parts_share_its_time();
+    several_fragments_share_a_message();
+    names_resolve_key_by_key();
     cJSON_Delete(doc);
     free(text);
     printf("%d measurement vectors, %d failure(s)\n", n, failures);

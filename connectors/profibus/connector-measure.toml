@@ -1,8 +1,8 @@
-# The `pbm` device of the PROFIBUS-DP e2e harness, in measurement output (contract §5.5, openspec
+# The `pbm` device of the PROFIBUS-DP e2e harness, in grouped output (contract §5.5, openspec
 # change native-batched-output): the connector publishes the thin-edge measurements itself,
-# batched. `output` is a connector setting, so the device is a connector instance of its own,
-# which entrypoint.sh starts next to the main one, against a simulator of its own
-# (measure-simulator: a simulator takes one master).
+# several series per message. `output` is a connector setting, so the device is a connector
+# instance of its own, which entrypoint.sh starts next to the main one, against a simulator of its
+# own (measure-simulator: a simulator takes one master).
 #
 #   ai0_raw   4660, a unit                -> a series of m/profibus, and the units metadata
 #   di_bit3   true                        -> the series 1
@@ -14,7 +14,7 @@ protocol      = "profibus"
 service_name  = "tedge-dot-measure"
 poll_interval = "500ms"
 log_level     = "info"
-output        = "measurements"
+output        = "group"
 
 [mqtt]
 host = "broker"
@@ -45,7 +45,7 @@ protocol_address = { station_address = 7, ident_number = 0, input_bytes = 8, out
   id       = "ai1_raw"
   datatype = "uint16"
   address  = { direction = "input", byte_offset = 4 }
-  meta     = { measurement = { group = "Analog", series = "In1" } }
+  meta     = { measurement = { type = "Analog", series = "In1" } }
 
   [[device.point]]
   id       = "di_raw"

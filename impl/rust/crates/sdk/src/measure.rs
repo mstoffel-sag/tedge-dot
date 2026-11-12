@@ -1,13 +1,13 @@
-//! Measurement output (contract §5.5): with `[connector] output = "measurements"` the runtime
-//! publishes thin-edge measurements itself, batched per device, group and time, instead of one
-//! sample per reading for the `ot-measurement` flow to convert.
+//! Grouped output (contract §5.5): with `[connector] output = "group"` the runtime publishes
+//! thin-edge measurements itself, several series per message, grouped per device, type and time,
+//! instead of one sample per reading for the `ot-measurement` flow to convert.
 //!
 //! [`Batcher`] holds one table per device with a slot per point. The runtime offers it every
 //! reading the report policy (§5.3) and the value map (§4.3) let through, and the batcher decides
-//! when a series is published, and with which time, by the point's `batch.group_by`:
+//! when a series is published, and with which time, by the point's `grouping.by`:
 //!
 //! - `"time"` (default): readings that share a millisecond timestamp share a message. A message
-//!   closes when a reading with another time arrives for its group, when a point repeats, or at
+//!   closes when a reading with another time arrives for its type, when a point repeats, or at
 //!   the end of the runtime's pass.
 //! - `"frame"`: readings within `window` of the device clock are published as layers when the
 //!   window ends: a point's first value in the window goes into layer 0, its second into layer
@@ -17,6 +17,9 @@
 //!   time. Stale slots are left out; event points are published as under `"time"`. With
 //!   `aggregate`, the series are the time-weighted mean, the minimum, the maximum or the last of
 //!   the values the point held during the period, over its good time.
+//!
+//! A message is published on `te/device/<device>///m/<type>` and holds one entry per fragment:
+//! `{"time":…,"<fragment>":{"<series>":<value>,…},…}`.
 //!
 //! It is pure — no clock, no MQTT — so the runtime drives it with the real clocks and the shared
 //! test vectors (`doc/contract/test-vectors/measurements/`) drive it here and in the C SDK
@@ -30,23 +33,31 @@ use std::fmt::Write as _;
 use std::time::{Duration, Instant};
 use time::OffsetDateTime;
 
-/// The values `[connector] output` may take.
-pub const OUTPUTS: &[&str] = &["samples", "measurements"];
-/// The keys a `batch` table may carry.
+/// The values `[connector] output` may take: the two modes, then their deprecated names.
+pub const OUTPUTS: &[&str] = &["single", "group", "samples", "measurements"];
+/// The keys a `grouping` table may carry.
+pub const GROUPING_KEYS: &[&str] = &["by", "window", "every", "aggregate"];
+/// The keys of the deprecated `batch` table, the former name of `grouping` (`group_by` is `by`).
 pub const BATCH_KEYS: &[&str] = &["group_by", "window", "every", "aggregate"];
-/// The values `batch.aggregate` may name.
+/// The values `grouping.aggregate` may name.
 pub const AGGREGATES: &[&str] = &["mean", "min", "max", "last"];
 /// The keys of the `[connector] measurement` table.
-pub const MEASUREMENT_KEYS: &[&str] = &["group", "series", "point_separator", "include_boolean"];
+pub const MEASUREMENT_KEYS: &[&str] = &["type", "fragment", "series", "group", "point_separator", "include_boolean"];
+/// The keys of a device's `measurement` table.
+pub const DEVICE_MEASUREMENT_KEYS: &[&str] = &["type", "fragment", "series", "group"];
+/// The refusal of a table level that sets both names of the grouping table.
+pub const BATCH_AND_GROUPING: &str = "batch and grouping cannot both be set (batch is the deprecated name of grouping)";
 
-/// A batch is split before its estimated Cumulocity size passes this many bytes, which leaves
+/// A message is split before its estimated Cumulocity size passes this many bytes, which leaves
 /// margin under the c8y mapper's 16,184-byte limit.
 pub const SIZE_BUDGET: usize = 15_000;
 /// What the c8y mapper adds per series when it converts a measurement (measured at about 10).
 pub const SERIES_OVERHEAD: usize = 12;
 
-/// `{"time":"2026-01-01T00:00:00.000Z",` + `:{` + `}}`, around the group name and the series.
-const FRAME_BYTES: usize = 9 + 24 + 2 + 2 + 2;
+/// `{"time":"2026-01-01T00:00:00.000Z",` + the closing `}`, around the fragments.
+const FRAME_BYTES: usize = 9 + 24 + 2 + 1;
+/// `:{` + `}` around one fragment's series, after its quoted name.
+const FRAGMENT_BYTES: usize = 3;
 
 const WINDOW_MIN: Duration = Duration::from_millis(1);
 const WINDOW_MAX: Duration = Duration::from_secs(60);
@@ -59,31 +70,68 @@ const MAX_LAYERS: usize = 64;
 /// What the runtime publishes for readings.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Output {
-    /// One sample envelope per reading (contract §5), as before measurement output existed.
+    /// One sample envelope per reading (contract §5); the `ot-measurement` flow makes one
+    /// measurement of each.
     #[default]
-    Samples,
-    /// Batched thin-edge measurements, and samples only for the points flows need.
-    Measurements,
+    Single,
+    /// Grouped thin-edge measurements, and samples only for the points flows need.
+    Group,
 }
 
 impl Output {
     /// The output a loaded configuration asks for. The loader refused any other value.
     pub fn of(config: &ConnectorConfig) -> Self {
         match config.connector.output.as_deref() {
-            Some("measurements") => Output::Measurements,
-            _ => Output::Samples,
+            Some("group" | "measurements") => Output::Group,
+            _ => Output::Single,
         }
     }
 
     pub fn as_str(self) -> &'static str {
         match self {
-            Output::Samples => "samples",
-            Output::Measurements => "measurements",
+            Output::Single => "single",
+            Output::Group => "group",
         }
     }
 }
 
-/// When a point's readings are published, and with which time (`batch.group_by`).
+/// The warning for a deprecated `output` value, if the configuration uses one.
+pub fn deprecated_output(config: &ConnectorConfig) -> Option<String> {
+    let old = config.connector.output.as_deref()?;
+    let new = match old {
+        "samples" => "single",
+        "measurements" => "group",
+        _ => return None,
+    };
+    Some(format!("output = \"{old}\" is deprecated: use \"{new}\""))
+}
+
+/// The warning logged once per load when a configuration or point library uses `batch`.
+pub const BATCH_DEPRECATED: &str = "batch is deprecated: use grouping (group_by is now by)";
+
+/// Rewrite a table's deprecated `batch` as `grouping`, with `group_by` renamed `by`, after its
+/// keys were checked as written. Returns whether it rewrote one. A table that sets both is
+/// refused with [`BATCH_AND_GROUPING`]; the caller prefixes the place.
+pub fn rewrite_batch(table: &mut toml::Value) -> Result<bool, String> {
+    let Some(table) = table.as_table_mut() else {
+        return Ok(false);
+    };
+    let Some(mut batch) = table.remove("batch") else {
+        return Ok(false);
+    };
+    if table.contains_key("grouping") {
+        return Err(BATCH_AND_GROUPING.to_string());
+    }
+    if let Some(policy) = batch.as_table_mut().and_then(|b| b.remove("group_by")) {
+        if let Some(b) = batch.as_table_mut() {
+            b.insert("by".to_string(), policy);
+        }
+    }
+    table.insert("grouping".to_string(), batch);
+    Ok(true)
+}
+
+/// When a point's readings are published, and with which time (`grouping.by`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum GroupBy {
     Time,
@@ -92,26 +140,26 @@ pub enum GroupBy {
 }
 
 impl GroupBy {
-    /// The policy of a merged `batch` table (`[connector]`, then device, then point). Each table
-    /// was checked as written ([`check_values`]); this checks what only the merge decides: the
-    /// duration the policy needs is there. A key of another policy is inherited from a level
+    /// The policy of a merged `grouping` table (`[connector]`, then device, then point). Each
+    /// table was checked as written ([`check_values`]); this checks what only the merge decides:
+    /// the duration the policy needs is there. A key of another policy is inherited from a level
     /// that chose it, and is ignored.
     pub fn from_table(table: &serde_json::Map<String, serde_json::Value>) -> Result<Self, String> {
-        let group_by = table.get("group_by").and_then(|v| v.as_str()).unwrap_or("time");
+        let by = table.get("by").and_then(|v| v.as_str()).unwrap_or("time");
         let duration = |key: &str| table.get(key).and_then(|v| v.as_str()).and_then(parse_duration);
-        match group_by {
+        match by {
             "frame" => duration("window")
                 .map(GroupBy::Frame)
-                .ok_or_else(|| "batch.window is required with group_by = \"frame\"".to_string()),
+                .ok_or_else(|| "grouping.window is required with by = \"frame\"".to_string()),
             "sample" => duration("every")
                 .map(GroupBy::Sample)
-                .ok_or_else(|| "batch.every is required with group_by = \"sample\"".to_string()),
+                .ok_or_else(|| "grouping.every is required with by = \"sample\"".to_string()),
             _ => Ok(GroupBy::Time),
         }
     }
 }
 
-/// What a `"sample"` point publishes for each period (`batch.aggregate`).
+/// What a `"sample"` point publishes for each period (`grouping.aggregate`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Aggregate {
     Mean,
@@ -141,7 +189,7 @@ impl Aggregate {
     }
 }
 
-/// The aggregates of a merged `batch` table and whether they are suffixed to the series name:
+/// The aggregates of a merged `grouping` table and whether they are suffixed to the series name:
 /// a string keeps the name, a list suffixes `_<aggregate>`. `None` without `aggregate`.
 pub fn aggregates_of(table: &serde_json::Map<String, serde_json::Value>) -> Option<(Vec<Aggregate>, bool)> {
     match table.get("aggregate")? {
@@ -154,37 +202,38 @@ pub fn aggregates_of(table: &serde_json::Map<String, serde_json::Value>) -> Opti
     }
 }
 
-/// Merge one level's `batch` table over `base`. A table that sets `aggregate` without
-/// `group_by` chooses `"sample"` (§5.5), at its own level, before the merge.
-pub fn merge_batch_level(base: &mut serde_json::Map<String, serde_json::Value>, level: Option<&serde_json::Value>) {
+/// Merge one level's `grouping` table over `base`. A table that sets `aggregate` without `by`
+/// chooses `"sample"` (§5.5), at its own level, before the merge.
+pub fn merge_grouping_level(base: &mut serde_json::Map<String, serde_json::Value>, level: Option<&serde_json::Value>) {
     let Some(serde_json::Value::Object(level)) = level else {
         return;
     };
     for (k, v) in level {
         base.insert(k.clone(), v.clone());
     }
-    if level.contains_key("aggregate") && !level.contains_key("group_by") {
-        base.insert("group_by".into(), serde_json::Value::String("sample".into()));
+    if level.contains_key("aggregate") && !level.contains_key("by") {
+        base.insert("by".into(), serde_json::Value::String("sample".into()));
     }
 }
 
-/// Validate the values of one `batch` table as written — connector, device or point, inline or
-/// in a library. Its keys are checked with the other contract tables (`library.rs`); the caller
-/// prefixes the place. The C loader (impl/c/sdk/src/config.c `check_batch_values`) refuses the
-/// same tables with the same messages.
+/// Validate the values of one `grouping` table as written (or rewritten from `batch`) —
+/// connector, device or point, inline or in a library. Its keys are checked with the other
+/// contract tables (`library.rs`); the caller prefixes the place. The C loader
+/// (impl/c/sdk/src/config.c `check_grouping_values`) refuses the same tables with the same
+/// messages.
 pub fn check_values(table: &toml::Value) -> Result<(), String> {
     let Some(map) = table.as_table() else {
-        return Err("batch must be a table".to_string());
+        return Err("grouping must be a table".to_string());
     };
-    if let Some(v) = map.get("group_by") {
-        let group_by = match v.as_str() {
+    if let Some(v) = map.get("by") {
+        let by = match v.as_str() {
             Some(g @ ("time" | "frame" | "sample")) => g,
-            _ => return Err("batch.group_by must be \"time\", \"frame\" or \"sample\"".to_string()),
+            _ => return Err("grouping.by must be \"time\", \"frame\" or \"sample\"".to_string()),
         };
         // A table that chooses its policy may only set that policy's keys.
         for (key, policy) in [("window", "frame"), ("every", "sample"), ("aggregate", "sample")] {
-            if map.contains_key(key) && group_by != policy {
-                return Err(format!("batch.{key} does not apply to group_by = \"{group_by}\""));
+            if map.contains_key(key) && by != policy {
+                return Err(format!("grouping.{key} does not apply to by = \"{by}\""));
             }
         }
     }
@@ -192,7 +241,7 @@ pub fn check_values(table: &toml::Value) -> Result<(), String> {
         None => Ok(()),
         Some(v) => match v.as_str().and_then(parse_duration) {
             Some(d) if d >= min && d <= max => Ok(()),
-            _ => Err(format!("batch.{key} must be a duration from {range}")),
+            _ => Err(format!("grouping.{key} must be a duration from {range}")),
         },
     };
     within("window", WINDOW_MIN, WINDOW_MAX, "1ms to 60s")?;
@@ -208,7 +257,7 @@ pub fn check_values(table: &toml::Value) -> Result<(), String> {
                 && names.iter().enumerate().all(|(i, n)| !names[..i].contains(n))
         });
         if !valid {
-            return Err("batch.aggregate must be \"mean\", \"min\", \"max\" or \"last\", or a list of them without repeats"
+            return Err("grouping.aggregate must be \"mean\", \"min\", \"max\" or \"last\", or a list of them without repeats"
                 .to_string());
         }
     }
@@ -216,15 +265,16 @@ pub fn check_values(table: &toml::Value) -> Result<(), String> {
 }
 
 /// Check what only the resolved configuration decides (§5.5), after each table was checked: an
-/// aggregated point has no `report` policy, and in measurement output no series of an aggregated
-/// point has the name of another series of its device and group. Messages name the place.
+/// aggregated point has no `report` policy, and in grouped output no series of an aggregated
+/// point has the name of another series of its device, type and fragment. Messages name the
+/// place.
 pub fn check_resolved(config: &ConnectorConfig) -> Result<(), String> {
     let naming = Naming::of(config);
     let protocol = config.connector.protocol.as_str();
     for device in &config.devices {
-        let mut names: HashMap<(String, String), (String, bool)> = HashMap::new();
+        let mut names: HashMap<(String, String, String), (String, bool)> = HashMap::new();
         for point in &device.points {
-            let table = config.batch_table(device, point);
+            let table = config.grouping_table(device, point);
             let aggregated = match GroupBy::from_table(&table) {
                 Ok(GroupBy::Sample(_)) if !every_event(point) => aggregates_of(&table),
                 _ => None,
@@ -233,26 +283,26 @@ pub fn check_resolved(config: &ConnectorConfig) -> Result<(), String> {
                 && !crate::report::ReportPolicy::from_table(&config.report_table(device, point)).is_passthrough()
             {
                 return Err(format!(
-                    "device '{}': point '{}': batch.aggregate cannot be combined with report: an aggregate uses every reading",
+                    "device '{}': point '{}': grouping.aggregate cannot be combined with report: an aggregate uses every reading",
                     device.name, point.id
                 ));
             }
-            if Output::of(config) != Output::Measurements || !measurable(point, device) {
+            if Output::of(config) != Output::Group || !measurable(point, device) {
                 continue;
             }
-            let (group, series) = naming.resolve(protocol, point);
+            let name = naming.resolve(protocol, device, point);
             let series: Vec<String> = match &aggregated {
-                Some((aggs, true)) => aggs.iter().map(|a| format!("{series}_{}", a.name())).collect(),
-                _ => vec![series],
+                Some((aggs, true)) => aggs.iter().map(|a| format!("{}_{}", name.series, a.name())).collect(),
+                _ => vec![name.series.clone()],
             };
-            for name in series {
-                let key = (group.clone(), name.clone());
+            for series in series {
+                let key = (name.ty.clone(), name.fragment.clone(), series.clone());
                 let mine = aggregated.is_some();
                 if let Some((other, theirs)) = names.get(&key) {
                     if mine || *theirs {
                         return Err(format!(
-                            "device '{}': points '{other}' and '{}' both publish the series '{name}' in the group '{group}'",
-                            device.name, point.id
+                            "device '{}': points '{other}' and '{}' both publish the series '{series}' in the fragment '{}' of the type '{}'",
+                            device.name, point.id, name.fragment, name.ty
                         ));
                     }
                     continue;
@@ -264,35 +314,40 @@ pub fn check_resolved(config: &ConnectorConfig) -> Result<(), String> {
     Ok(())
 }
 
-/// Validate the `[connector] measurement` table's values. The caller prefixes the place.
-pub fn check_measurement(table: &toml::Value) -> Result<(), String> {
+/// Validate a `measurement` table's values: `[connector]`'s (`connector` true) or a device's.
+/// The caller prefixes the place.
+pub fn check_measurement(table: &toml::Value, connector: bool) -> Result<(), String> {
     let Some(map) = table.as_table() else {
         return Err("measurement must be a table".to_string());
     };
-    for key in ["group", "series", "point_separator"] {
-        if map.get(key).is_some_and(|v| !v.is_str()) {
+    let strings: &[&str] = if connector {
+        &["type", "fragment", "series", "group", "point_separator"]
+    } else {
+        &["type", "fragment", "series", "group"]
+    };
+    for key in strings {
+        if map.get(*key).is_some_and(|v| !v.is_str()) {
             return Err(format!("measurement.{key} must be a string"));
         }
     }
-    if map.get("include_boolean").is_some_and(|v| !v.is_bool()) {
+    if connector && map.get("include_boolean").is_some_and(|v| !v.is_bool()) {
         return Err("measurement.include_boolean must be true or false".to_string());
     }
     Ok(())
 }
 
-/// The flow-wide naming settings of `[connector] measurement`, as the `ot-measurement` flow's
-/// parameters of the same names.
-#[derive(Clone, Debug, PartialEq)]
-struct Naming {
-    group: String,
+/// The names one level gives a series (§5.5): the point's `meta.measurement`, a device's or
+/// `[connector]`'s `measurement` table. `group` names the type and the fragment of a level that
+/// does not name them itself. Empty when the level does not name it.
+#[derive(Clone, Debug, Default, PartialEq)]
+struct Level {
+    ty: String,
+    fragment: String,
     series: String,
-    separator: String,
-    include_boolean: bool,
 }
 
-impl Naming {
-    fn of(config: &ConnectorConfig) -> Self {
-        let table = config.connector.measurement.as_ref();
+impl Level {
+    fn of(table: Option<&serde_json::Value>) -> Self {
         let text = |key: &str| {
             table
                 .and_then(|t| t.get(key))
@@ -300,10 +355,39 @@ impl Naming {
                 .unwrap_or("")
                 .to_string()
         };
+        let group = text("group");
+        let or_group = |s: String| if s.is_empty() { group.clone() } else { s };
+        Level { ty: or_group(text("type")), fragment: or_group(text("fragment")), series: text("series") }
+    }
+}
+
+/// A series' resolved names.
+#[derive(Clone, Debug, PartialEq)]
+struct Name {
+    ty: String,
+    fragment: String,
+    series: String,
+}
+
+/// The connector-wide naming settings of `[connector] measurement`, as the `ot-measurement`
+/// flow's parameters of the same names.
+#[derive(Clone, Debug, PartialEq)]
+struct Naming {
+    connector: Level,
+    separator: String,
+    include_boolean: bool,
+}
+
+impl Naming {
+    fn of(config: &ConnectorConfig) -> Self {
+        let table = config.connector.measurement.as_ref();
         Naming {
-            group: text("group"),
-            series: text("series"),
-            separator: text("point_separator"),
+            connector: Level::of(table),
+            separator: table
+                .and_then(|t| t.get("point_separator"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string(),
             include_boolean: table
                 .and_then(|t| t.get("include_boolean"))
                 .and_then(|v| v.as_bool())
@@ -311,44 +395,39 @@ impl Naming {
         }
     }
 
-    /// A point's group and series, in `ot-measurement`'s order: the point's
-    /// `meta.measurement.group`/`.series`, then the connector's `group`/`series`, then a split of
-    /// the point id at `point_separator`, then the protocol and the point id.
-    fn resolve(&self, protocol: &str, point: &PointConfig) -> (String, String) {
-        let named = |key: &str| {
-            point
-                .meta
-                .as_ref()
-                .and_then(|m| m.get("measurement"))
-                .and_then(|m| m.get(key))
-                .and_then(|v| v.as_str())
-                .filter(|s| !s.is_empty())
-                .map(str::to_string)
-        };
-        let mut group = named("group").unwrap_or_else(|| self.group.clone());
-        let mut series = named("series").unwrap_or_else(|| self.series.clone());
+    /// A point's type, fragment and series, in `ot-measurement`'s order, key by key: the point's
+    /// `meta.measurement`, the device's `measurement`, `[connector] measurement`, then a split of
+    /// the point id at `point_separator` (the prefix for the type and the fragment, the suffix
+    /// for the series), then the protocol for the type, the type for the fragment and the point
+    /// id for the series.
+    fn resolve(&self, protocol: &str, device: &DeviceConfig, point: &PointConfig) -> Name {
+        let meta = point
+            .meta
+            .as_ref()
+            .and_then(|m| m.get("measurement"))
+            .filter(|m| m.is_object());
+        let levels = [Level::of(meta), Level::of(device.measurement.as_ref()), self.connector.clone()];
+        let first = |pick: fn(&Level) -> &String| levels.iter().map(pick).find(|s| !s.is_empty()).cloned();
         let sep = self.separator.as_str();
-        if !sep.is_empty() && (group.is_empty() || series.is_empty()) {
-            if let Some(at) = point.id.find(sep).filter(|at| *at > 0 && at + sep.len() < point.id.len()) {
-                if group.is_empty() {
-                    group = point.id[..at].to_string();
-                }
-                if series.is_empty() {
-                    series = point.id[at + sep.len()..].to_string();
-                }
-            }
-        }
-        if group.is_empty() {
-            group = protocol.to_string();
-        }
-        if series.is_empty() {
-            series = point.id.clone();
-        }
-        (group, series)
+        let split = (!sep.is_empty())
+            .then(|| point.id.find(sep))
+            .flatten()
+            .filter(|at| *at > 0 && at + sep.len() < point.id.len())
+            .map(|at| (point.id[..at].to_string(), point.id[at + sep.len()..].to_string()));
+        let ty = first(|l| &l.ty)
+            .or_else(|| split.as_ref().map(|s| s.0.clone()))
+            .unwrap_or_else(|| protocol.to_string());
+        let fragment = first(|l| &l.fragment)
+            .or_else(|| split.as_ref().map(|s| s.0.clone()))
+            .unwrap_or_else(|| ty.clone());
+        let series = first(|l| &l.series)
+            .or_else(|| split.as_ref().map(|s| s.1.clone()))
+            .unwrap_or_else(|| point.id.clone());
+        Name { ty, fragment, series }
     }
 }
 
-/// Whether a flow reads this point's samples, so measurement mode still publishes them (§5.5):
+/// Whether a flow reads this point's samples, so grouped output still publishes them (§5.5):
 /// `meta.alarm`, `meta.event` or `meta.parameter` (each unless `false`), write access, or
 /// `sample = true`. `sample = false` turns them off whatever else the point has.
 pub fn publishes_sample(point: &PointConfig) -> bool {
@@ -411,6 +490,8 @@ pub struct Routing {
 struct PointPlan {
     /// Index into the device's `topics`.
     topic: usize,
+    /// Index into the topic's `fragments`.
+    fragment: usize,
     /// `"<series>"`, escaped and quoted for the body, followed by `:`.
     series_key: String,
     measurable: bool,
@@ -423,12 +504,89 @@ struct PointPlan {
 #[derive(Debug)]
 struct Topic {
     topic: String,
-    /// `"<group>"`, escaped and quoted.
-    group_json: String,
+    /// The measurement type the topic ends with.
+    ty: String,
+    /// `"<fragment>"`, escaped and quoted, in the order their first point is configured.
+    fragments: Vec<String>,
     /// The retained units message for the topic (empty when no series of it has a unit).
     units: String,
     /// The units were settled since this batcher was built.
     units_settled: bool,
+}
+
+/// The series of a message not yet published, per fragment of its topic.
+#[derive(Debug, Default)]
+struct Body {
+    /// Per fragment of the topic, `"a":1,"b":2` without the braces; empty when it holds none.
+    parts: Vec<String>,
+    /// The length of the message text with these series; meaningless while `n` is 0.
+    len: usize,
+    /// The fragments holding a series.
+    fragments: usize,
+    /// The series.
+    n: usize,
+}
+
+impl Body {
+    /// The text length after adding `piece` to fragment `f`, whose quoted name is `name_len`
+    /// bytes long.
+    fn len_with(&self, f: usize, name_len: usize, piece: usize) -> usize {
+        let base = if self.n == 0 { FRAME_BYTES } else { self.len };
+        if self.parts.get(f).is_none_or(String::is_empty) {
+            base + usize::from(self.fragments > 0) + name_len + FRAGMENT_BYTES + piece
+        } else {
+            base + 1 + piece
+        }
+    }
+
+    /// The estimated Cumulocity size after adding `piece` to fragment `f` (§5.5).
+    fn estimate_with(&self, f: usize, name_len: usize, piece: usize) -> usize {
+        self.len_with(f, name_len, piece) + SERIES_OVERHEAD * (self.n + 1)
+    }
+
+    fn push(&mut self, f: usize, name_len: usize, piece: &str) {
+        self.len = self.len_with(f, name_len, piece.len());
+        if self.parts.len() <= f {
+            self.parts.resize(f + 1, String::new());
+        }
+        let part = &mut self.parts[f];
+        if part.is_empty() {
+            self.fragments += 1;
+        } else {
+            part.push(',');
+        }
+        part.push_str(piece);
+        self.n += 1;
+    }
+
+    fn clear(&mut self) {
+        for part in &mut self.parts {
+            part.clear();
+        }
+        self.len = 0;
+        self.fragments = 0;
+        self.n = 0;
+    }
+
+    /// `{"time":"<time>","<fragment>":{<series>},…}`, the fragments in the topic's order.
+    fn render(&self, fragments: &[String], time: OffsetDateTime) -> String {
+        let mut out = String::with_capacity(self.len);
+        out.push_str("{\"time\":\"");
+        out.push_str(&format_rfc3339_ms(time));
+        out.push('"');
+        for (name, part) in fragments.iter().zip(&self.parts) {
+            if part.is_empty() {
+                continue;
+            }
+            out.push(',');
+            out.push_str(name);
+            out.push_str(":{");
+            out.push_str(part);
+            out.push('}');
+        }
+        out.push('}');
+        out
+    }
 }
 
 /// A message being filled: the open `time` message of a topic, or one layer of a frame.
@@ -438,10 +596,8 @@ struct Open {
     time_ms: i128,
     /// When the frame opened, on the device clock.
     opened: Instant,
-    /// `"a":1,"b":2`, without the braces: the part not yet published.
-    body: String,
-    /// The series in `body`.
-    n: usize,
+    /// The part not yet published.
+    body: Body,
     /// Every point in the message, including the parts already published by a split.
     points: Vec<usize>,
 }
@@ -513,7 +669,7 @@ struct DeviceTable {
     stale: bool,
 }
 
-/// The point tables of a connector's devices in measurement mode, and the messages they produce.
+/// The point tables of a connector's devices in grouped output, and the messages they produce.
 #[derive(Debug)]
 pub struct Batcher {
     devices: Vec<DeviceTable>,
@@ -554,13 +710,14 @@ impl Batcher {
             let mut index = HashMap::new();
             let mut samplers: Vec<(Duration, Instant)> = Vec::new();
             for point in &device.points {
-                let (group, series) = naming.resolve(protocol, point);
-                let topic = match topics.iter().position(|t| t.group_json == quoted(&group)) {
+                let Name { ty, fragment, series } = naming.resolve(protocol, device, point);
+                let topic = match topics.iter().position(|t| t.ty == ty) {
                     Some(t) => t,
                     None => {
                         topics.push(Topic {
-                            topic: format!("te/device/{}///m/{group}", device.name),
-                            group_json: quoted(&group),
+                            topic: format!("te/device/{}///m/{ty}", device.name),
+                            ty: ty.clone(),
+                            fragments: Vec::new(),
                             units: String::new(),
                             units_settled: false,
                         });
@@ -568,9 +725,18 @@ impl Batcher {
                         topics.len() - 1
                     }
                 };
+                let fragment_json = quoted(&fragment);
+                let fragments = &mut topics[topic].fragments;
+                let fragment_index = match fragments.iter().position(|f| *f == fragment_json) {
+                    Some(f) => f,
+                    None => {
+                        fragments.push(fragment_json);
+                        fragments.len() - 1
+                    }
+                };
                 let measurable = measurable(point, device);
                 // Validated by the loader; a config built without it falls back to `time`.
-                let table = config.batch_table(device, point);
+                let table = config.grouping_table(device, point);
                 let mut group_by = GroupBy::from_table(&table).unwrap_or(GroupBy::Time);
                 if matches!(group_by, GroupBy::Sample(_)) && every_event(point) {
                     group_by = GroupBy::Time;
@@ -584,7 +750,7 @@ impl Batcher {
                 };
                 if let Some(unit) = point.unit.as_deref().filter(|u| measurable && !u.is_empty()) {
                     for (_, name) in &names {
-                        units[topic].insert(format!("{group}.{name}"), unit.to_string());
+                        units[topic].insert(format!("{fragment}.{name}"), unit.to_string());
                     }
                 }
                 let aggregates: Vec<(Aggregate, String)> = names
@@ -599,6 +765,7 @@ impl Batcher {
                 index.insert(point.id.clone(), points.len());
                 points.push(PointPlan {
                     topic,
+                    fragment: fragment_index,
                     series_key: format!("{}:", quoted(&series)),
                     measurable,
                     sample: publishes_sample(point),
@@ -725,28 +892,23 @@ impl Batcher {
                 dev.last_layer_ms.insert(key, time_ms);
             }
             let opened = layers.first().map_or(opened, |o| o.opened);
-            layers.push(Open { time, time_ms, opened, body: String::new(), n: 0, points: Vec::new() });
+            layers.push(Open { time, time_ms, opened, body: Body::default(), points: Vec::new() });
         }
         let plan = &dev.points[k];
-        let group_len = dev.topics[plan.topic].group_json.len();
+        let f = plan.fragment;
+        let name_len = dev.topics[plan.topic].fragments[f].len();
         let mut piece = String::with_capacity(plan.series_key.len() + 24);
         piece.push_str(&plan.series_key);
         push_number(&mut piece, value);
-        let estimate = |body: usize, n: usize| FRAME_BYTES + group_len + body + SERIES_OVERHEAD * n;
         let open = &mut layers[layer];
-        if open.n > 0 && estimate(open.body.len() + 1 + piece.len(), open.n + 1) > SIZE_BUDGET {
+        if open.body.n > 0 && open.body.estimate_with(f, name_len, piece.len()) > SIZE_BUDGET {
             // Split: the full part goes now; the rest keeps the message's time and window.
             let topic = &mut dev.topics[key.0];
             settle_units(topic, &mut self.published_units, out);
-            out.push(Message { topic: topic.topic.clone(), payload: body(&topic.group_json, open.time, &open.body), retain: false });
+            out.push(Message { topic: topic.topic.clone(), payload: open.body.render(&topic.fragments, open.time), retain: false });
             open.body.clear();
-            open.n = 0;
         }
-        if !open.body.is_empty() {
-            open.body.push(',');
-        }
-        open.body.push_str(&piece);
-        open.n += 1;
+        open.body.push(f, name_len, &piece);
         open.points.push(k);
         dev.depth[k] += 1;
     }
@@ -763,13 +925,13 @@ impl Batcher {
             for k in &open.points {
                 dev.depth[*k] = 0;
             }
-            if open.n == 0 {
+            if open.body.n == 0 {
                 continue;
             }
             settle_units(topic, &mut self.published_units, out);
             out.push(Message {
                 topic: topic.topic.clone(),
-                payload: body(&topic.group_json, open.time, &open.body),
+                payload: open.body.render(&topic.fragments, open.time),
                 retain: false,
             });
         }
@@ -842,7 +1004,7 @@ impl Batcher {
     /// slots are left out; an aggregated slot publishes the good time it had before.
     fn sample(&mut self, d: usize, every: Duration, now: Instant, wall: OffsetDateTime, out: &mut Vec<Message>) {
         let dev = &mut self.devices[d];
-        let mut bodies: Vec<(String, usize)> = vec![(String::new(), 0); dev.topics.len()];
+        let mut bodies: Vec<Body> = (0..dev.topics.len()).map(|_| Body::default()).collect();
         let mut series: Vec<(&str, f64)> = Vec::new();
         for (k, plan) in dev.points.iter().enumerate() {
             if plan.group_by != GroupBy::Sample(every) {
@@ -876,28 +1038,23 @@ impl Batcher {
                 let mut piece = key.to_string();
                 push_number(&mut piece, value);
                 let topic = &mut dev.topics[plan.topic];
-                let (body_text, n) = &mut bodies[plan.topic];
-                let size = FRAME_BYTES + topic.group_json.len() + body_text.len() + 1 + piece.len() + SERIES_OVERHEAD * (*n + 1);
-                if *n > 0 && size > SIZE_BUDGET {
+                let body = &mut bodies[plan.topic];
+                let name_len = topic.fragments[plan.fragment].len();
+                if body.n > 0 && body.estimate_with(plan.fragment, name_len, piece.len()) > SIZE_BUDGET {
                     settle_units(topic, &mut self.published_units, out);
-                    out.push(Message { topic: topic.topic.clone(), payload: body(&topic.group_json, wall, body_text), retain: false });
-                    body_text.clear();
-                    *n = 0;
+                    out.push(Message { topic: topic.topic.clone(), payload: body.render(&topic.fragments, wall), retain: false });
+                    body.clear();
                 }
-                if !body_text.is_empty() {
-                    body_text.push(',');
-                }
-                body_text.push_str(&piece);
-                *n += 1;
+                body.push(plan.fragment, name_len, &piece);
             }
         }
-        for (t, (body_text, n)) in bodies.into_iter().enumerate() {
-            if n == 0 {
+        for (t, body) in bodies.into_iter().enumerate() {
+            if body.n == 0 {
                 continue;
             }
             let topic = &mut dev.topics[t];
             settle_units(topic, &mut self.published_units, out);
-            out.push(Message { topic: topic.topic.clone(), payload: body(&topic.group_json, wall, &body_text), retain: false });
+            out.push(Message { topic: topic.topic.clone(), payload: body.render(&topic.fragments, wall), retain: false });
         }
     }
 
@@ -950,40 +1107,27 @@ fn settle_units(topic: &mut Topic, published: &mut HashMap<String, String>, out:
     out.push(Message { topic: meta, payload: topic.units.clone(), retain: true });
 }
 
-/// `{"time":"<time>","<group>":{<series>}}`.
-fn body(group_json: &str, time: OffsetDateTime, series: &str) -> String {
-    let mut out = String::with_capacity(FRAME_BYTES + group_json.len() + series.len());
-    out.push_str("{\"time\":\"");
-    out.push_str(&format_rfc3339_ms(time));
-    out.push_str("\",");
-    out.push_str(group_json);
-    out.push_str(":{");
-    out.push_str(series);
-    out.push_str("}}");
-    out
-}
-
 /// The `outputs` of the capability descriptor (§7): each device's effective output and its
-/// merged `batch` table (`[connector]`, then the device), with the default `group_by` filled in.
-/// `None` for a connector in samples output that configures no `batch`, so a configuration
+/// merged `grouping` table (`[connector]`, then the device), with the default `by` filled in.
+/// `None` for a connector in single output that configures no `grouping`, so a configuration
 /// using only defaults adds nothing.
 pub fn describe(config: &ConnectorConfig) -> Option<serde_json::Value> {
     let output = Output::of(config);
-    let any_batch = config.connector.batch.is_some() || config.devices.iter().any(|d| d.batch.is_some());
-    if output == Output::Samples && !any_batch {
+    let any_grouping = config.connector.grouping.is_some() || config.devices.iter().any(|d| d.grouping.is_some());
+    if output == Output::Single && !any_grouping {
         return None;
     }
     let devices = config
         .devices
         .iter()
         .map(|device| {
-            let mut batch = serde_json::Map::new();
-            merge_batch_level(&mut batch, config.connector.batch.as_ref());
-            merge_batch_level(&mut batch, device.batch.as_ref());
-            batch
-                .entry("group_by")
+            let mut grouping = serde_json::Map::new();
+            merge_grouping_level(&mut grouping, config.connector.grouping.as_ref());
+            merge_grouping_level(&mut grouping, device.grouping.as_ref());
+            grouping
+                .entry("by")
                 .or_insert_with(|| serde_json::Value::String("time".into()));
-            serde_json::json!({ "device": device.name, "output": output.as_str(), "batch": batch })
+            serde_json::json!({ "device": device.name, "output": output.as_str(), "grouping": grouping })
         })
         .collect();
     Some(serde_json::Value::Array(devices))
@@ -1002,16 +1146,16 @@ mod tests {
         use serde_json::json;
         assert_eq!(GroupBy::from_table(&table(json!({}))), Ok(GroupBy::Time));
         assert_eq!(
-            GroupBy::from_table(&table(json!({"group_by": "frame", "window": "100ms"}))),
+            GroupBy::from_table(&table(json!({"by": "frame", "window": "100ms"}))),
             Ok(GroupBy::Frame(Duration::from_millis(100)))
         );
         assert_eq!(
-            GroupBy::from_table(&table(json!({"group_by": "frame"}))),
-            Err("batch.window is required with group_by = \"frame\"".into())
+            GroupBy::from_table(&table(json!({"by": "frame"}))),
+            Err("grouping.window is required with by = \"frame\"".into())
         );
         // A point choosing `time` under a device that chose `frame` inherits the window.
         assert_eq!(
-            GroupBy::from_table(&table(json!({"group_by": "time", "window": "100ms"}))),
+            GroupBy::from_table(&table(json!({"by": "time", "window": "100ms"}))),
             Ok(GroupBy::Time)
         );
     }
@@ -1019,23 +1163,23 @@ mod tests {
     #[test]
     fn a_table_sets_only_its_own_policy_s_duration() {
         let check = |t: &str| check_values(&toml::from_str::<toml::Value>(t).unwrap());
-        assert_eq!(check("group_by = \"frame\"\nwindow = \"100ms\""), Ok(()));
+        assert_eq!(check("by = \"frame\"\nwindow = \"100ms\""), Ok(()));
         assert_eq!(check("window = \"100ms\""), Ok(()));
         assert_eq!(
-            check("group_by = \"time\"\nwindow = \"100ms\""),
-            Err("batch.window does not apply to group_by = \"time\"".into())
+            check("by = \"time\"\nwindow = \"100ms\""),
+            Err("grouping.window does not apply to by = \"time\"".into())
         );
         assert_eq!(
-            check("group_by = \"bucket\""),
-            Err("batch.group_by must be \"time\", \"frame\" or \"sample\"".into())
+            check("by = \"bucket\""),
+            Err("grouping.by must be \"time\", \"frame\" or \"sample\"".into())
         );
         assert_eq!(
-            check("group_by = \"frame\"\nwindow = \"2m\""),
-            Err("batch.window must be a duration from 1ms to 60s".into())
+            check("by = \"frame\"\nwindow = \"2m\""),
+            Err("grouping.window must be a duration from 1ms to 60s".into())
         );
         assert_eq!(
-            check("group_by = \"sample\"\nevery = \"50ms\""),
-            Err("batch.every must be a duration from 100ms to 1h".into())
+            check("by = \"sample\"\nevery = \"50ms\""),
+            Err("grouping.every must be a duration from 100ms to 1h".into())
         );
     }
 
@@ -1140,9 +1284,17 @@ mod tests {
                     .iter()
                     .map(|m| {
                         assert_eq!(m.topic, split["topic"], "{name}");
-                        assert!(m.payload.len() + SERIES_OVERHEAD * 200 < 16_184, "{name}: {}", m.payload.len());
+                        // Every fragment's series count, and the estimate stays within the budget.
                         let body: serde_json::Value = serde_json::from_str(&m.payload).unwrap();
-                        body.as_object().unwrap().iter().find(|(k, _)| *k != "time").unwrap().1.as_object().unwrap().len()
+                        let n: usize = body
+                            .as_object()
+                            .unwrap()
+                            .iter()
+                            .filter(|(k, _)| *k != "time")
+                            .map(|(_, f)| f.as_object().unwrap().len())
+                            .sum();
+                        assert!(m.payload.len() + SERIES_OVERHEAD * n <= SIZE_BUDGET, "{name}: {}", m.payload.len());
+                        n
                     })
                     .collect();
                 let want: Vec<usize> = serde_json::from_value(split["series"].clone()).unwrap();
@@ -1202,31 +1354,48 @@ mod tests {
         crate::library::resolve(&text, std::path::Path::new("."))
     }
 
-    /// Invalid point `batch` and `sample` values and the end of the message each gets.
-    const POINT_CASES: [(&str, &str); 12] = [
-        ("batch = { group_by = \"time\", window = \"100ms\" }", "point 'p': batch.window does not apply to group_by = \"time\""),
-        ("batch = { group_by = \"frame\", window = \"2m\" }", "point 'p': batch.window must be a duration from 1ms to 60s"),
-        ("batch = { group_by = \"sample\", every = \"50ms\" }", "point 'p': batch.every must be a duration from 100ms to 1h"),
-        ("batch = { group_by = \"bucket\" }", "point 'p': batch.group_by must be \"time\", \"frame\" or \"sample\""),
-        ("batch = { windw = \"1s\" }", "unknown key 'windw' in the batch of point 'p' (did you mean 'window'?)"),
+    /// Invalid point `grouping`, `batch` and `sample` values and the end of the message each gets.
+    const POINT_CASES: [(&str, &str); 16] = [
+        ("grouping = { by = \"time\", window = \"100ms\" }", "point 'p': grouping.window does not apply to by = \"time\""),
+        ("grouping = { by = \"frame\", window = \"2m\" }", "point 'p': grouping.window must be a duration from 1ms to 60s"),
+        ("grouping = { by = \"sample\", every = \"50ms\" }", "point 'p': grouping.every must be a duration from 100ms to 1h"),
+        ("grouping = { by = \"bucket\" }", "point 'p': grouping.by must be \"time\", \"frame\" or \"sample\""),
+        ("grouping = { windw = \"1s\" }", "unknown key 'windw' in the grouping of point 'p' (did you mean 'window'?)"),
         ("sample = \"yes\"", "point 'p': sample must be true or false"),
-        ("batch = { group_by = \"frame\", window = \"100ms\", aggregate = \"mean\" }", "point 'p': batch.aggregate does not apply to group_by = \"frame\""),
-        ("batch = { aggregate = \"median\", every = \"1s\" }", "point 'p': batch.aggregate must be \"mean\", \"min\", \"max\" or \"last\", or a list of them without repeats"),
-        ("batch = { aggregate = [\"mean\", \"mean\"], every = \"1s\" }", "point 'p': batch.aggregate must be \"mean\", \"min\", \"max\" or \"last\", or a list of them without repeats"),
-        ("batch = { aggregate = [], every = \"1s\" }", "point 'p': batch.aggregate must be \"mean\", \"min\", \"max\" or \"last\", or a list of them without repeats"),
-        ("batch = { aggregate = \"mean\" }", "device 'plc': point 'p': batch.every is required with group_by = \"sample\""),
-        ("batch = { aggregate = \"mean\", every = \"1s\" }\nreport = { deadband = 0.5 }", "device 'plc': point 'p': batch.aggregate cannot be combined with report: an aggregate uses every reading"),
+        ("grouping = { by = \"frame\", window = \"100ms\", aggregate = \"mean\" }", "point 'p': grouping.aggregate does not apply to by = \"frame\""),
+        ("grouping = { aggregate = \"median\", every = \"1s\" }", "point 'p': grouping.aggregate must be \"mean\", \"min\", \"max\" or \"last\", or a list of them without repeats"),
+        ("grouping = { aggregate = [\"mean\", \"mean\"], every = \"1s\" }", "point 'p': grouping.aggregate must be \"mean\", \"min\", \"max\" or \"last\", or a list of them without repeats"),
+        ("grouping = { aggregate = [], every = \"1s\" }", "point 'p': grouping.aggregate must be \"mean\", \"min\", \"max\" or \"last\", or a list of them without repeats"),
+        ("grouping = { aggregate = \"mean\" }", "device 'plc': point 'p': grouping.every is required with by = \"sample\""),
+        ("grouping = { aggregate = \"mean\", every = \"1s\" }\nreport = { deadband = 0.5 }", "device 'plc': point 'p': grouping.aggregate cannot be combined with report: an aggregate uses every reading"),
+        // The deprecated `batch`: its keys are checked as written, its values as `grouping`'s.
+        ("batch = { windw = \"1s\" }", "unknown key 'windw' in the batch of point 'p' (did you mean 'window'?)"),
+        ("batch = { by = \"time\" }", "unknown key 'by' in the batch of point 'p'"),
+        ("batch = { group_by = \"time\", window = \"100ms\" }", "point 'p': grouping.window does not apply to by = \"time\""),
+        ("batch = { group_by = \"time\" }\ngrouping = { by = \"time\" }", "device 'plc': point 'p': batch and grouping cannot both be set (batch is the deprecated name of grouping)"),
     ];
 
     #[test]
     fn the_loader_names_the_place() {
         assert_eq!(
             load("output = \"both\"").unwrap_err(),
-            "[connector] output must be one of \"samples\", \"measurements\" (got 'both')"
+            "[connector] output must be one of \"single\", \"group\", \"samples\", \"measurements\" (got 'both')"
+        );
+        assert_eq!(
+            load("grouping = { by = \"frame\" }").unwrap_err(),
+            "device 'plc': point 'p': grouping.window is required with by = \"frame\""
         );
         assert_eq!(
             load("batch = { group_by = \"frame\" }").unwrap_err(),
-            "device 'plc': point 'p': batch.window is required with group_by = \"frame\""
+            "device 'plc': point 'p': grouping.window is required with by = \"frame\""
+        );
+        assert_eq!(
+            load("batch = {}\ngrouping = {}").unwrap_err(),
+            "[connector] batch and grouping cannot both be set (batch is the deprecated name of grouping)"
+        );
+        assert_eq!(
+            load("measurement = { type = 1 }").unwrap_err(),
+            "[connector] measurement.type must be a string"
         );
         assert_eq!(
             load("measurement = { include_boolean = \"yes\" }").unwrap_err(),
@@ -1253,42 +1422,118 @@ mod tests {
         for (table, message) in POINT_CASES {
             assert!(point(table).ends_with(message), "{table}: {}", point(table));
         }
-        assert_eq!(Output::of(&load("").unwrap()), Output::Samples);
-        assert_eq!(Output::of(&load("output = \"measurements\"").unwrap()), Output::Measurements);
+        assert_eq!(Output::of(&load("").unwrap()), Output::Single);
+        assert_eq!(Output::of(&load("output = \"single\"").unwrap()), Output::Single);
+        assert_eq!(Output::of(&load("output = \"samples\"").unwrap()), Output::Single);
+        assert_eq!(Output::of(&load("output = \"group\"").unwrap()), Output::Group);
+        assert_eq!(Output::of(&load("output = \"measurements\"").unwrap()), Output::Group);
+        assert_eq!(deprecated_output(&load("output = \"group\"").unwrap()), None);
+        assert_eq!(
+            deprecated_output(&load("output = \"measurements\"").unwrap()).as_deref(),
+            Some("output = \"measurements\" is deprecated: use \"group\"")
+        );
         // A suffixed series may not take another point's name (the same case as tests/config.c).
         let two = |output: &str| {
             crate::library::resolve(
                 &format!(
                     "[connector]\nprotocol = \"opcua\"\n{output}\n[[device]]\nname = \"plc\"\nprotocol_address = {{}}\n\
-                     [[device.point]]\nid = \"p\"\naddress = {{}}\nbatch = {{ aggregate = [\"mean\", \"max\"], every = \"1s\" }}\n\
+                     [[device.point]]\nid = \"p\"\naddress = {{}}\ngrouping = {{ aggregate = [\"mean\", \"max\"], every = \"1s\" }}\n\
                      [[device.point]]\nid = \"p_max\"\naddress = {{}}\n"
                 ),
                 std::path::Path::new("."),
             )
         };
         assert_eq!(
-            two("output = \"measurements\"").unwrap_err(),
-            "device 'plc': points 'p' and 'p_max' both publish the series 'p_max' in the group 'opcua'"
+            two("output = \"group\"").unwrap_err(),
+            "device 'plc': points 'p' and 'p_max' both publish the series 'p_max' in the fragment 'opcua' of the type 'opcua'"
         );
-        assert!(two("").is_ok(), "samples output publishes no series");
+        assert!(two("").is_ok(), "single output publishes no series");
+        // Another fragment of the same type is another series.
+        assert!(two("output = \"group\"\n[connector.measurement]\npoint_separator = \"_\"").is_ok());
     }
 
     #[test]
-    fn the_descriptor_lists_each_device_s_output_and_batch() {
+    fn the_descriptor_lists_each_device_s_output_and_grouping() {
         assert_eq!(describe(&load("").unwrap()), None);
-        // `aggregate` without `group_by` chooses "sample" (the same case as tests/config.c).
+        // `aggregate` without `by` chooses "sample" (the same case as tests/config.c).
         assert_eq!(
-            describe(&load("output = \"measurements\"\nbatch = { aggregate = [\"mean\", \"max\"], every = \"1s\" }").unwrap()),
+            describe(&load("output = \"group\"\ngrouping = { aggregate = [\"mean\", \"max\"], every = \"1s\" }").unwrap()),
             Some(serde_json::json!([
-                { "device": "plc", "output": "measurements",
-                  "batch": { "group_by": "sample", "every": "1s", "aggregate": ["mean", "max"] } }
+                { "device": "plc", "output": "group",
+                  "grouping": { "by": "sample", "every": "1s", "aggregate": ["mean", "max"] } }
             ]))
         );
+        // The deprecated names are reported under the new ones.
         assert_eq!(
             describe(&load("output = \"measurements\"\nbatch = { group_by = \"frame\", window = \"100ms\" }").unwrap()),
             Some(serde_json::json!([
-                { "device": "plc", "output": "measurements", "batch": { "group_by": "frame", "window": "100ms" } }
+                { "device": "plc", "output": "group", "grouping": { "by": "frame", "window": "100ms" } }
             ]))
+        );
+    }
+
+    /// The names a point gets (§5.5), key by key: point meta, device, connector, the separator,
+    /// then the defaults; `group` names the type and the fragment of its level.
+    #[test]
+    fn names_resolve_key_by_key() {
+        let name = |connector: &str, device: &str, point_id: &str, meta: &str| {
+            let text = format!(
+                "[connector]\nprotocol = \"opcua\"\n{connector}\n[[device]]\nname = \"plc\"\nprotocol_address = {{}}\n{device}\n\
+                 [[device.point]]\nid = \"{point_id}\"\naddress = {{}}\n{meta}\n"
+            );
+            let config = crate::library::resolve(&text, std::path::Path::new(".")).unwrap();
+            let n = Naming::of(&config).resolve("opcua", &config.devices[0], &config.devices[0].points[0]);
+            (n.ty, n.fragment, n.series)
+        };
+        let t = |a: &str, b: &str, c: &str| (a.to_string(), b.to_string(), c.to_string());
+        assert_eq!(name("", "", "flow", ""), t("opcua", "opcua", "flow"));
+        // The fragment defaults to the type.
+        assert_eq!(name("", "measurement = { type = \"c8y_Sensor\" }", "flow", ""), t("c8y_Sensor", "c8y_Sensor", "flow"));
+        assert_eq!(
+            name("measurement = { type = \"Combined\" }", "", "b", "meta = { measurement = { fragment = \"c8y_Battery\", series = \"level\" } }"),
+            t("Combined", "c8y_Battery", "level")
+        );
+        // The separator names the fragment under a type, and the type too without one.
+        assert_eq!(
+            name("measurement = { type = \"Combined\", point_separator = \".\" }", "", "c8y_Battery.level", ""),
+            t("Combined", "c8y_Battery", "level")
+        );
+        assert_eq!(
+            name("measurement = { point_separator = \".\" }", "", "Environment.Temperature", ""),
+            t("Environment", "Environment", "Temperature")
+        );
+        // `group` sets both at its level and wins over a lower level's type.
+        assert_eq!(
+            name("measurement = { type = \"Combined\" }", "", "p", "meta = { measurement = { group = \"Env\" } }"),
+            t("Env", "Env", "p")
+        );
+        assert_eq!(
+            name("measurement = { group = \"G\", fragment = \"F\" }", "", "p", ""),
+            t("G", "F", "p")
+        );
+        // The device sits between the point and the connector.
+        assert_eq!(
+            name("measurement = { type = \"C\", series = \"s\" }", "measurement = { type = \"D\" }", "p", "meta = { measurement = { series = \"m\" } }"),
+            t("D", "D", "m")
+        );
+    }
+
+    /// Two fragments of one type and time share one message; the size estimate counts every
+    /// fragment, and is the text length plus 12 bytes per series.
+    #[test]
+    fn several_fragments_share_a_message() {
+        let mut body = Body::default();
+        let names = vec![quoted("c8y_Environmental"), quoted("c8y_Battery")];
+        let ts = parse_ts("2026-11-12T12:23:00.000Z");
+        for (f, piece) in [(1, "\"level\":85"), (0, "\"temperature\":23.4"), (1, "\"voltage\":3.7")] {
+            let estimate = body.estimate_with(f, names[f].len(), piece.len());
+            body.push(f, names[f].len(), piece);
+            assert_eq!(estimate, body.len + SERIES_OVERHEAD * body.n);
+            assert_eq!(body.len, body.render(&names, ts).len());
+        }
+        assert_eq!(
+            body.render(&names, ts),
+            "{\"time\":\"2026-11-12T12:23:00.000Z\",\"c8y_Environmental\":{\"temperature\":23.4},\"c8y_Battery\":{\"level\":85,\"voltage\":3.7}}"
         );
     }
 

@@ -22,19 +22,24 @@ debounce     = "${params.debounce}"
 # Every setting above can also be overridden per signal via the point's `meta` table in the
 # connector config (echoed as sample.meta): meta.on_change / deadband / min_interval / debounce
 # (deprecated too: use the point's `report` table instead).
-# Naming too: meta.measurement.group / meta.measurement.series name that signal's measurement
+# Naming too: meta.measurement.type / .fragment / .series name that signal's measurement
 # (written e.g. by the Cloud Fieldbus import from a device type's measurementMapping).
-# Batch every series of a device into one measurement, flushed on the step interval below.
-# "true" or "false".
+# Group every series of a device and type into one measurement, flushed on the step interval
+# below. "true" or "false".
 combine      = "${params.combine}"
 # Output measurement shaping. Empty target_topic/series derive sensible defaults from the
-# source topic and point id; empty group defaults to the sample's protocol (modbus, opcua, ...).
+# source topic and point id; an empty type defaults to the sample's protocol (modbus, opcua, ...)
+# and an empty fragment to the type. group is the deprecated name that sets type and fragment.
 target_topic = "${params.target_topic}"
-group        = "${params.group}"
+type         = "${params.type}"
+fragment     = "${params.fragment}"
 series       = "${params.series}"
-# Split a point id that contains this separator into "<group><sep><series>", e.g. "." maps the
-# point "Environment.Temperature" -> group "Environment", series "Temperature". This lets ONE
-# flow instance remap many signals purely by how their point ids are named. Empty = disabled.
+group        = "${params.group}"
+# Split a point id that contains this separator into "<prefix><sep><suffix>": the prefix names the
+# type and the fragment, the suffix the series, e.g. "." maps the point "Environment.Temperature"
+# -> type and fragment "Environment", series "Temperature". With a type set, the prefix names only
+# the fragment. This lets ONE flow instance remap many signals purely by how their point ids are
+# named. Empty = disabled.
 point_separator = "${params.point_separator}"
 # The engineering unit is a per-signal property declared on the connector point (point.unit) and
 # echoed in the sample. The series value stays a bare number; the unit is published as retained
@@ -42,6 +47,6 @@ point_separator = "${params.point_separator}"
 
 [[steps]]
 script = "main.js"
-# Flush interval for `combine` batching. Ignored when combine = "false".
+# Flush interval for `combine` grouping. Ignored when combine = "false".
 interval = "${params.combine_interval}"
 

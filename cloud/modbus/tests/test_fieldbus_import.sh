@@ -84,8 +84,8 @@ assert "holding register is writable (c8y_SetRegister parity)" \
   '.point[0].access == "read_write"'
 assert "unit carried over" '.point[0].unit == "°C"'
 assert "divisor-only scaling -> transform.divisor" '.point[0].transform == {divisor: 1000}'
-assert "measurementMapping -> meta.measurement group/series" \
-  '.point[0].meta == {measurement: {group: "modbus", series: "temperature"}}'
+assert "measurementMapping -> meta.measurement type/fragment/series" \
+  '.point[0].meta == {measurement: {type: "modbus", fragment: "modbus", series: "temperature"}}'
 
 # --- signed 32-bit input register with scaling --------------------------------------------
 assert "32-bit signed -> int32 over two registers" \
@@ -105,7 +105,7 @@ assert "bit field decodes via uint16 register" '.point[2].datatype == "uint16"'
 assert "writable coil -> coil table, bool, read_write" \
   '.point[3] == {id: "pump_run", datatype: "bool",
                  address: {table: "coil", address: 48, count: 1}, access: "read_write",
-                 meta: {measurement: {group: "modbus", series: "pump"}}}'
+                 meta: {measurement: {type: "modbus", fragment: "modbus", series: "pump"}}}'
 assert "input coil -> discrete_input, read-only" \
   '.point[4] == {id: "door_open", datatype: "bool",
                  address: {table: "discrete_input", address: 49, count: 1}}'

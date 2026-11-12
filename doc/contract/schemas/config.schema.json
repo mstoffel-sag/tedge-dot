@@ -68,28 +68,39 @@
         },
         "output": {
           "enum": [
+            "single",
+            "group",
             "samples",
             "measurements"
           ],
-          "default": "samples",
-          "description": "What readings are published as (§5.5): one sample envelope each (default), or batched thin-edge measurements published by the runtime, with samples only for the points flows read."
+          "default": "single",
+          "description": "What readings are published as (§5.5): single, one sample envelope each that the ot-measurement flow turns into one measurement (default); or group, thin-edge measurements with many series each, published by the runtime, with samples only for the points flows read. samples and measurements are the deprecated names of single and group."
         },
         "measurement": {
           "type": "object",
           "additionalProperties": false,
-          "description": "Measurement naming in measurement output (§5.5), as the ot-measurement flow's parameters of the same names. A point's meta.measurement.group/series win over group/series.",
+          "description": "Measurement naming in grouped output (§5.5), as the ot-measurement flow's parameters of the same names. A device's measurement table and a point's meta.measurement win over these, key by key.",
           "properties": {
-            "group": {
+            "type": {
               "type": "string",
-              "description": "The group of every point without its own; default: the protocol id."
+              "description": "The measurement type (the topic te/device/<device>///m/<type>) of every point without its own; default: the point_separator prefix, else the protocol id."
+            },
+            "fragment": {
+              "type": "string",
+              "description": "The fragment of every point without its own; default: the point_separator prefix, else the type."
             },
             "series": {
               "type": "string",
-              "description": "The series of every point without its own; default: the point id."
+              "description": "The series of every point without its own; default: the point_separator suffix, else the point id."
+            },
+            "group": {
+              "type": "string",
+              "deprecated": true,
+              "description": "Deprecated: the type and the fragment together, where type or fragment is not set."
             },
             "point_separator": {
               "type": "string",
-              "description": "Split a point id containing it into <group><sep><series>, for points without their own group or series."
+              "description": "Split a point id containing it into <prefix><sep><suffix>: the prefix names the type and the fragment, the suffix the series, for points without their own."
             },
             "include_boolean": {
               "type": "boolean",
@@ -98,9 +109,13 @@
             }
           }
         },
+        "grouping": {
+          "$ref": "#/$defs/grouping",
+          "description": "Default grouping policy in grouped output for every point of this connector (§5.5)."
+        },
         "batch": {
           "$ref": "#/$defs/batch",
-          "description": "Default grouping policy in measurement output for every point of this connector (§5.5)."
+          "description": "Deprecated name of grouping."
         },
         "max_inflight": {
           "type": "integer",
@@ -205,30 +220,30 @@
       "pattern": "^([0-9]+ms|[0-9]+(\\.[0-9]+)?(s|m|h)?)$",
       "description": "Duration string, e.g. '500ms', '10s', '30m'; \"0\" disables the setting."
     },
-    "batch": {
+    "grouping": {
       "type": "object",
       "additionalProperties": false,
-      "description": "Grouping policy in measurement output (contract §5.5), applied by the SDK runtime. Merged key by key: [connector] batch, then the device's, then the point's in a point library, then the point's in the configuration. A table that sets group_by may only set that policy's duration; one inherited from a level that chose another policy is ignored.",
+      "description": "Grouping policy in grouped output (contract §5.5): which series share a measurement message, and with which time. Applied by the SDK runtime. Merged key by key: [connector] grouping, then the device's, then the point's in a point library, then the point's in the configuration. A table that sets by may only set that policy's duration; one inherited from a level that chose another policy is ignored.",
       "properties": {
-        "group_by": {
+        "by": {
           "enum": [
             "time",
             "frame",
             "sample"
           ],
           "default": "time",
-          "description": "time: readings sharing a millisecond timestamp share a message (lossless, no time moved). frame: readings within `window` are published as layers when the window ends, each stamped with its first reading's time (lossless, a time moves by less than the window). sample: every `every`, one series per point holding a good value, stamped with the sample time (lossy by design). A table that sets `aggregate` without `group_by` chooses sample."
+          "description": "time: readings sharing a millisecond timestamp share a message (lossless, no time moved). frame: readings within `window` are published as layers when the window ends, each stamped with its first reading's time (lossless, a time moves by less than the window). sample: every `every`, one series per point holding a good value, stamped with the sample time (lossy by design). A table that sets `aggregate` without `by` chooses sample."
         },
         "window": {
           "$ref": "#/$defs/duration",
-          "description": "The frame's length, 1ms to 60s; required with group_by = \"frame\"."
+          "description": "The frame's length, 1ms to 60s; required with by = \"frame\"."
         },
         "every": {
           "$ref": "#/$defs/duration",
-          "description": "The sample period, 100ms to 1h; required with group_by = \"sample\"."
+          "description": "The sample period, 100ms to 1h; required with by = \"sample\"."
         },
         "aggregate": {
-          "description": "With group_by = \"sample\": what each period publishes, over the point's good time on the device clock. mean is time-weighted; min and max include the value held at the start of the period; last is the value held at the sample time. A string keeps the series name; a list publishes `<series>_<aggregate>` for each. Refused with a report policy.",
+          "description": "With by = \"sample\": what each period publishes, over the point's good time on the device clock. mean is time-weighted; min and max include the value held at the start of the period; last is the value held at the sample time. A string keeps the series name; a list publishes `<series>_<aggregate>` for each. Refused with a report policy.",
           "oneOf": [
             { "$ref": "#/$defs/aggregate" },
             {
@@ -242,11 +257,11 @@
       },
       "examples": [
         {
-          "group_by": "frame",
+          "by": "frame",
           "window": "100ms"
         },
         {
-          "group_by": "sample",
+          "by": "sample",
           "every": "1s"
         },
         {
@@ -257,6 +272,45 @@
           "every": "1s"
         }
       ]
+    },
+    "batch": {
+      "type": "object",
+      "additionalProperties": false,
+      "deprecated": true,
+      "description": "Deprecated name of grouping (contract §5.5), with group_by in place of by. Read as grouping; a level that sets both is refused.",
+      "properties": {
+        "group_by": {
+          "enum": [
+            "time",
+            "frame",
+            "sample"
+          ]
+        },
+        "window": { "$ref": "#/$defs/duration" },
+        "every": { "$ref": "#/$defs/duration" },
+        "aggregate": {
+          "oneOf": [
+            { "$ref": "#/$defs/aggregate" },
+            {
+              "type": "array",
+              "minItems": 1,
+              "uniqueItems": true,
+              "items": { "$ref": "#/$defs/aggregate" }
+            }
+          ]
+        }
+      }
+    },
+    "device_measurement": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "A device's measurement naming in grouped output (§5.5).",
+      "properties": {
+        "type": { "type": "string", "description": "The measurement type of this device's points without their own." },
+        "fragment": { "type": "string", "description": "The fragment of this device's points without their own." },
+        "series": { "type": "string", "description": "The series of this device's points without their own." },
+        "group": { "type": "string", "deprecated": true, "description": "Deprecated: the type and the fragment together, where type or fragment is not set." }
+      }
     },
     "aggregate": {
       "enum": [
@@ -333,9 +387,17 @@
           "$ref": "#/$defs/report",
           "description": "Default reporting policy for this device's points (§5.3); merged over [connector] report."
         },
+        "measurement": {
+          "$ref": "#/$defs/device_measurement",
+          "description": "Measurement naming for this device's points in grouped output (§5.5): between the points' meta.measurement and [connector] measurement."
+        },
+        "grouping": {
+          "$ref": "#/$defs/grouping",
+          "description": "Default grouping policy in grouped output for this device's points (§5.5)."
+        },
         "batch": {
           "$ref": "#/$defs/batch",
-          "description": "Default grouping policy in measurement output for this device's points (§5.5)."
+          "description": "Deprecated name of grouping."
         },
         "max_inflight": {
           "type": "integer",
@@ -506,9 +568,13 @@
           "$ref": "#/$defs/report",
           "description": "This point's reporting policy (§5.3); merged over the device's and [connector]'s report."
         },
+        "grouping": {
+          "$ref": "#/$defs/grouping",
+          "description": "This point's grouping policy in grouped output (§5.5); merged over the device's and [connector]'s grouping."
+        },
         "batch": {
           "$ref": "#/$defs/batch",
-          "description": "This point's grouping policy in measurement output (§5.5); merged over the device's and [connector]'s batch."
+          "description": "Deprecated name of grouping."
         },
         "map": {
           "$ref": "#/$defs/map",
@@ -525,7 +591,7 @@
         },
         "sample": {
           "type": "boolean",
-          "description": "In measurement output (§5.5): true keeps publishing this point's samples for a consumer other than the flows; false publishes none even when a flow would read them. Unset, the runtime decides (alarm, event and parameter points, and writable points, keep their samples)."
+          "description": "In grouped output (§5.5): true keeps publishing this point's samples for a consumer other than the flows; false publishes none even when a flow would read them. Unset, the runtime decides (alarm, event and parameter points, and writable points, keep their samples)."
         },
         "enabled": {
           "type": "boolean",

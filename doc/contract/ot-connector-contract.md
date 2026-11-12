@@ -3,8 +3,8 @@
 | Field | Value |
 | --- | --- |
 | Status | **Normative draft** |
-| Version | 0.4.0 |
-| Date | 2026-10-29 |
+| Version | 0.5.0 |
+| Date | 2026-11-12 |
 | Schemas | [schemas/](schemas/) · [asyncapi.yaml](asyncapi.yaml) |
 
 This document defines the **OT Connector Contract**: the protocol-neutral interface every
@@ -97,9 +97,9 @@ stall_timeout     = "120s"      # optional: restart the connector if its loop st
 # optional: where bare point-library names are looked up (§3.4); shown with its default
 point_library_path = ["/etc/tedge/plugins/ot/points.d", "/usr/share/tedge-dot/points.d"]
 report        = { max_interval = "30m" }  # optional: default reporting policy for every point (§5.3)
-output        = "samples"       # optional: "samples" (default) or "measurements" (§5.5)
-measurement   = { point_separator = "." }  # optional: measurement naming in measurement output (§5.5)
-batch         = { group_by = "time" }      # optional: default grouping policy in measurement output (§5.5)
+output        = "single"        # optional: "single" (default) or "group" (§5.5)
+measurement   = { type = "c8y_Sensor", point_separator = "." }  # optional: measurement naming in grouped output (§5.5)
+grouping      = { by = "time" }            # optional: default grouping policy in grouped output (§5.5)
 max_inflight  = 4               # optional: requests in flight to one endpoint (§5.6)
 max_inflight_total = 32         # optional: requests in flight across all endpoints (§5.6)
 
@@ -121,7 +121,8 @@ default_mode  = "typed"         # optional; default output mode for this device'
 points_from   = []              # optional; point libraries to inherit points from, in order (§3.4)
 enabled       = true            # optional; false keeps the definition but leaves the device out (§3.3)
 report        = { on_change = true }  # optional: default reporting policy for this device's points (§5.3)
-batch         = { group_by = "frame", window = "500ms" }  # optional: this device's grouping policy (§5.5)
+measurement   = { type = "c8y_Sensor" }   # optional: this device's measurement naming (§5.5)
+grouping      = { by = "frame", window = "500ms" }  # optional: this device's grouping policy (§5.5)
 max_inflight  = 2               # optional: requests in flight to this device's endpoint (§5.6)
 
   [[device.point]]
@@ -140,8 +141,8 @@ max_inflight  = 2               # optional: requests in flight to this device's 
   transform = { multiplier = 1, divisor = 1, decimal_shift = 0, offset = 0 } # optional linear scale
   # map = { cases = [{ eq = 0, to = "stopped" }, { eq = 1, to = "running" }], default = "unknown" } # optional (§4.3)
   report   = { deadband = 0.5, min_interval = "10s" }  # optional reporting policy (§5.3)
-  batch    = { group_by = "time" }  # optional grouping policy in measurement output (§5.5)
-  sample   = true               # optional: in measurement output, still publish samples (§5.5)
+  grouping = { by = "time" }    # optional grouping policy in grouped output (§5.5)
+  sample   = true               # optional: in grouped output, still publish samples (§5.5)
   enabled  = true               # optional; false keeps the definition but leaves the point out (§3.3)
 ```
 
@@ -203,8 +204,8 @@ keeping the configuration it has when the file cannot be used.
 | `report` | object | no | The point's **reporting policy** (report by exception): publish only on change or beyond a deadband, rate-limit, debounce, and a heartbeat. Applied by the SDK runtime, not the module; merged key by key over the device's and `[connector]`'s `report`. See §5.3. |
 | `meta` | object | no | Free-form signal metadata echoed verbatim as `meta` in every sample envelope. Never interpreted by the connector; flows and tooling read it for per-signal behaviour, for naming the point's measurement or, with `meta.measurement = false`, keeping it out of the measurements, for declaring the signal's alarms and events (`meta.alarm`, `meta.event`, read by the `ot-alarm` / `ot-event` flows), and for exposing the point as an operator-editable *parameter* (`meta.parameter`, see §5.2). |
 | `subscribe` | boolean | no | Default `true`. `false` keeps the point on the polling schedule even when the connector supports push delivery. |
-| `batch` | object | no | The point's **grouping policy** in measurement output: `group_by` (`"time"`, `"frame"` with a `window`, or `"sample"` with an `every` and an optional `aggregate`). Merged key by key over the device's and `[connector]`'s `batch`. See §5.5. |
-| `sample` | boolean | no | In measurement output, `true` keeps publishing the point's samples for a consumer other than the flows, and `false` publishes none even when a flow would read them. Unset, the runtime decides. See §5.5. |
+| `grouping` | object | no | The point's **grouping policy** in grouped output: `by` (`"time"`, `"frame"` with a `window`, or `"sample"` with an `every` and an optional `aggregate`). Merged key by key over the device's and `[connector]`'s `grouping`. `batch`, with `group_by` for `by`, is its deprecated name. See §5.5. |
+| `sample` | boolean | no | In grouped output, `true` keeps publishing the point's samples for a consumer other than the flows, and `false` publishes none even when a flow would read them. Unset, the runtime decides. See §5.5. |
 | `enabled` | boolean | no | Default `true`. `false` keeps the definition but leaves the point out of the device (§3.3) — how a site switches off one point of a library it does not own (§3.4). |
 
 **Access.** `access` states what the connector may do with the point:
@@ -704,7 +705,7 @@ native address so flows can route or debug). The example below uses Modbus to ma
 | `source_value` | number \| boolean \| string | no | Mapped points only (§4.3): the value before the point's `map`, after `transform` — the code behind a label. Present whenever the read produced a value, including when the map has no output for it. |
 | `source_value_repr` | `"number"` \| `"boolean"` \| `"string"` | with `source_value` | Tells flows how to interpret `source_value`. |
 | `meta` | object | no | The point's `meta` table echoed verbatim by the runtime (§3.1); carries per-signal hints for flows. |
-| `measured` | boolean | no | `true` when the connector, in measurement output (§5.5), also published this reading as a series. A flow converting samples into measurements MUST skip it. Absent otherwise. |
+| `measured` | boolean | no | `true` when the connector, in grouped output (§5.5), also published this reading as a series. A flow converting samples into measurements MUST skip it. Absent otherwise. |
 
 ### 5.1 Quality semantics
 
@@ -905,41 +906,68 @@ A reading held back by the reporting policy (§5.3) keeps its time. A replayed r
 rule 7) always carries its source time. The time has the precision
 §9 sets, milliseconds.
 
-### 5.5 Measurement output
+### 5.5 Grouped output
 
-By default a connector publishes one sample per reading, and the `ot-measurement` flow turns
-each one into a thin-edge measurement. With `[connector] output = "measurements"` the **SDK
-runtime** publishes the measurements itself, batched, and samples only for the points a flow
-reads. This costs a fraction of the mapper CPU per reading, because a message carries hundreds of
-readings and no JavaScript runs for it. Any other value of `output` than `"samples"` and
-`"measurements"` is refused.
+By default (`[connector] output = "single"`) a connector publishes one sample per reading, and the
+`ot-measurement` flow turns each one into a thin-edge measurement. With `output = "group"` the
+**SDK runtime** publishes the measurements itself, with many series per message, and samples only
+for the points a flow reads. This costs a fraction of the mapper CPU per reading, because a
+message carries hundreds of readings and no JavaScript runs for it. `"samples"` is accepted as a
+deprecated name of `"single"` and `"measurements"` as a deprecated name of `"group"`; the runtime
+logs a warning for either. Any other value of `output` is refused.
+
+The word *grouping* is used for putting several series into one measurement. *Batch* is reserved
+for sending several whole measurements in one request to the Cumulocity API, which this contract
+does not do.
 
 **Measurements.** A reading the reporting policy publishes becomes a series in a measurement on
-`te/device/<device>///m/<group>`, with the body
-`{"time": "<ts>", "<group>": {"<series>": <value>, ...}}`. The group and series are resolved in
-this order, as the `ot-measurement` flow resolves them:
+`te/device/<device>///m/<type>`, inside a **fragment**:
 
-1. the point's `meta.measurement.group` and `meta.measurement.series`
-2. `[connector] measurement`'s `group` and `series`
-3. a split of the point id at `measurement.point_separator`, when one is set and the id contains it
-4. the protocol id for the group and the point id for the series
+```json
+{"time": "<ts>", "<fragment>": {"<series>": <value>, ...}, "<fragment>": {...}}
+```
+
+thin-edge maps the topic's type to the Cumulocity measurement `type` and each fragment to a
+Cumulocity fragment. The type, the fragment and the series are resolved key by key, the first
+level that names one winning:
+
+1. the point's `meta.measurement`: `type`, `fragment`, `series`
+2. the device's `measurement` table: `type`, `fragment`, `series`
+3. `[connector] measurement`: `type`, `fragment`, `series`
+4. a split of the point id at `measurement.point_separator`, when one is set and the id contains it
+   with characters on both sides: the part before it for the type and the fragment, the part
+   after it for the series
+5. the protocol id for the type, the **type** for the fragment, and the point id for the series
+
+At each level, `group` is the deprecated name of the type and the fragment together: it names both
+unless the level names them itself. A configuration that only uses `group` publishes what it did
+before `type` and `fragment` existed.
+
+| Configuration | Topic | Body |
+| --- | --- | --- |
+| nothing | `m/opcua` | `{"opcua": {"flow": …}}` |
+| `[connector] measurement = { type = "c8y_Sensor" }` | `m/c8y_Sensor` | `{"c8y_Sensor": {"flow": …}}` |
+| the same, and the point's `meta.measurement = { fragment = "c8y_Battery", series = "level" }` | `m/c8y_Sensor` | `{"c8y_Battery": {"level": …}}` |
+| `[connector] measurement = { type = "Combined", point_separator = "." }`, point `c8y_Battery.level` | `m/Combined` | `{"c8y_Battery": {"level": …}}` |
 
 Only a `good` reading of a typed point with a number or a boolean becomes a series: a boolean as
 1 or 0, unless `measurement.include_boolean = false`. A point with `meta.measurement = false`, a
 string, a 64-bit integer carried as a string (§4.1) and a `raw` point never does.
 
-**Batches.** Every series that shares a device, a group and a message time goes into one
-message, and a point appears at most once in a message: a second reading of it starts a new one,
-so no value is overwritten. A message is split before its estimated Cumulocity size passes
-15,000 bytes, the estimate being its thin-edge size plus 12 bytes per series, which keeps it
-under the c8y mapper's 16,184-byte limit.
+**Messages.** Every series that shares a device, a type and a message time goes into one message,
+with one entry per fragment, and a point appears at most once in a message: a second reading of
+it starts a new one, so no value is overwritten. Within a message the fragments appear in the
+order their first point is configured on the device, and each fragment's series in the order they
+were added. A message is split before its estimated Cumulocity size passes 15,000 bytes, the
+estimate being its thin-edge size (every fragment included) plus 12 bytes per series, which keeps
+it under the c8y mapper's 16,184-byte limit.
 
-**Grouping policies.** `batch.group_by` decides the message time, per point, merged key by key
-from `[connector]`, the device and the point like `report`:
+**Grouping policies.** `grouping.by` decides the message time, per point, merged key by key from
+`[connector]`, the device and the point like `report`:
 
-| `group_by` | Message time | Published | Loss |
+| `by` | Message time | Published | Loss |
 | --- | --- | --- | --- |
-| `"time"` (default) | The readings' own time, at millisecond precision. | When a reading with another time arrives for the group, a point repeats, or the runtime's pass ends. | None. No time is moved. |
+| `"time"` (default) | The readings' own time, at millisecond precision. | When a reading with another time arrives for the type, a point repeats, or the runtime's pass ends. | None. No time is moved. |
 | `"frame"`, with `window` (1 ms to 60 s) | Per layer: its first reading's time, moved to 1 ms after the previous layer's time when it is not later. | When the window ends, layer by layer. | None. A time moves by less than `window`, plus the 1 ms steps that keep it in order. |
 | `"sample"`, with `every` (100 ms to 1 h) | The sample time. | Every `every`: one series per point holding a good value, changed or not; with `aggregate`, one per aggregate over the period. | By design: readings superseded between two samples, unless an aggregate accounts for them. |
 
@@ -950,17 +978,21 @@ keep their order when source times jitter. A reading that would open a 65th laye
 frame's layers at once and starts a new frame in the same window. A reading that arrives after the
 window ended opens a new frame.
 
-A `batch` table that sets `group_by` and the other policy's duration is refused; a duration
+A `grouping` table that sets `by` and the other policy's duration is refused; a duration
 inherited from a level that chose another policy is ignored. Under `"sample"` a point is left out
 while it is stale — its device link is not `connected`, its push delivery failed its check, or its
 last reading was not `good` — so a sample never repeats a value the source no longer vouches for.
 A point raising an event per reading (`meta.event.every`) is published as under `"time"`.
 
-**Aggregates.** Under `"sample"`, `batch.aggregate` names what each period publishes instead of
+`batch`, with `group_by` in place of `by`, is the deprecated name of `grouping`, at every level
+and in point libraries. The runtime reads it as `grouping` and logs a warning; a level that sets
+both is refused.
+
+**Aggregates.** Under `"sample"`, `grouping.aggregate` names what each period publishes instead of
 the last value: one of `"mean"`, `"min"`, `"max"` or `"last"`, or a non-empty list of them without
-repeats. A table that sets `aggregate` without `group_by` chooses `"sample"` at its own level, so
-`batch = { aggregate = "mean", every = "1s" }` is a complete policy; a table that sets
-`group_by = "time"` or `"frame"` with `aggregate` is refused, and an inherited `aggregate` the
+repeats. A table that sets `aggregate` without `by` chooses `"sample"` at its own level, so
+`grouping = { aggregate = "mean", every = "1s" }` is a complete policy; a table that sets
+`by = "time"` or `"frame"` with `aggregate` is refused, and an inherited `aggregate` the
 effective policy does not use is ignored. The aggregates are computed over the values the point
 held during the period, on the device clock, counting the value held when the period started
 from its start; a boolean counts as 1 or 0. `"mean"` is time-weighted: each value counts for the
@@ -970,20 +1002,21 @@ good time in the period is left out. A string keeps the point's series name; a l
 aggregate as `<series>_<aggregate>`, each with the point's unit in the units message. An aggregate
 uses every good reading, so a point whose effective policy has both `aggregate` and a `report`
 policy is refused, as is a configuration in which a series of an aggregated point has the name of
-another series of its device and group.
+another series of its device, type and fragment.
 
 **Units.** The runtime publishes a measurement topic's units as a retained message on
-`<topic>/meta`, holding `{"<group>.<series>": {"unit": "<unit>"}}` for every series of the topic
-with a `unit`, before the topic's first measurement and again only when a unit appears, changes
-or goes away. An emptied map clears the topic with an empty retained message.
+`<topic>/meta`, holding `{"<fragment>.<series>": {"unit": "<unit>"}}` for every series of the
+topic, in every fragment, with a `unit`, before the topic's first measurement and again only when
+a unit appears, changes or goes away. An emptied map clears the topic with an empty retained
+message.
 
-**Samples.** In measurement output a point publishes samples only when a flow reads them: it has
+**Samples.** In grouped output a point publishes samples only when a flow reads them: it has
 `meta.alarm`, `meta.event` or `meta.parameter` (each unless `false`), or `write` or `read_write`
 access. `sample = true` publishes them for any consumer, and `sample = false` publishes none. A
 sample of a reading that also became a series carries `"measured": true` (§5), which
 `ot-measurement` skips. Link status, the capability descriptor and commands are unchanged.
 
-**Flows.** `ot-alarm` and `ot-event` do not subscribe to measurements, so a batch wakes no
+**Flows.** `ot-alarm` and `ot-event` do not subscribe to measurements, so a message wakes no
 JavaScript. Their measurement-series modes (one series with a threshold, one series with an
 event on every change) are the separate flows `ot-alarm-series` and `ot-event-series`.
 
@@ -1369,7 +1402,7 @@ same fields with its own values (and typically `"subscribe": true`):
 | `parameter_keys` | The configured points that name their own key inside their parameter sets (`meta.parameter.key`, §5.2), with the key and any `set` / `group` exactly as configured — so a key of the form `<set>.<key>` names its set too. Also every literal parameter (`meta.parameter.fragment`, §5.2), as `{ device, point, fragment }` with the fragment as configured. A consumer learns from it which point a key or fragment belongs to before the point samples — after a restart, since samples are not retained, and for a write-only point, which never samples. Only points naming a key or a fragment appear, so a configuration naming neither adds nothing here. Like `point_labels`, this describes the configuration. |
 | `methods` | Every configured `"call_method"` point (§3.1), labelled or not, with its `name` / `description` when it declares them and its `address` exactly as configured: which methods a device has, what their arguments are (in the address, as the connector spec defines it) and which node each one calls. Methods never sample, so nothing else announces them. Absent when no point is a method. Like `point_labels`, this describes the configuration. |
 | `reports` | The reporting policies (§5.3): `default` is `[connector] report`, `devices` lists each device declaring a `report`, and `points` lists the **effective** (merged) policy of each point whose policy differs from its device's. A point's policy is its `points` entry if it has one, otherwise its device's entry merged over `default`. Absent when no `report` is configured. Like `point_labels`, this describes the configuration. |
-| `outputs` | Measurement output (§5.5): one entry per device, `{ device, output, batch }`, with the `output` (`"samples"` or `"measurements"`) and the device's merged `batch` table, `group_by` filled in. A point's own `batch` is in the configuration only. Absent for a connector in samples output that sets no `batch`. Like `point_labels`, this describes the configuration. |
+| `outputs` | Grouped output (§5.5): one entry per device, `{ device, output, grouping }`, with the `output` (`"single"` or `"group"`, also for a configuration that uses a deprecated name) and the device's merged `grouping` table, `by` filled in. A point's own `grouping` is in the configuration only. Absent for a connector in single output that sets no `grouping`. Like `point_labels`, this describes the configuration. |
 | `endpoints` | Concurrent reads (§5.6): one entry per endpoint, `{ endpoint, devices, max_inflight }`, with the devices on it and its budget of requests in flight after the module's cap. The budget in effect after a backoff is logged, not listed here. Like `point_labels`, this describes the configuration. |
 
 Tooling and the conformance suite use the descriptor to decide which tests apply.

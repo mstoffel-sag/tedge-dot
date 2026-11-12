@@ -8,7 +8,7 @@
 // a flow's output to its own input topics to prevent loops. This flow subscribes in its place and
 // records each message in the mapper-wide store:
 //
-//   "ot-measurement-units:<meta topic>" -> { "<group>.<series>": { "unit": "..." }, ... }
+//   "ot-measurement-units:<meta topic>" -> { "<fragment>.<series>": { "unit": "..." }, ... }
 //
 // After a mapper restart the broker replays the retained messages, so ot-measurement merges a new
 // unit into the units already standing. Otherwise it would republish only the series it has seen

@@ -7,7 +7,7 @@ envelopes on `te/device/<device>/ot/<protocol>/...`) and the **thin-edge.io data
 
 They are **protocol-neutral**: every flow consumes the generic OT Connector Contract envelopes, so
 the *same flow set* maps `modbus`, `opcua`, or any other connector built on the SDK. The
-measurement group, child-device type and alarm group are derived from the connector's
+measurement type, child-device type and alarm group are derived from the connector's
 `protocol`/topic, so a new protocol needs no new flows.
 
 The connector is a "dumb" driver: it reads/writes the OT protocol, decodes primitives and applies
@@ -20,7 +20,7 @@ modules that run inside a mapper and are hot-reloaded without restarts.
 
 | Flow | Direction | Reads | Emits |
 | --- | --- | --- | --- |
-| [ot-measurement](ot-measurement/) | OT → thin-edge | `ot/<protocol>/sample/<point>` | `m/<group>` measurement, `m/<group>/meta` units (retained) |
+| [ot-measurement](ot-measurement/) | OT → thin-edge | `ot/<protocol>/sample/<point>` | `m/<type>` measurement, `m/<type>/meta` units (retained) |
 | [ot-alarm](ot-alarm/) | OT → thin-edge | `sample/<point>` (`meta.alarm`), `status/link` | `a/<type>` alarm, retained: raised and cleared |
 | [ot-event](ot-event/) | OT → thin-edge | `sample/<point>` (`meta.event`) | `e/<type>` event |
 | [ot-alarm-series](ot-alarm-series/) | thin-edge → thin-edge | one `m/<group>` series (params) | `a/<type>` alarm, retained: raised and cleared |
@@ -178,26 +178,53 @@ in every mapped sample as `source_value` for flows of your own. `ot-measurement`
 from a map (numeric text parsed with `as = "number"`, codes renumbered) into a measurement, and
 skips a label like any other string.
 
-By default `ot-measurement` names the measurement group after the sample's `protocol`
+By default `ot-measurement` names the measurement type after the sample's `protocol`
 (`m/modbus`, `m/opcua`, ...) and `ot-registration` types the child device as `<protocol>-device`.
-Override either via each flow's `params.toml`. Watching one `m/<group>` series for a threshold or
+Override either via each flow's `params.toml`. Watching one `m/<type>` series for a threshold or
 for changes is the job of `ot-alarm-series` / `ot-event-series`, which subscribe to every
 measurement and so are not installed unless used (see below).
 
-A connector can also publish the measurements itself, batched, with `[connector] output =
-"measurements"` ([measurement output](../doc/measurement-output.md)). It then publishes samples
-only for the points a flow reads, marked `"measured": true`, and `ot-measurement` skips those.
+A connector can also publish the measurements itself, several series per message, with
+`[connector] output = "group"` ([grouped output](../doc/measurement-output.md)). It then publishes
+samples only for the points a flow reads, marked `"measured": true`, and `ot-measurement` skips
+those.
 
-To remap individual signals to specific groups/series with a single flow instance, name the
-connector points with a separator and set `point_separator` (e.g. `"."`): the point id
-`Environment.Temperature` then becomes group `Environment`, series `Temperature`. Explicit
-`group`/`series` still win, and an empty `point_separator` (the default) leaves dotted ids
-untouched. For per-signal shaping beyond this convention, run one filtered instance per signal
-(set `point`) or copy the flow and customise `main.js`.
+**Naming.** A measurement has three names, and `ot-measurement` resolves each one on its own:
+
+| Name | Where it goes | Default |
+| --- | --- | --- |
+| `type` | the topic `te/device/<device>///m/<type>`, the Cumulocity measurement `type` | the sample's `protocol` |
+| `fragment` | the body key `{"<fragment>": {...}}` | the type |
+| `series` | the key inside the fragment | the point id |
+
+The point's `meta.measurement` table names them per signal and wins over the flow params `type`,
+`fragment` and `series`. `group` (param or `meta.measurement.group`) is the deprecated name that
+sets both the type and the fragment at its level, so configurations that use it publish what they
+did before. Several fragments of one type share the topic, and with `combine` one message:
+
+```toml
+# connector points, with the flow param type = "c8y_CombinedSensorReading" and combine = "true"
+meta = { measurement = { fragment = "c8y_Environmental", series = "temperature" } }
+meta = { measurement = { fragment = "c8y_Battery", series = "level" } }
+```
+
+```
+te/device/plc1///m/c8y_CombinedSensorReading
+  {"c8y_Environmental":{"temperature":23.4},"c8y_Battery":{"level":85},"time":"…"}
+```
+
+To remap individual signals with a single flow instance, name the connector points with a
+separator and set `point_separator` (e.g. `"."`): the point id `Environment.Temperature` then
+becomes type and fragment `Environment`, series `Temperature`. With `type` set, the prefix names
+only the fragment: `c8y_Battery.level` under `type = "Combined"` goes to `m/Combined` as
+`{"c8y_Battery":{"level":…}}`. Explicit `type`/`fragment`/`series` still win, and an empty
+`point_separator` (the default) leaves dotted ids untouched. For per-signal shaping beyond this
+convention, run one filtered instance per signal (set `point`) or copy the flow and customize
+`main.js`.
 
 **Units.** A point's `unit` reaches the cloud as retained thin-edge.io measurement metadata. The
 measurement body keeps bare numbers, and `ot-measurement` publishes the units of each measurement
-topic on `<topic>/meta`, keyed by series:
+topic on `<topic>/meta`, keyed `<fragment>.<series>`:
 
 ```
 te/device/Pump01///m/flow       {"flow":{"flow":6.6},"time":"…"}
@@ -211,14 +238,14 @@ flow `ot-measurement/units-state.toml` reads it back after a mapper restart. A c
 `target_topic` gets metadata only if it is a `te/…/m/<type>` topic. The first measurement after a
 unit appears can reach the mapper before the metadata does, and then goes without the unit.
 
-`ot-measurement` also covers the legacy register mapping option of batching a device's series
-into one measurement (`combine` + `combine_interval`). Publishing only on a change, beyond a
+`ot-measurement` also covers the legacy register mapping option of grouping a device's series into
+one measurement per type (`combine` + `combine_interval`). Publishing only on a change, beyond a
 deadband, at most so often or once a value has settled is the point's `report` table in the
 connector config: the SDK runtime applies it before a sample is published, so every flow sees the
-reduced stream, and it adds a heartbeat for flat signals. See
-[Reducing data volume](../doc/reducing-data-volume.md). `ot-measurement`'s own `on_change`,
-`deadband`, `min_interval` and `debounce` settings (and their `meta.*` overrides) still work but
-are **deprecated**; do not use them together with `report`.
+reduced stream, and it adds a heartbeat for flat signals. See [Reducing data
+volume](../doc/reducing-data-volume.md). `ot-measurement`'s own `on_change`, `deadband`,
+`min_interval` and `debounce` settings (and their `meta.*` overrides) still work but are
+**deprecated**; do not use them together with `report`.
 Linear scaling
 (`multiplier`/`divisor`/`decimal_shift`/`offset`) and value mapping (`map`, codes to labels or
 text to numbers) are per-point properties declared on the connector point (applied by the SDK),
@@ -236,7 +263,7 @@ through `ot-command-result`.
 
 ```text
  OT device                    tedge-dot (driver)            flows (this dir)            cloud mapper
- ───────────────   reads ──▶  ot/<protocol>/sample/<point> ──▶  ot-measurement ──▶  m/<group>  ──▶  measurement
+ ───────────────   reads ──▶  ot/<protocol>/sample/<point> ──▶  ot-measurement ──▶  m/<type>   ──▶  measurement
                              ot/<protocol>/status/link      ──▶  ot-registration ─▶ te/device/x// ─▶ child device
                              ot/<protocol>/sample/<point>   ──▶  ot-alarm ──▶ a/<type> ──▶ alarm
 
@@ -319,7 +346,7 @@ Cumulocity mapper's flows directory:
 `ot-alarm` and `ot-event` do nothing until a point declares an alarm or an event, so they need no
 settings.
 
-The measurement-series alarm and event (one `m/<group>` series watched for a threshold, or an
+The measurement-series alarm and event (one `m/<type>` series watched for a threshold, or an
 event on every change of it) are the flows `ot-alarm-series` and `ot-event-series`. They subscribe
 to every measurement, so the package ships them inactive in `/usr/share/tedge-dot/flows/`, and
 installs one into the mapper on upgrade only when the `ot-alarm` or `ot-event` `params.toml` of an

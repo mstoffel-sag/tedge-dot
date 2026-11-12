@@ -389,6 +389,48 @@ static void check_named_library_is_inherited(void) {
     scratch_free(&s);
 }
 
+/* A library's deprecated `batch` is read as `grouping` before the merge, so a
+ * site definition's `grouping` merges with it key by key (§5.5); a library
+ * point that sets both is refused. Mirrors
+ * library.rs::a_library_batch_merges_with_a_site_grouping. */
+static bool ends_with(const char *s, const char *suffix);
+
+static void check_library_batch_merges_with_a_site_grouping(void) {
+    scratch_t s;
+    scratch_init(&s);
+    write_file(&s, "modbus/framed.toml",
+               "[library]\nprotocol = \"modbus\"\n\n[[point]]\nid = \"t\"\ndatatype = \"float32\"\n"
+               "address = { table = \"holding\", address = 7, count = 2 }\n"
+               "batch = { group_by = \"frame\", window = \"100ms\" }\n");
+    char err[1024] = "";
+    tdot_config_t *cfg = load_with_libs(
+        &s, "\"framed\"", "[[device.point]]\nid = \"t\"\ngrouping = { window = \"200ms\" }\n", err,
+        sizeof err);
+    CHECK(cfg != NULL, "a library batch under a site grouping must load: %s", err);
+    if (cfg) {
+        const tdot_point_t *pt = &cfg->devices[0].points[0];
+        cJSON *want = cJSON_Parse("{\"by\":\"frame\",\"window\":\"200ms\"}");
+        char *got = pt->grouping_table ? cJSON_PrintUnformatted(pt->grouping_table) : NULL;
+        CHECK(cJSON_Compare(pt->grouping_table, want, true), "merged grouping: %s",
+              got ? got : "(none)");
+        CHECK(pt->group_by.kind == TDOT_GROUP_FRAME && pt->group_by.ms == 200,
+              "merged policy: frame 200 ms");
+        free(got);
+        cJSON_Delete(want);
+        tdot_config_free(cfg);
+    }
+    write_file(&s, "modbus/both.toml",
+               "[library]\nprotocol = \"modbus\"\n\n[[point]]\nid = \"t\"\ndatatype = \"float32\"\n"
+               "address = { table = \"holding\", address = 7, count = 2 }\nbatch = {}\ngrouping = {}\n");
+    err[0] = '\0';
+    cfg = load_with_libs(&s, "\"both\"", "", err, sizeof err);
+    CHECK(!cfg && ends_with(err, "point 't': batch and grouping cannot both be set (batch is the "
+                                 "deprecated name of grouping)"),
+          "library batch and grouping: %s", cfg ? "<loaded>" : err);
+    tdot_config_free(cfg);
+    scratch_free(&s);
+}
+
 /* Each point remembers the [library] table its address came from, so a
  * protocol can read the library's address settings (OPC UA's `namespaces`).
  * Mirrors library.rs::a_library_point_records_the_library_its_address_belongs_to
@@ -2235,8 +2277,8 @@ static void check_report_merges_through_libraries_and_levels(void) {
     scratch_free(&s);
 }
 
-/* Measurement output settings (contract §5.5) are refused with the Rust
- * loader's messages. Mirrors measure.rs::the_loader_names_the_place. */
+/* Grouped output settings (contract §5.5) are refused with the Rust loader's
+ * messages. Mirrors measure.rs::the_loader_names_the_place (POINT_CASES). */
 static void check_measurement_settings_are_validated(void) {
     scratch_t s;
     scratch_init(&s);
@@ -2244,9 +2286,16 @@ static void check_measurement_settings_are_validated(void) {
         const char *connector, *point, *message;
     } cases[] = {
         {"output = \"both\"", "",
-         "[connector] output must be one of \"samples\", \"measurements\" (got 'both')"},
+         "[connector] output must be one of \"single\", \"group\", \"samples\", "
+         "\"measurements\" (got 'both')"},
+        {"grouping = { by = \"frame\" }", "",
+         "device 'plc': point 'p': grouping.window is required with by = \"frame\""},
         {"batch = { group_by = \"frame\" }", "",
-         "device 'plc': point 'p': batch.window is required with group_by = \"frame\""},
+         "device 'plc': point 'p': grouping.window is required with by = \"frame\""},
+        {"batch = {}\ngrouping = {}", "",
+         "[connector] batch and grouping cannot both be set (batch is the deprecated name of "
+         "grouping)"},
+        {"measurement = { type = 1 }", "", "[connector] measurement.type must be a string"},
         {"measurement = { include_boolean = \"yes\" }", "",
          "[connector] measurement.include_boolean must be true or false"},
         {"measurement = { grup = \"x\" }", "",
@@ -2254,28 +2303,38 @@ static void check_measurement_settings_are_validated(void) {
         {"max_inflight = 0", "", "[connector] max_inflight must be a positive integer"},
         {"max_inflight_total = \"many\"", "",
          "[connector] max_inflight_total must be a positive integer"},
-        {"", "batch = { group_by = \"time\", window = \"100ms\" }",
-         "point 'p': batch.window does not apply to group_by = \"time\""},
-        {"", "batch = { group_by = \"frame\", window = \"2m\" }",
-         "point 'p': batch.window must be a duration from 1ms to 60s"},
-        {"", "batch = { group_by = \"sample\", every = \"50ms\" }",
-         "point 'p': batch.every must be a duration from 100ms to 1h"},
-        {"", "batch = { group_by = \"bucket\" }",
-         "point 'p': batch.group_by must be \"time\", \"frame\" or \"sample\""},
+        {"", "grouping = { by = \"time\", window = \"100ms\" }",
+         "point 'p': grouping.window does not apply to by = \"time\""},
+        {"", "grouping = { by = \"frame\", window = \"2m\" }",
+         "point 'p': grouping.window must be a duration from 1ms to 60s"},
+        {"", "grouping = { by = \"sample\", every = \"50ms\" }",
+         "point 'p': grouping.every must be a duration from 100ms to 1h"},
+        {"", "grouping = { by = \"bucket\" }",
+         "point 'p': grouping.by must be \"time\", \"frame\" or \"sample\""},
+        {"", "grouping = { windw = \"1s\" }",
+         "unknown key 'windw' in the grouping of point 'p' (did you mean 'window'?)"},
+        {"", "sample = \"yes\"", "point 'p': sample must be true or false"},
+        {"", "grouping = { by = \"frame\", window = \"100ms\", aggregate = \"mean\" }",
+         "point 'p': grouping.aggregate does not apply to by = \"frame\""},
+        {"", "grouping = { aggregate = \"median\", every = \"1s\" }", "point 'p': grouping.aggregate must be \"mean\", \"min\", \"max\" or \"last\", or a list of them without repeats"},
+        {"", "grouping = { aggregate = [\"mean\", \"mean\"], every = \"1s\" }",
+         "point 'p': grouping.aggregate must be \"mean\", \"min\", \"max\" or \"last\", or a list of them without repeats"},
+        {"", "grouping = { aggregate = [], every = \"1s\" }", "point 'p': grouping.aggregate must be \"mean\", \"min\", \"max\" or \"last\", or a list of them without repeats"},
+        {"", "grouping = { aggregate = \"mean\" }",
+         "device 'plc': point 'p': grouping.every is required with by = \"sample\""},
+        {"", "grouping = { aggregate = \"mean\", every = \"1s\" }\n  report = { deadband = 0.5 }",
+         "device 'plc': point 'p': grouping.aggregate cannot be combined with report: an "
+         "aggregate uses every reading"},
+        /* The deprecated `batch`: its keys are checked as written, its values
+         * as `grouping`'s. */
         {"", "batch = { windw = \"1s\" }",
          "unknown key 'windw' in the batch of point 'p' (did you mean 'window'?)"},
-        {"", "sample = \"yes\"", "point 'p': sample must be true or false"},
-        {"", "batch = { group_by = \"frame\", window = \"100ms\", aggregate = \"mean\" }",
-         "point 'p': batch.aggregate does not apply to group_by = \"frame\""},
-        {"", "batch = { aggregate = \"median\", every = \"1s\" }", "point 'p': batch.aggregate must be \"mean\", \"min\", \"max\" or \"last\", or a list of them without repeats"},
-        {"", "batch = { aggregate = [\"mean\", \"mean\"], every = \"1s\" }",
-         "point 'p': batch.aggregate must be \"mean\", \"min\", \"max\" or \"last\", or a list of them without repeats"},
-        {"", "batch = { aggregate = [], every = \"1s\" }", "point 'p': batch.aggregate must be \"mean\", \"min\", \"max\" or \"last\", or a list of them without repeats"},
-        {"", "batch = { aggregate = \"mean\" }",
-         "device 'plc': point 'p': batch.every is required with group_by = \"sample\""},
-        {"", "batch = { aggregate = \"mean\", every = \"1s\" }\n  report = { deadband = 0.5 }",
-         "device 'plc': point 'p': batch.aggregate cannot be combined with report: an aggregate "
-         "uses every reading"},
+        {"", "batch = { by = \"time\" }", "unknown key 'by' in the batch of point 'p'"},
+        {"", "batch = { group_by = \"time\", window = \"100ms\" }",
+         "point 'p': grouping.window does not apply to by = \"time\""},
+        {"", "batch = { group_by = \"time\" }\n  grouping = { by = \"time\" }",
+         "device 'plc': point 'p': batch and grouping cannot both be set (batch is the "
+         "deprecated name of grouping)"},
     };
     char body[1024], err[1024];
     for (size_t i = 0; i < sizeof cases / sizeof *cases; i++) {
@@ -2293,63 +2352,121 @@ static void check_measurement_settings_are_validated(void) {
         tdot_config_free(cfg);
     }
 
-    /* A suffixed series may not take another point's name (the same case as
-     * measure.rs the_loader_names_the_place); samples output publishes none. */
-    for (int measurements = 1; measurements >= 0; measurements--) {
+    /* A device's `measurement` (§5.5): its keys, then its values after the
+     * device's grouping, as the Rust loader checks them. */
+    static const struct {
+        const char *device, *message;
+    } device_cases[] = {
+        {"measurement = { group = \"G\", point_separator = \".\" }",
+         "unknown key 'point_separator' in the measurement of device 'plc'"},
+        {"measurement = { fragment = true }", "device 'plc': measurement.fragment must be a string"},
+        {"measurement = { type = 1 }\ngrouping = { by = \"bucket\" }",
+         "device 'plc': grouping.by must be \"time\", \"frame\" or \"sample\""},
+        {"batch = {}\ngrouping = {}",
+         "device 'plc': batch and grouping cannot both be set (batch is the deprecated name of "
+         "grouping)"},
+    };
+    for (size_t i = 0; i < sizeof device_cases / sizeof *device_cases; i++) {
         snprintf(body, sizeof body,
-                 "[connector]\nprotocol = \"opcua\"\n%s\n[[device]]\nname = \"plc\"\n"
-                 "protocol_address = {}\n"
-                 "  [[device.point]]\n  id = \"p\"\n  datatype = \"float64\"\n  address = {}\n"
-                 "  batch = { aggregate = [\"mean\", \"max\"], every = \"1s\" }\n"
-                 "  [[device.point]]\n  id = \"p_max\"\n  datatype = \"float64\"\n  address = {}\n",
-                 measurements ? "output = \"measurements\"" : "");
+                 "[connector]\nprotocol = \"opcua\"\n[[device]]\nname = \"plc\"\n"
+                 "protocol_address = {}\n%s\n  [[device.point]]\n  id = \"p\"\n"
+                 "  datatype = \"float64\"\n  address = {}\n",
+                 device_cases[i].device);
         write_file(&s, "etc/opcua.toml", body);
         err[0] = '\0';
         tdot_config_t *cfg =
             tdot_config_load(scratch_path(&s, "etc/opcua.toml"), err, sizeof err);
-        if (measurements)
+        CHECK(!cfg && ends_with(err, device_cases[i].message),
+              "device case %zu: expected \"...%s\", got: %s", i, device_cases[i].message,
+              cfg ? "<loaded>" : err);
+        tdot_config_free(cfg);
+    }
+
+    /* The output values and their deprecated names. */
+    static const struct {
+        const char *output;
+        bool group;
+    } outputs[] = {{"", false},
+                   {"output = \"single\"", false},
+                   {"output = \"samples\"", false},
+                   {"output = \"group\"", true},
+                   {"output = \"measurements\"", true}};
+    for (size_t i = 0; i < sizeof outputs / sizeof *outputs; i++) {
+        snprintf(body, sizeof body,
+                 "[connector]\nprotocol = \"opcua\"\n%s\n[[device]]\nname = \"plc\"\n"
+                 "protocol_address = {}\n",
+                 outputs[i].output);
+        write_file(&s, "etc/opcua.toml", body);
+        tdot_config_t *cfg =
+            tdot_config_load(scratch_path(&s, "etc/opcua.toml"), err, sizeof err);
+        CHECK(cfg && cfg->output_group == outputs[i].group, "%s: output_group %d, %s",
+              outputs[i].output, cfg ? cfg->output_group : -1, cfg ? "" : err);
+        tdot_config_free(cfg);
+    }
+
+    /* A suffixed series may not take another point's name (the same case as
+     * measure.rs the_loader_names_the_place); single output publishes none,
+     * and another fragment of the same type is another series. */
+    static const char *const clash_outputs[] = {
+        "output = \"group\"", "",
+        "output = \"group\"\n[connector.measurement]\npoint_separator = \"_\""};
+    for (int c = 0; c < 3; c++) {
+        snprintf(body, sizeof body,
+                 "[connector]\nprotocol = \"opcua\"\n%s\n[[device]]\nname = \"plc\"\n"
+                 "protocol_address = {}\n"
+                 "  [[device.point]]\n  id = \"p\"\n  datatype = \"float64\"\n  address = {}\n"
+                 "  grouping = { aggregate = [\"mean\", \"max\"], every = \"1s\" }\n"
+                 "  [[device.point]]\n  id = \"p_max\"\n  datatype = \"float64\"\n  address = {}\n",
+                 clash_outputs[c]);
+        write_file(&s, "etc/opcua.toml", body);
+        err[0] = '\0';
+        tdot_config_t *cfg =
+            tdot_config_load(scratch_path(&s, "etc/opcua.toml"), err, sizeof err);
+        if (c == 0)
             CHECK(!cfg && ends_with(err, "device 'plc': points 'p' and 'p_max' both publish the "
-                                         "series 'p_max' in the group 'opcua'"),
+                                         "series 'p_max' in the fragment 'opcua' of the type "
+                                         "'opcua'"),
                   "series clash: got %s", cfg ? "<loaded>" : err);
         else
-            CHECK(cfg != NULL, "series clash in samples output: %s", err);
+            CHECK(cfg != NULL, "series clash case %d: %s", c, err);
         tdot_config_free(cfg);
     }
 
     /* A point choosing `time` under a device that chose `frame` inherits the
-     * window, which is ignored; the descriptor lists the device's batch. */
+     * window, which is ignored; the descriptor lists the device's grouping,
+     * the deprecated names reported under the new ones. */
     write_file(&s, "etc/opcua.toml",
                "[connector]\nprotocol = \"opcua\"\noutput = \"measurements\"\n"
                "[[device]]\nname = \"plc\"\nprotocol_address = {}\n"
                "batch = { group_by = \"frame\", window = \"100ms\" }\n"
                "  [[device.point]]\n  id = \"p\"\n  datatype = \"float64\"\n  address = {}\n"
-               "  batch = { group_by = \"time\" }\n"
+               "  grouping = { by = \"time\" }\n"
                "  [[device.point]]\n  id = \"q\"\n  datatype = \"float64\"\n  address = {}\n");
     tdot_config_t *cfg = tdot_config_load(scratch_path(&s, "etc/opcua.toml"), err, sizeof err);
-    CHECK(cfg != NULL, "a point's own group_by must load: %s", err);
+    CHECK(cfg != NULL, "a point's own by must load: %s", err);
     if (cfg) {
-        CHECK(cfg->output_measurements, "output = measurements");
+        CHECK(cfg->output_group, "output = measurements is group");
         CHECK(cfg->devices[0].points[0].group_by.kind == TDOT_GROUP_TIME, "p: time");
         CHECK(cfg->devices[0].points[1].group_by.kind == TDOT_GROUP_FRAME &&
                   cfg->devices[0].points[1].group_by.ms == 100,
               "q: frame 100 ms");
         cJSON *outputs = tdot_config_outputs(cfg);
-        cJSON *want = cJSON_Parse("[{\"device\":\"plc\",\"output\":\"measurements\","
-                                  "\"batch\":{\"group_by\":\"frame\",\"window\":\"100ms\"}}]");
+        cJSON *want = cJSON_Parse("[{\"device\":\"plc\",\"output\":\"group\","
+                                  "\"grouping\":{\"by\":\"frame\",\"window\":\"100ms\"}}]");
         CHECK(cJSON_Compare(outputs, want, true), "outputs");
         cJSON_Delete(outputs);
         cJSON_Delete(want);
         tdot_config_free(cfg);
     }
-    /* `aggregate` without `group_by` chooses "sample": a point under a frame
-     * device opts into it, and the descriptor shows the device's choice. */
+    /* `aggregate` without `by` chooses "sample": a point under a frame device
+     * opts into it, and the descriptor shows the device's choice. */
     write_file(&s, "etc/opcua.toml",
-               "[connector]\nprotocol = \"opcua\"\noutput = \"measurements\"\n"
+               "[connector]\nprotocol = \"opcua\"\noutput = \"group\"\n"
                "[[device]]\nname = \"plc\"\nprotocol_address = {}\n"
-               "batch = { aggregate = [\"mean\", \"max\"], every = \"1s\" }\n"
+               "grouping = { aggregate = [\"mean\", \"max\"], every = \"1s\" }\n"
                "  [[device.point]]\n  id = \"p\"\n  datatype = \"float64\"\n  address = {}\n"
                "[[device]]\nname = \"line\"\nprotocol_address = {}\n"
-               "batch = { group_by = \"frame\", window = \"500ms\" }\n"
+               "grouping = { by = \"frame\", window = \"500ms\" }\n"
                "  [[device.point]]\n  id = \"q\"\n  datatype = \"float64\"\n  address = {}\n"
                "  batch = { aggregate = \"mean\", every = \"1s\" }\n");
     cfg = tdot_config_load(scratch_path(&s, "etc/opcua.toml"), err, sizeof err);
@@ -2364,9 +2481,9 @@ static void check_measurement_settings_are_validated(void) {
               "q: sample under a frame device");
         cJSON *outputs = tdot_config_outputs(cfg);
         cJSON *want = cJSON_Parse(
-            "[{\"device\":\"plc\",\"output\":\"measurements\",\"batch\":{\"group_by\":"
+            "[{\"device\":\"plc\",\"output\":\"group\",\"grouping\":{\"by\":"
             "\"sample\",\"every\":\"1s\",\"aggregate\":[\"mean\",\"max\"]}},"
-            "{\"device\":\"line\",\"output\":\"measurements\",\"batch\":{\"group_by\":"
+            "{\"device\":\"line\",\"output\":\"group\",\"grouping\":{\"by\":"
             "\"frame\",\"window\":\"500ms\"}}]");
         CHECK(cJSON_Compare(outputs, want, true), "outputs with aggregate");
         cJSON_Delete(outputs);
@@ -2377,8 +2494,8 @@ static void check_measurement_settings_are_validated(void) {
                "[connector]\nprotocol = \"opcua\"\n[[device]]\nname = \"plc\"\n"
                "protocol_address = {}\n");
     cfg = tdot_config_load(scratch_path(&s, "etc/opcua.toml"), err, sizeof err);
-    CHECK(cfg && !cfg->output_measurements && !tdot_config_outputs(cfg),
-          "samples output without batch: no `outputs`");
+    CHECK(cfg && !cfg->output_group && !tdot_config_outputs(cfg),
+          "single output without grouping: no `outputs`");
     tdot_config_free(cfg);
     scratch_free(&s);
 }
@@ -2532,6 +2649,9 @@ static void check_call_method_points(void) {
         {"  sampling_interval = \"1s\"\n", "sampling_interval"},
         {"  subscribe = false\n", "subscribe"},
         {"  report = { on_change = false }\n", "report"},
+        {"  grouping = { by = \"time\" }\n", "grouping"},
+        /* the deprecated name is refused under the new one */
+        {"  batch = { group_by = \"time\" }\n", "grouping"},
         {"  meta = { parameter = true }\n", "meta.parameter"},
         /* the first in the contract's order wins */
         {"  datatype = \"int32\"\n  mode = \"raw\"\n", "mode"},
@@ -2735,6 +2855,7 @@ int main(void) {
     check_subscribe_defaults_on();
     check_config_without_references_is_unchanged();
     check_named_library_is_inherited();
+    check_library_batch_merges_with_a_site_grouping();
     check_address_origin();
     check_device_type_is_inherited_from_the_first_library();
     check_library_is_protocol_scoped();

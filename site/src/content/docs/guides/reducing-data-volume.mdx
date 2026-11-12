@@ -84,12 +84,12 @@ trap). See [Alarms and events](/tedge-dot/reference/configuration/reducing-data-
 
 ## Fewer messages, or a trend instead of dropped readings
 
-A policy decides **which** readings are sent. With measurement output
-(`output = "measurements"` in `[connector]`), the connector also decides **how many messages**
-carry them: it publishes thin-edge measurements itself, one per device and poll for polled
-points, so the mapper converts one message where it converted one per reading. The point's
-`batch` table chooses how readings are grouped: by exact `time` (the default), by a `frame` of
-a few hundred milliseconds for pushed points, or by `sample` at a fixed rate.
+A policy decides **which** readings are sent. With grouped output (`output = "group"` in
+`[connector]`), the connector also decides **how many messages** carry them: it publishes
+thin-edge measurements itself, one per device, type and poll for polled points, so the mapper
+converts one message where it converted one per reading. The point's `grouping` table chooses
+which readings share a measurement: by exact `time` (the default), by a `frame` of a few hundred
+milliseconds for pushed points, or by `sample` at a fixed rate.
 
 When a policy would drop readings you still want to account for, a `sample` policy can publish
 the time-weighted mean, minimum and maximum of each period instead:
@@ -97,16 +97,16 @@ the time-weighted mean, minimum and maximum of each period instead:
 ```toml
 [[device]]
 name   = "line1"
-batch  = { aggregate = ["mean", "min", "max"], every = "1m" }
-report = { max_interval = "0" }   # switch off the heartbeat inherited from [connector]
+grouping = { aggregate = ["mean", "min", "max"], every = "1m" }
+report   = { max_interval = "0" }   # switch off the heartbeat inherited from [connector]
 ```
 
 An aggregate uses every reading, so a point with `aggregate` whose merged `report` policy still
 filters is refused when the configuration loads. The packaged configs set a heartbeat on
 `[connector]`, hence the `max_interval = "0"`; the aggregate's own period keeps the device
-available. The [batching view of the config workbench](/tedge-dot/tools/workbench/#batching-from-readings-to-cumulocity-measurements)
+available. The [grouping view of the config workbench](/tedge-dot/tools/workbench/#grouping-from-readings-to-cumulocity-measurements)
 shows each policy on sample readings, and the
-[measurement output reference](/tedge-dot/reference/configuration/measurement-output/) has the
+[grouped output reference](/tedge-dot/reference/configuration/measurement-output/) has the
 rules.
 
 ## Apply and check it
@@ -135,8 +135,8 @@ configure both. See
 
 <CardGrid>
   <LinkCard title="Reducing data volume: reference" description="Every key, the per-connector heartbeat table and the edge cases." href="/tedge-dot/reference/configuration/reducing-data-volume/" />
-  <LinkCard title="Config workbench" description="Configure the connector on simulated signals and see which samples it publishes and how they are batched into measurements, before you deploy it." href="/tedge-dot/tools/workbench/" />
-  <LinkCard title="Measurement output" description="Batched measurements from the connector: time, frame, sample and aggregates." href="/tedge-dot/reference/configuration/measurement-output/" />
+  <LinkCard title="Config workbench" description="Configure the connector on simulated signals and see which samples it publishes and how they are grouped into measurements, before you deploy it." href="/tedge-dot/tools/workbench/" />
+  <LinkCard title="Grouped output" description="Measurements from the connector: type and fragments, time, frame, sample and aggregates." href="/tedge-dot/reference/configuration/measurement-output/" />
   <LinkCard title="A fleet of identical devices" description="Declare a policy once per device type, in its point library." href="/tedge-dot/guides/fleet-point-libraries/" />
   <LinkCard title="Configuration file" description="The report table in the configuration reference." href="/tedge-dot/reference/configuration/config-file/" />
 </CardGrid>

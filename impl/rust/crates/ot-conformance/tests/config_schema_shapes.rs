@@ -199,3 +199,34 @@ fn a_point_library_must_declare_its_protocol_and_at_least_one_point() {
         )
         .expect_err("a file with a [connector] section is a config, not a library");
 }
+
+/// Grouped output (§5.5): the new names, a device's measurement naming, and the deprecated
+/// names the loader still reads.
+#[test]
+fn the_schema_accepts_grouped_output_by_new_and_deprecated_names() {
+    let point = serde_json::json!({ "id": "t", "datatype": "float32", "address": {},
+        "grouping": { "by": "time" },
+        "meta": { "measurement": { "fragment": "c8y_Battery", "series": "level" } } });
+    let config = |connector: serde_json::Value, device_extra: serde_json::Value| {
+        let mut device = serde_json::json!({ "name": "plc", "protocol_address": {}, "point": [point.clone()] });
+        device.as_object_mut().unwrap().extend(device_extra.as_object().unwrap().clone());
+        let mut c = serde_json::json!({ "protocol": "modbus" });
+        c.as_object_mut().unwrap().extend(connector.as_object().unwrap().clone());
+        serde_json::json!({ "connector": c, "device": [device] })
+    };
+    accepts(config(
+        serde_json::json!({ "output": "group", "measurement": { "type": "c8y_Combined", "point_separator": "." },
+                            "grouping": { "by": "frame", "window": "500ms" } }),
+        serde_json::json!({ "measurement": { "type": "c8y_Sensor", "fragment": "c8y_Sensor" } }),
+    ))
+    .unwrap();
+    accepts(config(
+        serde_json::json!({ "output": "measurements", "measurement": { "group": "G" }, "batch": { "group_by": "time" } }),
+        serde_json::json!({ "batch": { "group_by": "sample", "every": "1s" } }),
+    ))
+    .unwrap();
+    accepts(config(serde_json::json!({ "grouping": { "group_by": "time" } }), serde_json::json!({})))
+        .expect_err("grouping takes by, not group_by");
+    accepts(config(serde_json::json!({}), serde_json::json!({ "measurement": { "point_separator": "." } })))
+        .expect_err("point_separator is connector-wide");
+}

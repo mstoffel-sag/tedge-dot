@@ -132,7 +132,7 @@ TOML literal strings (`'…'`) keep the backslashes as written.
 protocol     = "aveva-pi"
 service_name = "tedge-dot-aveva-pi"
 poll_interval = "10s"
-output       = "measurements"
+output       = "group"
 
 [connection]
 auth = { method = "basic", username = "piuser", password_file = "/etc/tedge/plugins/ot/secrets/aveva-pi.password" }
@@ -289,7 +289,7 @@ longer matches is dropped. A point no longer configured is dropped on the next w
 The runtime applies `report`. Pushed points can be read on demand (`streamsets/value`), so a
 heartbeat (`max_interval`) applies; it carries the read time. Replayed samples run the policy on
 source time (contract §5.3 rule 7). The packaged config shows `report = { max_interval = "30m" }`
-as a comment only, and recommends `batch = { group_by = "time" }` (the default) for measurement
+as a comment only, and recommends `grouping = { by = "time" }` (the default) for grouped
 output, which never moves a backfilled time.
 
 ### 5.6 Value mapping (`map`)

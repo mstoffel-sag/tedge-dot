@@ -160,19 +160,19 @@
         },
         "outputs": {
           "type": "array",
-          "description": "Measurement output (§5.5): each device's output and its merged batch table ([connector], then the device), group_by filled in. Absent for a connector in samples output that sets no batch.",
+          "description": "Grouped output (§5.5): each device's output and its merged grouping table ([connector], then the device), by filled in. Absent for a connector in single output that sets no grouping.",
           "items": {
             "type": "object",
-            "required": ["device", "output", "batch"],
+            "required": ["device", "output", "grouping"],
             "additionalProperties": false,
             "properties": {
               "device": { "type": "string" },
-              "output": { "enum": ["samples", "measurements"] },
-              "batch": {
+              "output": { "enum": ["single", "group"] },
+              "grouping": {
                 "type": "object",
-                "required": ["group_by"],
+                "required": ["by"],
                 "properties": {
-                  "group_by": { "enum": ["time", "frame", "sample"] },
+                  "by": { "enum": ["time", "frame", "sample"] },
                   "window": { "type": "string" },
                   "every": { "type": "string" },
                   "aggregate": {

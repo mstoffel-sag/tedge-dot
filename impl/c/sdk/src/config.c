@@ -29,22 +29,29 @@ static const char *const TOP_KEYS[] = {"connector", "mqtt", "connection", "devic
 static const char *const CONNECTOR_KEYS[] = {
     "protocol",          "service_name",  "poll_interval",      "sampling_interval",
     "log_level",         "operation_timeout", "stall_timeout",  "point_library_path",
-    "report",            "output",        "measurement",        "batch",
-    "max_inflight",      "max_inflight_total",
+    "report",            "output",        "measurement",        "grouping",
+    "batch",             "max_inflight",  "max_inflight_total",
     NULL};
 static const char *const MQTT_KEYS[] = {"host", "port", NULL};
 static const char *const DEVICE_KEYS[] = {
     "name",         "type",        "protocol_address", "poll_interval",
     "sampling_interval", "default_mode", "points_from", "point",
-    "enabled",      "report",      "batch",            "max_inflight", NULL};
+    "enabled",      "report",      "measurement",      "grouping",
+    "batch",        "max_inflight", NULL};
 static const char *const POINT_KEYS[] = {
     "id",      "mode",   "datatype", "endianness",  "word_order",
     "poll_interval", "sampling_interval", "address", "access", "unit", "name",
     "description",
-    "transform", "meta", "subscribe", "enabled", "report", "map", "batch", "sample", NULL};
+    "transform", "meta", "subscribe", "enabled", "report", "map", "grouping", "batch",
+    "sample", NULL};
 static const char *const MAP_KEYS[] = {"cases", "default", "as", NULL};
-/* Measurement output (contract §5.5), as measure.rs lists them. */
+/* Grouped output (contract §5.5), as measure.rs lists them. `batch` is the
+ * deprecated name of `grouping`, and its `group_by` of `by`. */
+static const char *const GROUPING_KEYS[] = {"by", "window", "every", "aggregate", NULL};
 static const char *const BATCH_KEYS[] = {"group_by", "window", "every", "aggregate", NULL};
+static const char BATCH_AND_GROUPING[] =
+    "batch and grouping cannot both be set (batch is the deprecated name of grouping)";
+static const char BATCH_DEPRECATED[] = "batch is deprecated: use grouping (group_by is now by)";
 static const char *const AGGREGATES[] = {"mean", "min", "max", "last"};
 
 const char *tdot_aggregate_name(tdot_aggregate_t a) {
@@ -58,9 +65,14 @@ static int aggregate_of(const char *s) {
             return i;
     return -1;
 }
-static const char *const MEASUREMENT_KEYS[] = {"group", "series", "point_separator",
-                                               "include_boolean", NULL};
-static const char *const OUTPUTS[] = {"samples", "measurements", NULL};
+static const char *const MEASUREMENT_KEYS[] = {"type",  "fragment",        "series",
+                                               "group", "point_separator", "include_boolean",
+                                               NULL};
+static const char *const DEVICE_MEASUREMENT_KEYS[] = {"type", "fragment", "series", "group",
+                                                      NULL};
+/* The two modes, then their deprecated names ("samples" is "single",
+ * "measurements" is "group"). */
+static const char *const OUTPUTS[] = {"single", "group", "samples", "measurements", NULL};
 static const char *const CASE_KEYS[] = {"eq", "min", "max", "to", "write", NULL};
 static const char *const TRANSFORM_KEYS[] = {"multiplier", "divisor",
                                              "decimal_shift", "offset", NULL};
@@ -199,6 +211,12 @@ static int check_point_keys(toml_table_t *pt, char *err, size_t errlen) {
                  id.ok ? id.u.s : "<unnamed>");
         rc = check_keys(report, TDOT_REPORT_KEYS, place, err, errlen);
     }
+    toml_table_t *grouping = toml_table_in(pt, "grouping");
+    if (rc == 0 && grouping) {
+        snprintf(place, sizeof place, "the grouping of point '%s'",
+                 id.ok ? id.u.s : "<unnamed>");
+        rc = check_keys(grouping, GROUPING_KEYS, place, err, errlen);
+    }
     toml_table_t *batch = toml_table_in(pt, "batch");
     if (rc == 0 && batch) {
         snprintf(place, sizeof place, "the batch of point '%s'",
@@ -238,6 +256,10 @@ static int check_document_keys(toml_table_t *root, char *err, size_t errlen) {
     if (conn_report && check_keys(conn_report, TDOT_REPORT_KEYS, "the report of [connector]",
                                   err, errlen) != 0)
         return -1;
+    toml_table_t *conn_grouping = conn ? toml_table_in(conn, "grouping") : NULL;
+    if (conn_grouping && check_keys(conn_grouping, GROUPING_KEYS, "the grouping of [connector]",
+                                    err, errlen) != 0)
+        return -1;
     toml_table_t *conn_batch = conn ? toml_table_in(conn, "batch") : NULL;
     if (conn_batch &&
         check_keys(conn_batch, BATCH_KEYS, "the batch of [connector]", err, errlen) != 0)
@@ -258,8 +280,12 @@ static int check_document_keys(toml_table_t *root, char *err, size_t errlen) {
         toml_datum_t name = toml_string_in(dt, "name");
         char place[256];
         snprintf(place, sizeof place, "device '%s'", name.ok ? name.u.s : "<unnamed>");
-        char report_place[300], batch_place[300];
+        char report_place[300], measurement_place[300], grouping_place[300], batch_place[300];
         snprintf(report_place, sizeof report_place, "the report of device '%s'",
+                 name.ok ? name.u.s : "<unnamed>");
+        snprintf(measurement_place, sizeof measurement_place, "the measurement of device '%s'",
+                 name.ok ? name.u.s : "<unnamed>");
+        snprintf(grouping_place, sizeof grouping_place, "the grouping of device '%s'",
                  name.ok ? name.u.s : "<unnamed>");
         snprintf(batch_place, sizeof batch_place, "the batch of device '%s'",
                  name.ok ? name.u.s : "<unnamed>");
@@ -271,6 +297,14 @@ static int check_document_keys(toml_table_t *root, char *err, size_t errlen) {
         if (dev_report &&
             check_keys(dev_report, TDOT_REPORT_KEYS, report_place, err, errlen) != 0)
             return -1;
+        toml_table_t *dev_meas = toml_table_in(dt, "measurement");
+        if (dev_meas &&
+            check_keys(dev_meas, DEVICE_MEASUREMENT_KEYS, measurement_place, err, errlen) != 0)
+            return -1;
+        toml_table_t *dev_grouping = toml_table_in(dt, "grouping");
+        if (dev_grouping &&
+            check_keys(dev_grouping, GROUPING_KEYS, grouping_place, err, errlen) != 0)
+            return -1;
         toml_table_t *dev_batch = toml_table_in(dt, "batch");
         if (dev_batch && check_keys(dev_batch, BATCH_KEYS, batch_place, err, errlen) != 0)
             return -1;
@@ -281,6 +315,68 @@ static int check_document_keys(toml_table_t *root, char *err, size_t errlen) {
             if (pt && check_point_keys(pt, err, errlen) != 0)
                 return -1;
         }
+    }
+    return 0;
+}
+
+static bool key_present(toml_table_t *tbl, const char *key);
+
+/* A table level that sets `batch` reads it as `grouping` (§5.5); one that sets
+ * both is refused. Sets *deprecated when it has a `batch`. As measure.rs
+ * rewrite_batch, without the rewrite: tomlc99 tables are read-only, so the
+ * readers (grouping_of) take either name. */
+static int batch_and_grouping(toml_table_t *t, bool *deprecated, char *err, size_t errlen) {
+    if (!t || !key_present(t, "batch"))
+        return 0;
+    *deprecated = true;
+    if (key_present(t, "grouping")) {
+        snprintf(err, errlen, "%s", BATCH_AND_GROUPING);
+        return -1;
+    }
+    return 0;
+}
+
+/* Every table level of a configuration that may set `batch`: [connector], each
+ * device (disabled ones included) and each inline point, right after the keys
+ * were checked as written and before any value is. Mirrors rewrite_batches in
+ * the Rust loader, place prefixes included. */
+static int check_batches(toml_table_t *root, bool *deprecated, char *err, size_t errlen) {
+    char why[256];
+    toml_table_t *conn = toml_table_in(root, "connector");
+    if (batch_and_grouping(conn, deprecated, why, sizeof why) != 0) {
+        snprintf(err, errlen, "[connector] %s", why);
+        return -1;
+    }
+    toml_array_t *devices = toml_array_in(root, "device");
+    int ndevices = devices ? toml_array_nelem(devices) : 0;
+    for (int i = 0; i < ndevices; i++) {
+        toml_table_t *dt = toml_table_at(devices, i);
+        if (!dt)
+            continue;
+        toml_datum_t name = toml_string_in(dt, "name");
+        const char *dname = name.ok ? name.u.s : "<unnamed>";
+        int rc = 0;
+        if (batch_and_grouping(dt, deprecated, why, sizeof why) != 0) {
+            snprintf(err, errlen, "device '%s': %s", dname, why);
+            rc = -1;
+        }
+        toml_array_t *points = toml_array_in(dt, "point");
+        int npoints = points ? toml_array_nelem(points) : 0;
+        for (int j = 0; rc == 0 && j < npoints; j++) {
+            toml_table_t *pt = toml_table_at(points, j);
+            if (batch_and_grouping(pt, deprecated, why, sizeof why) != 0) {
+                toml_datum_t id = toml_string_in(pt, "id");
+                snprintf(err, errlen, "device '%s': point '%s': %s", dname,
+                         id.ok ? id.u.s : "<unnamed>", why);
+                if (id.ok)
+                    free(id.u.s);
+                rc = -1;
+            }
+        }
+        if (name.ok)
+            free(name.u.s);
+        if (rc != 0)
+            return -1;
     }
     return 0;
 }
@@ -521,7 +617,7 @@ static cJSON *report_to_json(toml_table_t *t) {
             format_float(d.u.d, num, sizeof num);
             cJSON_AddItemToObject(obj, key, cJSON_CreateRaw(num));
         } else if (toml_array_in(t, key)) {
-            /* batch.aggregate's list of names (check_batch_values). */
+            /* grouping.aggregate's list of names (check_grouping_values). */
             toml_array_t *list = toml_array_in(t, key);
             cJSON *arr = cJSON_CreateArray();
             for (int j = 0; j < toml_array_nelem(list); j++)
@@ -531,7 +627,7 @@ static cJSON *report_to_json(toml_table_t *t) {
                 }
             cJSON_AddItemToObject(obj, key, arr);
         }
-        /* Nothing else survives check_report_values and check_batch_values. */
+        /* Nothing else survives check_report_values and check_grouping_values. */
     }
     return obj;
 }
@@ -553,16 +649,47 @@ static void merge_report_json(cJSON **base, const cJSON *over) {
     }
 }
 
-/* Merge one level's `batch` table over `base`. A table that sets `aggregate`
- * without `group_by` chooses "sample" (§5.5), at its own level. As
- * measure.rs merge_batch_level. */
-static void merge_batch_json(cJSON **base, const cJSON *level) {
+/* Merge one level's `grouping` table over `base`. A table that sets
+ * `aggregate` without `by` chooses "sample" (§5.5), at its own level. As
+ * measure.rs merge_grouping_level. */
+static void merge_grouping_json(cJSON **base, const cJSON *level) {
     merge_report_json(base, level);
     if (level && cJSON_GetObjectItemCaseSensitive(level, "aggregate") &&
-        !cJSON_GetObjectItemCaseSensitive(level, "group_by")) {
-        cJSON_DeleteItemFromObjectCaseSensitive(*base, "group_by");
-        cJSON_AddStringToObject(*base, "group_by", "sample");
+        !cJSON_GetObjectItemCaseSensitive(level, "by")) {
+        cJSON_DeleteItemFromObjectCaseSensitive(*base, "by");
+        cJSON_AddStringToObject(*base, "by", "sample");
     }
+}
+
+/* The name under which `owner` sets its grouping table: "grouping", or the
+ * deprecated "batch" (whose policy key is `group_by` rather than `by`); NULL
+ * when it sets none. check_batches refused a level that sets both. */
+static const char *grouping_of(toml_table_t *owner, const char **by_key) {
+    *by_key = "by";
+    if (key_present(owner, "grouping"))
+        return "grouping";
+    if (key_present(owner, "batch")) {
+        *by_key = "group_by";
+        return "batch";
+    }
+    return NULL;
+}
+
+/* `owner`'s grouping table as a cJSON object, a deprecated `batch` read as
+ * `grouping` (group_by renamed by); NULL when it has none. */
+static cJSON *grouping_to_json(toml_table_t *owner) {
+    const char *by_key;
+    const char *name = grouping_of(owner, &by_key);
+    toml_table_t *t = name ? toml_table_in(owner, name) : NULL;
+    if (!t)
+        return NULL;
+    cJSON *obj = report_to_json(t);
+    if (strcmp(by_key, "by") != 0) {
+        cJSON *by = cJSON_DetachItemFromObjectCaseSensitive(obj, by_key);
+        if (by)
+            cJSON_AddItemToObject(obj, "by", by);
+    }
+    return obj;
 }
 
 static void merge_report(cJSON **base, toml_table_t *report) {
@@ -753,65 +880,68 @@ static int check_report_values(toml_table_t *owner, char *err, size_t errlen) {
     return 0;
 }
 
-/* `key` of a `batch` table, when present: a duration within [min_ms, max_ms],
- * compared in whole nanoseconds as the Rust build compares Durations. */
-static int batch_duration(toml_table_t *batch, const char *key, long long min_ms,
-                          long long max_ms, const char *range, char *err, size_t errlen) {
-    if (!key_present(batch, key))
+/* `key` of a `grouping` table, when present: a duration within [min_ms,
+ * max_ms], compared in whole nanoseconds as the Rust build compares Durations. */
+static int grouping_duration(toml_table_t *grouping, const char *key, long long min_ms,
+                             long long max_ms, const char *range, char *err, size_t errlen) {
+    if (!key_present(grouping, key))
         return 0;
-    toml_datum_t d = toml_string_in(batch, key);
+    toml_datum_t d = toml_string_in(grouping, key);
     double secs = d.ok ? tdot_duration_parse(d.u.s) : -1.0;
     if (d.ok)
         free(d.u.s);
     long long ns = secs < 0 ? -1 : llround(secs * 1e9);
     if (ns < min_ms * 1000000LL || ns > max_ms * 1000000LL) {
-        snprintf(err, errlen, "batch.%s must be a duration from %s", key, range);
+        snprintf(err, errlen, "grouping.%s must be a duration from %s", key, range);
         return -1;
     }
     return 0;
 }
 
-/* The values of the `batch` table of `owner` (a connector, device or point
- * table), when it has one; the caller prefixes the place. Same rules and
- * messages as measure.rs `check_values`: a table that chooses its group_by may
- * only set that policy's duration. */
-static int check_batch_values(toml_table_t *owner, char *err, size_t errlen) {
-    if (!key_present(owner, "batch"))
+/* The values of the `grouping` table of `owner` (a connector, device or point
+ * table), when it has one -- a deprecated `batch` checked as the `grouping` it
+ * is read as; the caller prefixes the place. Same rules and messages as
+ * measure.rs `check_values`: a table that chooses its `by` may only set that
+ * policy's duration. */
+static int check_grouping_values(toml_table_t *owner, char *err, size_t errlen) {
+    const char *by_key;
+    const char *name = grouping_of(owner, &by_key);
+    if (!name)
         return 0;
-    toml_table_t *batch = toml_table_in(owner, "batch");
-    if (!batch) {
-        snprintf(err, errlen, "batch must be a table");
+    toml_table_t *grouping = toml_table_in(owner, name);
+    if (!grouping) {
+        snprintf(err, errlen, "grouping must be a table");
         return -1;
     }
-    if (key_present(batch, "group_by")) {
-        toml_datum_t g = toml_string_in(batch, "group_by");
-        const char *group_by = NULL;
+    if (key_present(grouping, by_key)) {
+        toml_datum_t g = toml_string_in(grouping, by_key);
+        const char *by = NULL;
         static const char *const POLICIES[] = {"time", "frame", "sample"};
         for (size_t i = 0; g.ok && i < 3; i++)
             if (strcmp(g.u.s, POLICIES[i]) == 0)
-                group_by = POLICIES[i];
+                by = POLICIES[i];
         if (g.ok)
             free(g.u.s);
-        if (!group_by) {
-            snprintf(err, errlen, "batch.group_by must be \"time\", \"frame\" or \"sample\"");
+        if (!by) {
+            snprintf(err, errlen, "grouping.by must be \"time\", \"frame\" or \"sample\"");
             return -1;
         }
         static const char *const OWN[][2] = {
             {"window", "frame"}, {"every", "sample"}, {"aggregate", "sample"}};
         for (size_t i = 0; i < 3; i++)
-            if (key_present(batch, OWN[i][0]) && strcmp(group_by, OWN[i][1]) != 0) {
-                snprintf(err, errlen, "batch.%s does not apply to group_by = \"%s\"",
-                         OWN[i][0], group_by);
+            if (key_present(grouping, OWN[i][0]) && strcmp(by, OWN[i][1]) != 0) {
+                snprintf(err, errlen, "grouping.%s does not apply to by = \"%s\"", OWN[i][0],
+                         by);
                 return -1;
             }
     }
-    if (batch_duration(batch, "window", 1, 60000, "1ms to 60s", err, errlen) ||
-        batch_duration(batch, "every", 100, 3600000, "100ms to 1h", err, errlen))
+    if (grouping_duration(grouping, "window", 1, 60000, "1ms to 60s", err, errlen) ||
+        grouping_duration(grouping, "every", 100, 3600000, "100ms to 1h", err, errlen))
         return -1;
-    if (key_present(batch, "aggregate")) {
+    if (key_present(grouping, "aggregate")) {
         bool ok = false;
-        toml_datum_t one = toml_string_in(batch, "aggregate");
-        toml_array_t *list = one.ok ? NULL : toml_array_in(batch, "aggregate");
+        toml_datum_t one = toml_string_in(grouping, "aggregate");
+        toml_array_t *list = one.ok ? NULL : toml_array_in(grouping, "aggregate");
         if (one.ok) {
             ok = aggregate_of(one.u.s) >= 0;
             free(one.u.s);
@@ -830,8 +960,8 @@ static int check_batch_values(toml_table_t *owner, char *err, size_t errlen) {
         }
         if (!ok) {
             snprintf(err, errlen,
-                     "batch.aggregate must be \"mean\", \"min\", \"max\" or \"last\", or a list "
-                     "of them without repeats");
+                     "grouping.aggregate must be \"mean\", \"min\", \"max\" or \"last\", or a "
+                     "list of them without repeats");
             return -1;
         }
     }
@@ -853,22 +983,60 @@ static int positive_int(toml_table_t *t, const char *key, long *out, char *err, 
     return 0;
 }
 
-/* The `[connector] measurement` table's values; the caller prefixes the place. */
-static int check_measurement_values(toml_table_t *conn, char *err, size_t errlen) {
-    if (!key_present(conn, "measurement"))
+/* A `measurement` table's values: `[connector]`'s (`connector` true) or a
+ * device's. The caller prefixes the place. As measure.rs check_measurement. */
+static int check_measurement_values(toml_table_t *owner, bool connector, char *err,
+                                    size_t errlen) {
+    if (!key_present(owner, "measurement"))
         return 0;
-    toml_table_t *m = toml_table_in(conn, "measurement");
+    toml_table_t *m = toml_table_in(owner, "measurement");
     if (!m) {
         snprintf(err, errlen, "measurement must be a table");
         return -1;
     }
-    return check_shape(m, "group", SHAPE_STRING, "measurement.", err, errlen) ||
-                   check_shape(m, "series", SHAPE_STRING, "measurement.", err, errlen) ||
-                   check_shape(m, "point_separator", SHAPE_STRING, "measurement.", err,
-                               errlen) ||
-                   check_shape(m, "include_boolean", SHAPE_BOOL, "measurement.", err, errlen)
-               ? -1
-               : 0;
+    static const char *const STRINGS[] = {"type", "fragment", "series", "group",
+                                          "point_separator"};
+    for (size_t i = 0; i < (connector ? 5 : 4); i++)
+        if (check_shape(m, STRINGS[i], SHAPE_STRING, "measurement.", err, errlen) != 0)
+            return -1;
+    if (connector &&
+        check_shape(m, "include_boolean", SHAPE_BOOL, "measurement.", err, errlen) != 0)
+        return -1;
+    return 0;
+}
+
+/* A non-empty string `key` of `t`, or NULL. Caller frees. */
+static char *nonempty_in(toml_table_t *t, const char *key) {
+    toml_datum_t d = toml_string_in(t, key);
+    if (!d.ok)
+        return NULL;
+    if (!d.u.s[0]) {
+        free(d.u.s);
+        return NULL;
+    }
+    return d.u.s;
+}
+
+/* The names a `measurement` table gives (§5.5): `group` fills the type and the
+ * fragment it does not name itself. */
+static void naming_of(toml_table_t *m, tdot_naming_t *out) {
+    if (!m)
+        return;
+    char *group = nonempty_in(m, "group");
+    out->type = nonempty_in(m, "type");
+    if (!out->type && group)
+        out->type = strdup(group);
+    out->fragment = nonempty_in(m, "fragment");
+    if (!out->fragment && group)
+        out->fragment = strdup(group);
+    out->series = nonempty_in(m, "series");
+    free(group);
+}
+
+static void naming_free(tdot_naming_t *n) {
+    free(n->type);
+    free(n->fragment);
+    free(n->series);
 }
 
 /* The `map` table of a point definition (§4.3), when present: its shape and
@@ -913,7 +1081,7 @@ static int check_point_values(toml_table_t *pt, char *err, size_t errlen) {
         check_shape(pt, "enabled", SHAPE_BOOL, "", err, errlen) ||
         check_shape(pt, "sample", SHAPE_BOOL, "", err, errlen))
         return -1;
-    if (check_report_values(pt, err, errlen) != 0 || check_batch_values(pt, err, errlen) != 0)
+    if (check_report_values(pt, err, errlen) != 0 || check_grouping_values(pt, err, errlen) != 0)
         return -1;
     return check_map_values(pt, err, errlen);
 }
@@ -966,7 +1134,8 @@ static void apply_point_table(toml_table_t *pt, tdot_point_t *point,
         {"sampling_interval", TDOT_FIELD_SAMPLING_INTERVAL},
         {"subscribe", TDOT_FIELD_SUBSCRIBE},
         {"report", TDOT_FIELD_REPORT},
-        {"batch", TDOT_FIELD_BATCH},
+        {"grouping", TDOT_FIELD_GROUPING},
+        {"batch", TDOT_FIELD_GROUPING},
         {"sample", TDOT_FIELD_SAMPLE},
     };
     for (size_t i = 0; i < sizeof own / sizeof own[0]; i++)
@@ -1045,10 +1214,13 @@ static void apply_point_table(toml_table_t *pt, tdot_point_t *point,
     toml_table_t *report = toml_table_in(pt, "report");
     if (report)
         merge_report(&point->report_table, report);
-    /* `batch` merges key by key like `report` (§5.5). */
-    toml_table_t *batch = toml_table_in(pt, "batch");
-    if (batch)
-        merge_report(&point->batch_table, batch);
+    /* `grouping` merges key by key like `report` (§5.5); a deprecated `batch`
+     * is read as `grouping` before the merge, so the two names merge too. */
+    cJSON *grouping = grouping_to_json(pt);
+    if (grouping) {
+        merge_report_json(&point->grouping_table, grouping);
+        cJSON_Delete(grouping);
+    }
     d = toml_bool_in(pt, "sample");
     if (d.ok)
         point->sample = d.u.b ? 1 : 0;
@@ -1115,7 +1287,7 @@ static int validate_method_point(const tdot_device_t *dev, const tdot_point_t *p
         {TDOT_FIELD_SAMPLING_INTERVAL, "sampling_interval"},
         {TDOT_FIELD_SUBSCRIBE, "subscribe"},
         {TDOT_FIELD_REPORT, "report"},
-        {TDOT_FIELD_BATCH, "batch"},
+        {TDOT_FIELD_GROUPING, "grouping"},
         {TDOT_FIELD_SAMPLE, "sample"},
     };
     const char *bad = NULL;
@@ -1538,12 +1710,27 @@ static toml_array_t *library_points(toml_table_t *root, const char *path,
     char **ids = calloc(n ? (size_t)n : 1, sizeof *ids);
     idx_t seen = {0};
     const char *dup = NULL;
-    bool missing_id = false, bad_key = false;
+    bool missing_id = false, bad_key = false, deprecated = false;
     for (int i = 0; i < n && !dup && !missing_id && !bad_key; i++) {
         toml_table_t *pt = toml_table_at(points, i);
         char why[512];
-        if (pt && (check_point_keys(pt, why, sizeof why) != 0 ||
-                   check_point_fields(pt, why, sizeof why) != 0)) {
+        if (pt && check_point_keys(pt, why, sizeof why) != 0) {
+            snprintf(err, errlen, "point library '%s': %s", path, why);
+            bad_key = true;
+            break;
+        }
+        /* A deprecated `batch` is read as `grouping` from here on, its values
+         * and the merge with another definition included (§5.5). */
+        if (pt && batch_and_grouping(pt, &deprecated, why, sizeof why) != 0) {
+            toml_datum_t pid = toml_string_in(pt, "id");
+            snprintf(err, errlen, "point library '%s': point '%s': %s", path,
+                     pid.ok ? pid.u.s : "<unnamed>", why);
+            if (pid.ok)
+                free(pid.u.s);
+            bad_key = true;
+            break;
+        }
+        if (pt && check_point_fields(pt, why, sizeof why) != 0) {
             snprintf(err, errlen, "point library '%s': %s", path, why);
             bad_key = true;
             break;
@@ -1565,6 +1752,8 @@ static toml_array_t *library_points(toml_table_t *root, const char *path,
         }
     }
     idx_free(&seen);
+    if (deprecated && !bad_key)
+        fprintf(stderr, "warn  point library '%s': %s\n", path, BATCH_DEPRECATED);
     if (dup)
         snprintf(err, errlen, "point library '%s' declares point '%s' twice", path, dup);
     else if (missing_id)
@@ -1711,7 +1900,7 @@ static void free_point(tdot_point_t *p) {
     free(p->addr_json);
     free(p->proto);
     cJSON_Delete(p->report_table);
-    cJSON_Delete(p->batch_table);
+    cJSON_Delete(p->grouping_table);
     tdot_map_free(p->map);
     if (p->report_state) {
         tdot_report_free(p->report_state);
@@ -1915,12 +2104,12 @@ static void resolve_sampling_intervals(const tdot_config_t *cfg, tdot_device_t *
     }
 }
 
-/* The grouping policy of a merged `batch` table (§5.5): what only the merge
+/* The grouping policy of a merged `grouping` table (§5.5): what only the merge
  * decides is checked here -- the duration the policy needs is there. A key of
  * another policy is inherited from a level that chose it, and is ignored.
  * Mirrors GroupBy::from_table (Rust). */
 static int group_by_of(const cJSON *table, tdot_group_by_t *out, char *err, size_t errlen) {
-    const cJSON *g = cJSON_GetObjectItemCaseSensitive(table, "group_by");
+    const cJSON *g = cJSON_GetObjectItemCaseSensitive(table, "by");
     const char *group_by = cJSON_IsString(g) ? g->valuestring : "time";
     out->kind = TDOT_GROUP_TIME;
     out->ms = 0;
@@ -1937,7 +2126,7 @@ static int group_by_of(const cJSON *table, tdot_group_by_t *out, char *err, size
     const cJSON *d = cJSON_GetObjectItemCaseSensitive(table, needs);
     double secs = cJSON_IsString(d) ? tdot_duration_parse(d->valuestring) : -1.0;
     if (secs < 0) {
-        snprintf(err, errlen, "batch.%s is required with group_by = \"%s\"", needs, group_by);
+        snprintf(err, errlen, "grouping.%s is required with by = \"%s\"", needs, group_by);
         return -1;
     }
     out->ms = llround(secs * 1000.0);
@@ -1946,11 +2135,11 @@ static int group_by_of(const cJSON *table, tdot_group_by_t *out, char *err, size
 
 /* Each point's effective grouping policy (§5.5): [connector], then the device,
  * then the point, merged key by key. */
-static int resolve_point_batches(const tdot_config_t *cfg, tdot_device_t *dev, char *err,
-                                 size_t errlen) {
+static int resolve_point_groupings(const tdot_config_t *cfg, tdot_device_t *dev, char *err,
+                                   size_t errlen) {
     for (size_t j = 0; j < dev->npoints; j++) {
         tdot_point_t *pt = &dev->points[j];
-        cJSON *merged = tdot_config_batch_table(cfg, dev, pt);
+        cJSON *merged = tdot_config_grouping_table(cfg, dev, pt);
         char why[256];
         int rc = group_by_of(merged, &pt->group_by, why, sizeof why);
         pt->naggregates = 0;
@@ -1977,7 +2166,7 @@ static int resolve_point_batches(const tdot_config_t *cfg, tdot_device_t *dev, c
         }
         if (pt->naggregates > 0 && !tdot_report_is_passthrough(&pt->report)) {
             snprintf(err, errlen,
-                     "device '%s': point '%s': batch.aggregate cannot be combined with report: "
+                     "device '%s': point '%s': grouping.aggregate cannot be combined with report: "
                      "an aggregate uses every reading",
                      dev->name, pt->id);
             return -1;
@@ -2030,6 +2219,14 @@ tdot_config_t *tdot_config_load(const char *path, char *err, size_t errlen) {
         snprintf(err, errlen, "%s: %s", path, why);
         goto fail;
     }
+    /* The deprecated `batch` is read as `grouping` (§5.5) from here on. */
+    bool deprecated_batch = false;
+    if (check_batches(root, &deprecated_batch, why, sizeof why) != 0) {
+        snprintf(err, errlen, "%s: %s", path, why);
+        goto fail;
+    }
+    if (deprecated_batch)
+        fprintf(stderr, "warn  %s\n", BATCH_DEPRECATED);
 
     toml_table_t *conn = toml_table_in(root, "connector");
     if (!conn) {
@@ -2085,35 +2282,39 @@ tdot_config_t *tdot_config_load(const char *path, char *err, size_t errlen) {
     toml_table_t *conn_report = toml_table_in(conn, "report");
     if (conn_report)
         cfg->report_table = report_to_json(conn_report);
-    /* Measurement output (§5.5), in the Rust loader's order. */
+    /* Grouped output (§5.5), in the Rust loader's order. */
     if (check_one_of(conn, "output", OUTPUTS, why, sizeof why) != 0 ||
-        check_measurement_values(conn, why, sizeof why) != 0 ||
-        check_batch_values(conn, why, sizeof why) != 0 ||
+        check_measurement_values(conn, true, why, sizeof why) != 0 ||
+        check_grouping_values(conn, why, sizeof why) != 0 ||
         positive_int(conn, "max_inflight", &cfg->max_inflight, why, sizeof why) != 0 ||
         positive_int(conn, "max_inflight_total", &cfg->max_inflight_total, why, sizeof why) != 0) {
         snprintf(err, errlen, "%s: [connector] %s", path, why);
         goto fail;
     }
+    /* A deprecated output name, warned about once the load succeeded. */
+    const char *deprecated_output = NULL, *output_now = NULL;
     d = toml_string_in(conn, "output");
     if (d.ok) {
-        cfg->output_measurements = strcmp(d.u.s, "measurements") == 0;
+        cfg->output_group = strcmp(d.u.s, "group") == 0 || strcmp(d.u.s, "measurements") == 0;
+        if (strcmp(d.u.s, "samples") == 0) {
+            deprecated_output = "samples";
+            output_now = "single";
+        } else if (strcmp(d.u.s, "measurements") == 0) {
+            deprecated_output = "measurements";
+            output_now = "group";
+        }
         free(d.u.s);
     }
     cfg->include_boolean = true;
     toml_table_t *meas = toml_table_in(conn, "measurement");
     if (meas) {
-        if ((d = toml_string_in(meas, "group")).ok)
-            cfg->measurement_group = d.u.s;
-        if ((d = toml_string_in(meas, "series")).ok)
-            cfg->measurement_series = d.u.s;
+        naming_of(meas, &cfg->measurement);
         if ((d = toml_string_in(meas, "point_separator")).ok)
             cfg->measurement_separator = d.u.s;
         if ((d = toml_bool_in(meas, "include_boolean")).ok)
             cfg->include_boolean = d.u.b;
     }
-    toml_table_t *conn_batch = toml_table_in(conn, "batch");
-    if (conn_batch)
-        cfg->batch_table = report_to_json(conn_batch);
+    cfg->grouping_table = grouping_to_json(conn);
 
     /* Liveness bounds (contract §8.1). Both are optional; an unparseable value
      * falls back to the default with a warning rather than failing the load,
@@ -2244,7 +2445,8 @@ tdot_config_t *tdot_config_load(const char *path, char *err, size_t errlen) {
             check_duration(dt, "poll_interval", why, sizeof why) != 0 ||
             check_duration(dt, "sampling_interval", why, sizeof why) != 0 ||
             check_report_values(dt, why, sizeof why) != 0 ||
-            check_batch_values(dt, why, sizeof why) != 0 ||
+            check_grouping_values(dt, why, sizeof why) != 0 ||
+            check_measurement_values(dt, false, why, sizeof why) != 0 ||
             positive_int(dt, "max_inflight", &dev->max_inflight, why, sizeof why) != 0) {
             snprintf(err, errlen, "%s: device '%s': %s", path, dev->name, why);
             goto fail;
@@ -2298,15 +2500,17 @@ tdot_config_t *tdot_config_load(const char *path, char *err, size_t errlen) {
             dev->report_table = report_to_json(dev_report);
         resolve_point_reports(cfg, dev);
         resolve_sampling_intervals(cfg, dev);
-        toml_table_t *dev_batch = toml_table_in(dt, "batch");
-        if (dev_batch)
-            dev->batch_table = report_to_json(dev_batch);
-        if (resolve_point_batches(cfg, dev, why, sizeof why) != 0 ||
-            (cfg->output_measurements && tdot_measure_check_series(cfg, dev, why, sizeof why) != 0)) {
+        dev->grouping_table = grouping_to_json(dt);
+        naming_of(toml_table_in(dt, "measurement"), &dev->measurement);
+        if (resolve_point_groupings(cfg, dev, why, sizeof why) != 0 ||
+            (cfg->output_group && tdot_measure_check_series(cfg, dev, why, sizeof why) != 0)) {
             snprintf(err, errlen, "%s: %s", path, why);
             goto fail;
         }
     }
+    if (deprecated_output)
+        fprintf(stderr, "warn  output = \"%s\" is deprecated: use \"%s\"\n", deprecated_output,
+                output_now);
     return cfg;
 
 fail:
@@ -2379,7 +2583,8 @@ static void free_contents(tdot_config_t *cfg, bool keep_path) {
         free(dev->name);
         free(dev->type);
         cJSON_Delete(dev->report_table);
-        cJSON_Delete(dev->batch_table);
+        cJSON_Delete(dev->grouping_table);
+        naming_free(&dev->measurement);
         tdot_schedule_free(dev);
         free(dev->proto); /* connectors keep flat per-device state here and
                              release transports in disconnect_device() */
@@ -2392,9 +2597,8 @@ static void free_contents(tdot_config_t *cfg, bool keep_path) {
     free(cfg->log_level);
     free(cfg->mqtt_host);
     cJSON_Delete(cfg->report_table);
-    cJSON_Delete(cfg->batch_table);
-    free(cfg->measurement_group);
-    free(cfg->measurement_series);
+    cJSON_Delete(cfg->grouping_table);
+    naming_free(&cfg->measurement);
     free(cfg->measurement_separator);
     if (cfg->root)
         toml_free(cfg->root);
@@ -2430,45 +2634,44 @@ cJSON *tdot_config_report_table(const tdot_config_t *cfg, const tdot_device_t *d
     return table;
 }
 
-cJSON *tdot_config_batch_table(const tdot_config_t *cfg, const tdot_device_t *dev,
-                               const tdot_point_t *pt) {
+cJSON *tdot_config_grouping_table(const tdot_config_t *cfg, const tdot_device_t *dev,
+                                  const tdot_point_t *pt) {
     cJSON *table = cJSON_CreateObject();
-    merge_batch_json(&table, cfg ? cfg->batch_table : NULL);
-    merge_batch_json(&table, dev ? dev->batch_table : NULL);
-    merge_batch_json(&table, pt ? pt->batch_table : NULL);
+    merge_grouping_json(&table, cfg ? cfg->grouping_table : NULL);
+    merge_grouping_json(&table, dev ? dev->grouping_table : NULL);
+    merge_grouping_json(&table, pt ? pt->grouping_table : NULL);
     return table;
 }
 
 cJSON *tdot_config_outputs(const tdot_config_t *cfg) {
-    bool any_batch = cfg->batch_table != NULL;
-    for (size_t i = 0; i < cfg->ndevices && !any_batch; i++)
-        any_batch = cfg->devices[i].batch_table != NULL;
-    if (!cfg->output_measurements && !any_batch)
+    bool any_grouping = cfg->grouping_table != NULL;
+    for (size_t i = 0; i < cfg->ndevices && !any_grouping; i++)
+        any_grouping = cfg->devices[i].grouping_table != NULL;
+    if (!cfg->output_group && !any_grouping)
         return NULL;
     cJSON *out = cJSON_CreateArray();
     for (size_t i = 0; i < cfg->ndevices; i++) {
         const tdot_device_t *dev = &cfg->devices[i];
-        cJSON *batch = NULL;
-        merge_batch_json(&batch, cfg->batch_table);
-        merge_batch_json(&batch, dev->batch_table);
-        if (!batch)
-            batch = cJSON_CreateObject();
+        cJSON *grouping = NULL;
+        merge_grouping_json(&grouping, cfg->grouping_table);
+        merge_grouping_json(&grouping, dev->grouping_table);
+        if (!grouping)
+            grouping = cJSON_CreateObject();
         /* The default first, so the two builds print the same order. */
         cJSON *ordered = cJSON_CreateObject();
-        const cJSON *g = cJSON_GetObjectItemCaseSensitive(batch, "group_by");
-        cJSON_AddItemToObject(ordered, "group_by",
+        const cJSON *g = cJSON_GetObjectItemCaseSensitive(grouping, "by");
+        cJSON_AddItemToObject(ordered, "by",
                               g ? cJSON_Duplicate(g, 1) : cJSON_CreateString("time"));
-        for (const char *const *k = BATCH_KEYS + 1; *k; k++) {
-            const cJSON *v = cJSON_GetObjectItemCaseSensitive(batch, *k);
+        for (const char *const *k = GROUPING_KEYS + 1; *k; k++) {
+            const cJSON *v = cJSON_GetObjectItemCaseSensitive(grouping, *k);
             if (v)
                 cJSON_AddItemToObject(ordered, *k, cJSON_Duplicate(v, 1));
         }
-        cJSON_Delete(batch);
+        cJSON_Delete(grouping);
         cJSON *entry = cJSON_CreateObject();
         cJSON_AddStringToObject(entry, "device", dev->name);
-        cJSON_AddStringToObject(entry, "output",
-                                cfg->output_measurements ? "measurements" : "samples");
-        cJSON_AddItemToObject(entry, "batch", ordered);
+        cJSON_AddStringToObject(entry, "output", cfg->output_group ? "group" : "single");
+        cJSON_AddItemToObject(entry, "grouping", ordered);
         cJSON_AddItemToArray(out, entry);
     }
     return out;

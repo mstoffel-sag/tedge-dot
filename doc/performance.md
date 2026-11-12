@@ -148,7 +148,7 @@ replaces them.
 | Built-in c8y conversion, 500 series per message | 1.56 µs per reading |
 | Rust connector, OPC UA, per sample | 12.5 µs (allocation 36 %, `sendto` 19 %, JSON 16 %, clock reads and timeouts 10 %, OPC UA decode under 3 %) |
 | One Rust OPC UA instance, 20,000 polled points | 52,700 readings/s: bound by its CPU per sample, not by sequential reads, which a local simulator never shows (see `opcua-latency`) |
-| Spike: point table and one batched measurement per device | 0.33 µs per reading on the connector; 2 % of a core for the broker, 17 % for the mapper at 100,000/s |
+| Spike: point table and one grouped measurement per device | 0.33 µs per reading on the connector; 2 % of a core for the broker, 17 % for the mapper at 100,000/s |
 
 ## Reporting a performance change
 

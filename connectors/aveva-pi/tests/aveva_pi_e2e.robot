@@ -28,7 +28,7 @@ ${SAMPLE_TIMEOUT}       10
 # request_timeout 2s, then the runtime's reconnect backoff.
 ${OUTAGE_TIMEOUT}       30
 ${RECOVERY_TIMEOUT}     60
-# Measurement output (connector-measure.toml): the `pim` device on its own simulator.
+# Grouped output (connector-measure.toml): the `pim` device on its own simulator.
 ${MEASURE_TOPIC}        te/device/pim///m/${PROTOCOL}
 
 

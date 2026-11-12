@@ -1,7 +1,8 @@
-# The `plcm` device of the Modbus e2e harness, in measurement output (contract §5.5, openspec
-# change native-batched-output): the connector publishes the thin-edge measurements itself,
-# batched, and samples only for the points a flow reads. `output` is a connector setting, so the
-# device is a connector instance of its own, which entrypoint.sh starts next to the main one.
+# The `plcm` device of the Modbus e2e harness, in grouped output (contract §5.5, openspec change
+# native-batched-output): the connector publishes the thin-edge measurements itself, several
+# series per message, and samples only for the points a flow reads. `output` is a connector
+# setting, so the device is a connector instance of its own, which entrypoint.sh starts next to
+# the main one.
 #
 # It reads registers the main suite never writes:
 #
@@ -16,7 +17,7 @@ protocol      = "modbus"
 service_name  = "tedge-dot-measure"
 poll_interval = "1s"
 log_level     = "info"
-output        = "measurements"
+output        = "group"
 
 [mqtt]
 host = "broker"
@@ -48,4 +49,4 @@ default_mode     = "typed"
   id       = "named"
   datatype = "uint32"
   address  = { table = "holding", address = 4, count = 2 }
-  meta     = { measurement = { group = "Tank", series = "Count" } }
+  meta     = { measurement = { type = "Tank", series = "Count" } }

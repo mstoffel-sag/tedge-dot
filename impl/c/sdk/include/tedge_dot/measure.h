@@ -1,15 +1,15 @@
-/* tedge-dot C SDK — measurement output (contract §5.5).
+/* tedge-dot C SDK — grouped output (contract §5.5).
  *
- * With `[connector] output = "measurements"` the runtime publishes thin-edge
- * measurements itself, batched per device, group and time, instead of one
- * sample per reading for the ot-measurement flow to convert. The batcher holds
- * one table per device with a slot per point; the runtime offers it every
- * reading the report policy (§5.3) and the value map (§4.3) let through, and
- * the point's `batch.group_by` decides when a series is published and with
- * which time:
+ * With `[connector] output = "group"` the runtime publishes thin-edge
+ * measurements itself, several series per message, grouped per device, type
+ * and time, instead of one sample per reading for the ot-measurement flow to
+ * convert. The batcher holds one table per device with a slot per point; the
+ * runtime offers it every reading the report policy (§5.3) and the value map
+ * (§4.3) let through, and the point's `grouping.by` decides when a series is
+ * published and with which time:
  *
  *   time    readings that share a millisecond timestamp share a message; a
- *           message closes when another time arrives for its group, when a
+ *           message closes when another time arrives for its type, when a
  *           point repeats, or at the end of the runtime's pass
  *   frame   readings within `window` of the device clock are published as
  *           layers when the window ends: a point's first value goes into
@@ -19,6 +19,10 @@
  *   sample  every `every`, one series per slot holding a good value, stamped
  *           with the sample time; stale slots are left out, and event points
  *           (meta.event.every) are published as under `time`
+ *
+ * A message is published on te/device/<device>///m/<type> and holds one entry
+ * per fragment: {"time":...,"<fragment>":{"<series>":<value>,...},...}, the
+ * fragments in the order their first point is configured.
  *
  * It is pure -- no clock, no MQTT -- so the runtime drives it with the real
  * clocks and the shared vectors (doc/contract/test-vectors/measurements/)
@@ -37,7 +41,7 @@
 extern "C" {
 #endif
 
-/* A batch is split before its estimated Cumulocity size passes this many
+/* A message is split before its estimated Cumulocity size passes this many
  * bytes: the thin-edge size plus TDOT_SERIES_OVERHEAD per series. */
 #define TDOT_SIZE_BUDGET 15000
 #define TDOT_SERIES_OVERHEAD 12
@@ -96,13 +100,13 @@ long long tdot_batcher_next_deadline(const tdot_batcher_t *b);
  * counts again from its next good reading. */
 void tdot_batcher_set_stale(tdot_batcher_t *b, size_t d, bool stale, long long now_ns);
 
-/* In measurement output, refuse a device where a series of an aggregated point
- * has the name of another series of its group (§5.5). 0, or -1 with the reason
+/* In grouped output, refuse a device where a series of an aggregated point
+ * has the name of another series of its type and fragment (§5.5). 0, or -1 with the reason
  * in `err`. As measure.rs check_resolved. */
 int tdot_measure_check_series(const tdot_config_t *cfg, const tdot_device_t *dev, char *err,
                               size_t errlen);
 
-/* Whether a flow reads this point's samples, so measurement output still
+/* Whether a flow reads this point's samples, so grouped output still
  * publishes them: meta.alarm, meta.event or meta.parameter (each unless
  * false), write access, or `sample = true`; `sample = false` turns them off. */
 bool tdot_publishes_sample(const tdot_point_t *pt);

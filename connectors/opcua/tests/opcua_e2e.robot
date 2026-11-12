@@ -68,7 +68,7 @@ ${POLLED_BULK_PREFIX}       te/device/opc7/ot/${PROTOCOL}/sample
 ${METHOD_PREFIX}            te/device/machine/ot/${PROTOCOL}/cmd/call-method
 ${MACHINE_WRITE_PREFIX}     te/device/machine/ot/${PROTOCOL}/cmd/write
 ${MACHINE_SAMPLE_PREFIX}    te/device/machine/ot/${PROTOCOL}/sample
-# Measurement output (connector-measure.toml, openspec native-batched-output): the `opcm` device.
+# Grouped output (connector-measure.toml, openspec native-batched-output): the `opcm` device.
 ${MEASURE_TOPIC}            te/device/opcm///m/${PROTOCOL}
 ${MEASURE_SAMPLE_PREFIX}    te/device/opcm/ot/${PROTOCOL}/sample
 ${MEASURE_CAPS_TOPIC}       te/device/main/service/tedge-dot-measure/ot/capabilities
@@ -864,13 +864,13 @@ Pushed Value Keeps Its Source Time
     ${time}=    Get Json Field    ${measurement}    time
     Should Be Equal    ${time}    ${STAMPED_SOURCE_TIME}
 
-Capability Descriptor Lists The Measurement Output
+Capability Descriptor Lists The Grouped Output
     [Documentation]    The descriptor lists each device's output and grouping policy (§7).
     ${payload}=    Wait For Retained    ${MEASURE_CAPS_TOPIC}    timeout=${READY_TIMEOUT}
     ${output}=    Get Json Field    ${payload}    outputs.0.output
-    Should Be Equal    ${output}    measurements
-    ${group_by}=    Get Json Field    ${payload}    outputs.0.batch.group_by
-    Should Be Equal    ${group_by}    time
+    Should Be Equal    ${output}    group
+    ${by}=    Get Json Field    ${payload}    outputs.0.grouping.by
+    Should Be Equal    ${by}    time
 
 
 A Frame Publishes Each Value Of A Repeated Point In Its Own Layer

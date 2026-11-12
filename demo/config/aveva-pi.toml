@@ -12,7 +12,7 @@ protocol      = "aveva-pi"
 service_name  = "tedge-dot-aveva-pi"
 poll_interval = "5s"
 log_level     = "info"
-output        = "measurements"
+output        = "group"
 
 [mqtt]
 host = "127.0.0.1"

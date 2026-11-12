@@ -32,7 +32,7 @@ ${HEALTH_TOPIC}         te/device/main/service/${SERVICE}/status/health
 
 ${READY_TIMEOUT}        120
 ${SAMPLE_TIMEOUT}       30
-# Measurement output (connector-measure.toml, openspec native-batched-output): the `pbm` device.
+# Grouped output (connector-measure.toml, openspec native-batched-output): the `pbm` device.
 ${MEASURE_TOPIC}            te/device/pbm///m/${PROTOCOL}
 ${MEASURE_SAMPLE_PREFIX}    te/device/pbm/ot/${PROTOCOL}/sample
 

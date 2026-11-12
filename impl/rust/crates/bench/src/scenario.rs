@@ -55,14 +55,15 @@ pub struct Scenario {
     pub ts_resolution: Option<OneOrMany<String>>,
     pub publish_interval: Option<String>,
     pub instances: Option<OneOrMany<usize>>,
-    /// `"measurements"` for the runtime's measurement output (contract §5.5); samples otherwise.
+    /// `"group"` for the runtime's grouped output (contract §5.5; `"measurements"` is its
+    /// deprecated name); single output otherwise.
     pub output: Option<String>,
     /// Grouping policies to run, one run each: `"time"`, `"frame:<window>"`,
-    /// `"sample:<every>"` or `"sample:<every>:<aggregate>,..."` (`batch.aggregate` as a list).
-    /// Measurement output only.
+    /// `"sample:<every>"` or `"sample:<every>:<aggregate>,..."` (`grouping.aggregate` as a
+    /// list). Grouped output only.
     pub group_by: Option<OneOrMany<String>>,
     /// Share of each device's points that declare an alarm (`meta.alarm`), so they still
-    /// publish samples in measurement output.
+    /// publish samples in grouped output.
     pub alarm_share: Option<f64>,
     pub rates: Vec<f64>,
     pub window: Option<String>,
@@ -141,7 +142,7 @@ pub struct Run {
 impl Run {
     /// Whether readings arrive as measurements rather than samples.
     pub fn measurements(&self) -> bool {
-        self.output.as_deref() == Some("measurements")
+        matches!(self.output.as_deref(), Some("group" | "measurements"))
     }
 
     /// Readings per second the generated config produces (rounding of points can make it
@@ -214,10 +215,10 @@ pub fn expand(s: &Scenario, o: &Overrides) -> Result<Vec<Run>, String> {
         None => vec![None],
     };
     for policy in policies.iter().flatten() {
-        batch_table(policy)?;
+        grouping_table(policy)?;
     }
-    if s.group_by.is_some() && s.output.as_deref() != Some("measurements") {
-        return Err(format!("scenario {}: group_by needs output = \"measurements\"", s.name));
+    if s.group_by.is_some() && !matches!(s.output.as_deref(), Some("group" | "measurements")) {
+        return Err(format!("scenario {}: group_by needs output = \"group\"", s.name));
     }
     let window = match o.window {
         Some(w) => w,
@@ -292,16 +293,16 @@ pub fn expand(s: &Scenario, o: &Overrides) -> Result<Vec<Run>, String> {
 const DEFAULT_MAX_INFLIGHT: usize = 4;
 const DEFAULT_MAX_INFLIGHT_TOTAL: usize = 32;
 
-/// The `[connector] batch` table of a scenario's `group_by` value.
-fn batch_table(policy: &str) -> Result<String, String> {
+/// The `[connector] grouping` table of a scenario's `group_by` value.
+fn grouping_table(policy: &str) -> Result<String, String> {
     match policy.split_once(':') {
-        None if policy == "time" => Ok("{ group_by = \"time\" }".into()),
-        Some(("frame", w)) => Ok(format!("{{ group_by = \"frame\", window = \"{w}\" }}")),
+        None if policy == "time" => Ok("{ by = \"time\" }".into()),
+        Some(("frame", w)) => Ok(format!("{{ by = \"frame\", window = \"{w}\" }}")),
         Some(("sample", rest)) => match rest.split_once(':') {
-            None => Ok(format!("{{ group_by = \"sample\", every = \"{rest}\" }}")),
+            None => Ok(format!("{{ by = \"sample\", every = \"{rest}\" }}")),
             Some((e, aggregates)) => {
                 let list: Vec<String> = aggregates.split(',').map(|a| format!("\"{a}\"")).collect();
-                Ok(format!("{{ group_by = \"sample\", every = \"{e}\", aggregate = [{}] }}", list.join(", ")))
+                Ok(format!("{{ by = \"sample\", every = \"{e}\", aggregate = [{}] }}", list.join(", ")))
             }
         },
         _ => Err(format!(
@@ -330,7 +331,7 @@ pub fn write_configs(run: &Run, dir: &Path, broker_port: u16, endpoint: Option<&
             let _ = writeln!(t, "output = \"{o}\"");
         }
         if let Some(g) = &run.group_by {
-            let _ = writeln!(t, "batch = {}", batch_table(g)?);
+            let _ = writeln!(t, "grouping = {}", grouping_table(g)?);
         }
         let _ = writeln!(t, "max_inflight = {}\nmax_inflight_total = {}", run.max_inflight, run.max_inflight_total);
         let _ = writeln!(t, "\n[mqtt]\nhost = \"127.0.0.1\"\nport = {broker_port}\n");
@@ -401,15 +402,15 @@ mod tests {
     const NONE: Overrides = Overrides { rate: None, window: None, implementation: None };
 
     #[test]
-    fn group_by_values_become_batch_tables() {
-        assert_eq!(batch_table("time").unwrap(), "{ group_by = \"time\" }");
-        assert_eq!(batch_table("frame:500ms").unwrap(), "{ group_by = \"frame\", window = \"500ms\" }");
-        assert_eq!(batch_table("sample:1s").unwrap(), "{ group_by = \"sample\", every = \"1s\" }");
+    fn group_by_values_become_grouping_tables() {
+        assert_eq!(grouping_table("time").unwrap(), "{ by = \"time\" }");
+        assert_eq!(grouping_table("frame:500ms").unwrap(), "{ by = \"frame\", window = \"500ms\" }");
+        assert_eq!(grouping_table("sample:1s").unwrap(), "{ by = \"sample\", every = \"1s\" }");
         assert_eq!(
-            batch_table("sample:1s:mean,min,max").unwrap(),
-            "{ group_by = \"sample\", every = \"1s\", aggregate = [\"mean\", \"min\", \"max\"] }"
+            grouping_table("sample:1s:mean,min,max").unwrap(),
+            "{ by = \"sample\", every = \"1s\", aggregate = [\"mean\", \"min\", \"max\"] }"
         );
-        assert!(batch_table("bucket:1s").is_err());
+        assert!(grouping_table("bucket:1s").is_err());
     }
 
     #[test]

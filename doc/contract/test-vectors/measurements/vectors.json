@@ -1,8 +1,8 @@
 {
  "cases": [
   {
-   "name": "default naming: group is the protocol, series the point id; units before the first measurement",
-   "config": "[connector]\nprotocol = \"opcua\"\noutput = \"measurements\"\n\n[[device]]\nname = \"plc1\"\nprotocol_address = {}\n\n[[device.point]]\nid = \"flow\"\ndatatype = \"float64\"\nunit = \"L/min\"\naddress = {}\n",
+   "name": "default naming: type and fragment are the protocol, series the point id; units before the first measurement",
+   "config": "[connector]\nprotocol = \"opcua\"\noutput = \"group\"\n\n[[device]]\nname = \"plc1\"\nprotocol_address = {}\n\n[[device.point]]\nid = \"flow\"\ndatatype = \"float64\"\nunit = \"L/min\"\naddress = {}\n",
    "steps": [
     {
      "at": 0,
@@ -48,7 +48,7 @@
   },
   {
    "name": "a polled pass at one read time is one message",
-   "config": "[connector]\nprotocol = \"opcua\"\noutput = \"measurements\"\n\n[[device]]\nname = \"plc1\"\nprotocol_address = {}\n\n[[device.point]]\nid = \"p0\"\ndatatype = \"float64\"\naddress = {}\n[[device.point]]\nid = \"p1\"\ndatatype = \"float64\"\naddress = {}\n[[device.point]]\nid = \"p2\"\ndatatype = \"float64\"\naddress = {}\n",
+   "config": "[connector]\nprotocol = \"opcua\"\noutput = \"group\"\n\n[[device]]\nname = \"plc1\"\nprotocol_address = {}\n\n[[device.point]]\nid = \"p0\"\ndatatype = \"float64\"\naddress = {}\n[[device.point]]\nid = \"p1\"\ndatatype = \"float64\"\naddress = {}\n[[device.point]]\nid = \"p2\"\ndatatype = \"float64\"\naddress = {}\n",
    "steps": [
     {
      "at": 0,
@@ -112,8 +112,8 @@
    ]
   },
   {
-   "name": "naming precedence: point meta, then [connector] measurement, then the point id split, then the defaults",
-   "config": "[connector]\nprotocol = \"opcua\"\noutput = \"measurements\"\nmeasurement = { point_separator = \".\" }\n[[device]]\nname = \"plc1\"\nprotocol_address = {}\n\n[[device.point]]\nid = \"a\"\ndatatype = \"float64\"\nmeta = { measurement = { group = \"Environment\", series = \"Temperature\" } }\naddress = {}\n[[device.point]]\nid = \"Line1.Speed\"\ndatatype = \"float64\"\naddress = {}\n[[device.point]]\nid = \"b\"\ndatatype = \"float64\"\nmeta = { measurement = { series = \"Pressure\" } }\naddress = {}\n[[device.point]]\nid = \"plain\"\ndatatype = \"float64\"\naddress = {}\n",
+   "name": "naming precedence: point meta, then [connector] measurement, then the point id split, then the defaults; meta group names the type and the fragment",
+   "config": "[connector]\nprotocol = \"opcua\"\noutput = \"group\"\nmeasurement = { point_separator = \".\" }\n[[device]]\nname = \"plc1\"\nprotocol_address = {}\n\n[[device.point]]\nid = \"a\"\ndatatype = \"float64\"\nmeta = { measurement = { group = \"Environment\", series = \"Temperature\" } }\naddress = {}\n[[device.point]]\nid = \"Line1.Speed\"\ndatatype = \"float64\"\naddress = {}\n[[device.point]]\nid = \"b\"\ndatatype = \"float64\"\nmeta = { measurement = { series = \"Pressure\" } }\naddress = {}\n[[device.point]]\nid = \"plain\"\ndatatype = \"float64\"\naddress = {}\n",
    "steps": [
     {
      "at": 0,
@@ -209,8 +209,8 @@
    ]
   },
   {
-   "name": "[connector] measurement group and series apply to points without their own",
-   "config": "[connector]\nprotocol = \"opcua\"\noutput = \"measurements\"\nmeasurement = { group = \"Plant\" }\n[[device]]\nname = \"plc1\"\nprotocol_address = {}\n\n[[device.point]]\nid = \"a\"\ndatatype = \"float64\"\naddress = {}\n[[device.point]]\nid = \"b\"\ndatatype = \"float64\"\nmeta = { measurement = { group = \"Mine\" } }\naddress = {}\n",
+   "name": "[connector] measurement group (the deprecated name of type and fragment) and series apply to points without their own",
+   "config": "[connector]\nprotocol = \"opcua\"\noutput = \"group\"\nmeasurement = { group = \"Plant\" }\n[[device]]\nname = \"plc1\"\nprotocol_address = {}\n\n[[device.point]]\nid = \"a\"\ndatatype = \"float64\"\naddress = {}\n[[device.point]]\nid = \"b\"\ndatatype = \"float64\"\nmeta = { measurement = { group = \"Mine\" } }\naddress = {}\n",
    "steps": [
     {
      "at": 0,
@@ -269,8 +269,8 @@
    ]
   },
   {
-   "name": "group by time: pushed readings share a message only at the same millisecond",
-   "config": "[connector]\nprotocol = \"opcua\"\noutput = \"measurements\"\n\n[[device]]\nname = \"plc1\"\nprotocol_address = {}\n\n[[device.point]]\nid = \"a\"\ndatatype = \"float64\"\naddress = {}\n[[device.point]]\nid = \"b\"\ndatatype = \"float64\"\naddress = {}\n[[device.point]]\nid = \"c\"\ndatatype = \"float64\"\naddress = {}\n",
+   "name": "by time: pushed readings share a message only at the same millisecond",
+   "config": "[connector]\nprotocol = \"opcua\"\noutput = \"group\"\n\n[[device]]\nname = \"plc1\"\nprotocol_address = {}\n\n[[device.point]]\nid = \"a\"\ndatatype = \"float64\"\naddress = {}\n[[device.point]]\nid = \"b\"\ndatatype = \"float64\"\naddress = {}\n[[device.point]]\nid = \"c\"\ndatatype = \"float64\"\naddress = {}\n",
    "steps": [
     {
      "at": 0,
@@ -344,7 +344,7 @@
   },
   {
    "name": "a repeated point at the same time starts a new message and neither value is lost",
-   "config": "[connector]\nprotocol = \"opcua\"\noutput = \"measurements\"\n\n[[device]]\nname = \"plc1\"\nprotocol_address = {}\n\n[[device.point]]\nid = \"a\"\ndatatype = \"float64\"\naddress = {}\n[[device.point]]\nid = \"b\"\ndatatype = \"float64\"\naddress = {}\n",
+   "config": "[connector]\nprotocol = \"opcua\"\noutput = \"group\"\n\n[[device]]\nname = \"plc1\"\nprotocol_address = {}\n\n[[device.point]]\nid = \"a\"\ndatatype = \"float64\"\naddress = {}\n[[device.point]]\nid = \"b\"\ndatatype = \"float64\"\naddress = {}\n",
    "steps": [
     {
      "at": 0,
@@ -418,7 +418,7 @@
   },
   {
    "name": "only good numbers and booleans become series; bad, strings, raw points and meta.measurement = false do not",
-   "config": "[connector]\nprotocol = \"opcua\"\noutput = \"measurements\"\n\n[[device]]\nname = \"plc1\"\nprotocol_address = {}\n\n[[device.point]]\nid = \"n\"\ndatatype = \"float64\"\naddress = {}\n[[device.point]]\nid = \"bad\"\ndatatype = \"float64\"\naddress = {}\n[[device.point]]\nid = \"flag\"\ndatatype = \"bool\"\naddress = {}\n[[device.point]]\nid = \"text\"\ndatatype = \"string\"\naddress = {}\n[[device.point]]\nid = \"big\"\ndatatype = \"int64\"\naddress = {}\n[[device.point]]\nid = \"raw\"\ndatatype = \"uint16\"\nmode = \"raw\"\naddress = {}\n[[device.point]]\nid = \"param\"\ndatatype = \"float64\"\nmeta = { measurement = false }\naddress = {}\n",
+   "config": "[connector]\nprotocol = \"opcua\"\noutput = \"group\"\n\n[[device]]\nname = \"plc1\"\nprotocol_address = {}\n\n[[device.point]]\nid = \"n\"\ndatatype = \"float64\"\naddress = {}\n[[device.point]]\nid = \"bad\"\ndatatype = \"float64\"\naddress = {}\n[[device.point]]\nid = \"flag\"\ndatatype = \"bool\"\naddress = {}\n[[device.point]]\nid = \"text\"\ndatatype = \"string\"\naddress = {}\n[[device.point]]\nid = \"big\"\ndatatype = \"int64\"\naddress = {}\n[[device.point]]\nid = \"raw\"\ndatatype = \"uint16\"\nmode = \"raw\"\naddress = {}\n[[device.point]]\nid = \"param\"\ndatatype = \"float64\"\nmeta = { measurement = false }\naddress = {}\n",
    "steps": [
     {
      "at": 0,
@@ -558,7 +558,7 @@
   },
   {
    "name": "include_boolean = false leaves booleans out",
-   "config": "[connector]\nprotocol = \"opcua\"\noutput = \"measurements\"\nmeasurement = { include_boolean = false }\n[[device]]\nname = \"plc1\"\nprotocol_address = {}\n\n[[device.point]]\nid = \"flag\"\ndatatype = \"bool\"\naddress = {}\n[[device.point]]\nid = \"n\"\ndatatype = \"float64\"\naddress = {}\n",
+   "config": "[connector]\nprotocol = \"opcua\"\noutput = \"group\"\nmeasurement = { include_boolean = false }\n[[device]]\nname = \"plc1\"\nprotocol_address = {}\n\n[[device.point]]\nid = \"flag\"\ndatatype = \"bool\"\naddress = {}\n[[device.point]]\nid = \"n\"\ndatatype = \"float64\"\naddress = {}\n",
    "steps": [
     {
      "at": 0,
@@ -608,7 +608,7 @@
   },
   {
    "name": "samples only for points flows read, marked measured when the reading also became a series",
-   "config": "[connector]\nprotocol = \"opcua\"\noutput = \"measurements\"\n\n[[device]]\nname = \"plc1\"\nprotocol_address = {}\n\n[[device.point]]\nid = \"alarm\"\ndatatype = \"float64\"\nmeta = { alarm = { type = \"high\" } }\naddress = {}\n[[device.point]]\nid = \"event\"\ndatatype = \"float64\"\nmeta = { event = { type = \"e\" } }\naddress = {}\n[[device.point]]\nid = \"param\"\ndatatype = \"float64\"\nmeta = { parameter = { key = \"s.k\" } }\naddress = {}\n[[device.point]]\nid = \"setpoint\"\ndatatype = \"float64\"\naccess = \"read_write\"\naddress = {}\n[[device.point]]\nid = \"third_party\"\ndatatype = \"float64\"\nsample = true\naddress = {}\n[[device.point]]\nid = \"quiet_alarm\"\ndatatype = \"float64\"\nmeta = { alarm = { type = \"x\" } }\nsample = false\naddress = {}\n[[device.point]]\nid = \"plain\"\ndatatype = \"float64\"\naddress = {}\n[[device.point]]\nid = \"no_param\"\ndatatype = \"float64\"\nmeta = { parameter = false }\naddress = {}\n",
+   "config": "[connector]\nprotocol = \"opcua\"\noutput = \"group\"\n\n[[device]]\nname = \"plc1\"\nprotocol_address = {}\n\n[[device.point]]\nid = \"alarm\"\ndatatype = \"float64\"\nmeta = { alarm = { type = \"high\" } }\naddress = {}\n[[device.point]]\nid = \"event\"\ndatatype = \"float64\"\nmeta = { event = { type = \"e\" } }\naddress = {}\n[[device.point]]\nid = \"param\"\ndatatype = \"float64\"\nmeta = { parameter = { key = \"s.k\" } }\naddress = {}\n[[device.point]]\nid = \"setpoint\"\ndatatype = \"float64\"\naccess = \"read_write\"\naddress = {}\n[[device.point]]\nid = \"third_party\"\ndatatype = \"float64\"\nsample = true\naddress = {}\n[[device.point]]\nid = \"quiet_alarm\"\ndatatype = \"float64\"\nmeta = { alarm = { type = \"x\" } }\nsample = false\naddress = {}\n[[device.point]]\nid = \"plain\"\ndatatype = \"float64\"\naddress = {}\n[[device.point]]\nid = \"no_param\"\ndatatype = \"float64\"\nmeta = { parameter = false }\naddress = {}\n",
    "steps": [
     {
      "at": 0,
@@ -756,8 +756,8 @@
    ]
   },
   {
-   "name": "group by frame: readings within the window share a message stamped with the first reading's time",
-   "config": "[connector]\nprotocol = \"opcua\"\noutput = \"measurements\"\n\n[[device]]\nname = \"plc1\"\nprotocol_address = {}\nbatch = { group_by = \"frame\", window = \"100ms\" }\n[[device.point]]\nid = \"a\"\ndatatype = \"float64\"\naddress = {}\n[[device.point]]\nid = \"b\"\ndatatype = \"float64\"\naddress = {}\n[[device.point]]\nid = \"c\"\ndatatype = \"float64\"\naddress = {}\n",
+   "name": "by frame: readings within the window share a message stamped with the first reading's time",
+   "config": "[connector]\nprotocol = \"opcua\"\noutput = \"group\"\n\n[[device]]\nname = \"plc1\"\nprotocol_address = {}\ngrouping = { by = \"frame\", window = \"100ms\" }\n[[device.point]]\nid = \"a\"\ndatatype = \"float64\"\naddress = {}\n[[device.point]]\nid = \"b\"\ndatatype = \"float64\"\naddress = {}\n[[device.point]]\nid = \"c\"\ndatatype = \"float64\"\naddress = {}\n",
    "steps": [
     {
      "at": 0,
@@ -856,8 +856,8 @@
    ]
   },
   {
-   "name": "group by frame: each value of a repeated point goes into the next layer, and the layers publish in order at the end of the window",
-   "config": "[connector]\nprotocol = \"opcua\"\noutput = \"measurements\"\n\n[[device]]\nname = \"plc1\"\nprotocol_address = {}\nbatch = { group_by = \"frame\", window = \"100ms\" }\n[[device.point]]\nid = \"a\"\ndatatype = \"float64\"\naddress = {}\n",
+   "name": "by frame: each value of a repeated point goes into the next layer, and the layers publish in order at the end of the window",
+   "config": "[connector]\nprotocol = \"opcua\"\noutput = \"group\"\n\n[[device]]\nname = \"plc1\"\nprotocol_address = {}\ngrouping = { by = \"frame\", window = \"100ms\" }\n[[device.point]]\nid = \"a\"\ndatatype = \"float64\"\naddress = {}\n",
    "steps": [
     {
      "at": 0,
@@ -939,8 +939,8 @@
    ]
   },
   {
-   "name": "group by frame: a reading after the window ended opens a new frame even before the window is published",
-   "config": "[connector]\nprotocol = \"opcua\"\noutput = \"measurements\"\n\n[[device]]\nname = \"plc1\"\nprotocol_address = {}\nbatch = { group_by = \"frame\", window = \"100ms\" }\n[[device.point]]\nid = \"a\"\ndatatype = \"float64\"\naddress = {}\n[[device.point]]\nid = \"b\"\ndatatype = \"float64\"\naddress = {}\n",
+   "name": "by frame: a reading after the window ended opens a new frame even before the window is published",
+   "config": "[connector]\nprotocol = \"opcua\"\noutput = \"group\"\n\n[[device]]\nname = \"plc1\"\nprotocol_address = {}\ngrouping = { by = \"frame\", window = \"100ms\" }\n[[device.point]]\nid = \"a\"\ndatatype = \"float64\"\naddress = {}\n[[device.point]]\nid = \"b\"\ndatatype = \"float64\"\naddress = {}\n",
    "steps": [
     {
      "at": 0,
@@ -999,8 +999,8 @@
    ]
   },
   {
-   "name": "group by frame: a repeat goes into the next layer while layer 0 keeps filling",
-   "config": "[connector]\nprotocol = \"opcua\"\noutput = \"measurements\"\n\n[[device]]\nname = \"plc1\"\nprotocol_address = {}\nbatch = { group_by = \"frame\", window = \"100ms\" }\n[[device.point]]\nid = \"a\"\ndatatype = \"float64\"\naddress = {}\n[[device.point]]\nid = \"b\"\ndatatype = \"float64\"\naddress = {}\n[[device.point]]\nid = \"c\"\ndatatype = \"float64\"\naddress = {}\n",
+   "name": "by frame: a repeat goes into the next layer while layer 0 keeps filling",
+   "config": "[connector]\nprotocol = \"opcua\"\noutput = \"group\"\n\n[[device]]\nname = \"plc1\"\nprotocol_address = {}\ngrouping = { by = \"frame\", window = \"100ms\" }\n[[device.point]]\nid = \"a\"\ndatatype = \"float64\"\naddress = {}\n[[device.point]]\nid = \"b\"\ndatatype = \"float64\"\naddress = {}\n[[device.point]]\nid = \"c\"\ndatatype = \"float64\"\naddress = {}\n",
    "steps": [
     {
      "at": 0,
@@ -1091,8 +1091,8 @@
    ]
   },
   {
-   "name": "group by frame: polled passes in one frame each form a layer with their own read time",
-   "config": "[connector]\nprotocol = \"opcua\"\noutput = \"measurements\"\n\n[[device]]\nname = \"plc1\"\nprotocol_address = {}\nbatch = { group_by = \"frame\", window = \"500ms\" }\n[[device.point]]\nid = \"a\"\ndatatype = \"float64\"\naddress = {}\n[[device.point]]\nid = \"b\"\ndatatype = \"float64\"\naddress = {}\n",
+   "name": "by frame: polled passes in one frame each form a layer with their own read time",
+   "config": "[connector]\nprotocol = \"opcua\"\noutput = \"group\"\n\n[[device]]\nname = \"plc1\"\nprotocol_address = {}\ngrouping = { by = \"frame\", window = \"500ms\" }\n[[device.point]]\nid = \"a\"\ndatatype = \"float64\"\naddress = {}\n[[device.point]]\nid = \"b\"\ndatatype = \"float64\"\naddress = {}\n",
    "steps": [
     {
      "at": 0,
@@ -1173,8 +1173,8 @@
    "routing": []
   },
   {
-   "name": "group by frame: a layer stamped no later than the layer before it moves to 1 ms after it",
-   "config": "[connector]\nprotocol = \"opcua\"\noutput = \"measurements\"\n\n[[device]]\nname = \"plc1\"\nprotocol_address = {}\nbatch = { group_by = \"frame\", window = \"100ms\" }\n[[device.point]]\nid = \"a\"\ndatatype = \"float64\"\naddress = {}\n[[device.point]]\nid = \"b\"\ndatatype = \"float64\"\naddress = {}\n",
+   "name": "by frame: a layer stamped no later than the layer before it moves to 1 ms after it",
+   "config": "[connector]\nprotocol = \"opcua\"\noutput = \"group\"\n\n[[device]]\nname = \"plc1\"\nprotocol_address = {}\ngrouping = { by = \"frame\", window = \"100ms\" }\n[[device.point]]\nid = \"a\"\ndatatype = \"float64\"\naddress = {}\n[[device.point]]\nid = \"b\"\ndatatype = \"float64\"\naddress = {}\n",
    "steps": [
     {
      "at": 0,
@@ -1247,8 +1247,8 @@
    ]
   },
   {
-   "name": "group by frame: the order holds across frames: a frame whose first time is earlier moves after the last one",
-   "config": "[connector]\nprotocol = \"opcua\"\noutput = \"measurements\"\n\n[[device]]\nname = \"plc1\"\nprotocol_address = {}\nbatch = { group_by = \"frame\", window = \"100ms\" }\n[[device.point]]\nid = \"a\"\ndatatype = \"float64\"\naddress = {}\n[[device.point]]\nid = \"b\"\ndatatype = \"float64\"\naddress = {}\n",
+   "name": "by frame: the order holds across frames: a frame whose first time is earlier moves after the last one",
+   "config": "[connector]\nprotocol = \"opcua\"\noutput = \"group\"\n\n[[device]]\nname = \"plc1\"\nprotocol_address = {}\ngrouping = { by = \"frame\", window = \"100ms\" }\n[[device.point]]\nid = \"a\"\ndatatype = \"float64\"\naddress = {}\n[[device.point]]\nid = \"b\"\ndatatype = \"float64\"\naddress = {}\n",
    "steps": [
     {
      "at": 0,
@@ -1311,8 +1311,8 @@
    ]
   },
   {
-   "name": "group by frame: a reading that would open a 65th layer publishes the 64 layers and starts a new frame in the same window",
-   "config": "[connector]\nprotocol = \"opcua\"\noutput = \"measurements\"\n\n[[device]]\nname = \"plc1\"\nprotocol_address = {}\nbatch = { group_by = \"frame\", window = \"100ms\" }\n[[device.point]]\nid = \"a\"\ndatatype = \"float64\"\naddress = {}\n",
+   "name": "by frame: a reading that would open a 65th layer publishes the 64 layers and starts a new frame in the same window",
+   "config": "[connector]\nprotocol = \"opcua\"\noutput = \"group\"\n\n[[device]]\nname = \"plc1\"\nprotocol_address = {}\ngrouping = { by = \"frame\", window = \"100ms\" }\n[[device.point]]\nid = \"a\"\ndatatype = \"float64\"\naddress = {}\n",
    "steps": [
     {
      "at": 0,
@@ -2824,7 +2824,7 @@
    ]
   },
   {
-   "name": "a point's own batch wins over its device's",
+   "name": "deprecated names: output = \"measurements\" and batch = { group_by } still work, and a point's own policy wins over its device's",
    "config": "[connector]\nprotocol = \"opcua\"\noutput = \"measurements\"\n\n[[device]]\nname = \"plc1\"\nprotocol_address = {}\nbatch = { group_by = \"frame\", window = \"100ms\" }\n[[device.point]]\nid = \"a\"\ndatatype = \"float64\"\naddress = {}\n[[device.point]]\nid = \"exact\"\ndatatype = \"float64\"\nbatch = { group_by = \"time\" }\naddress = {}\n",
    "steps": [
     {
@@ -2912,7 +2912,7 @@
   },
   {
    "name": "sample and hold: every slot with a good value, at the sample time; superseded and bad readings left out",
-   "config": "[connector]\nprotocol = \"opcua\"\noutput = \"measurements\"\n\n[[device]]\nname = \"plc1\"\nprotocol_address = {}\nbatch = { group_by = \"sample\", every = \"1s\" }\n[[device.point]]\nid = \"a\"\ndatatype = \"float64\"\naddress = {}\n[[device.point]]\nid = \"b\"\ndatatype = \"float64\"\naddress = {}\n[[device.point]]\nid = \"never\"\ndatatype = \"float64\"\naddress = {}\n",
+   "config": "[connector]\nprotocol = \"opcua\"\noutput = \"group\"\n\n[[device]]\nname = \"plc1\"\nprotocol_address = {}\ngrouping = { by = \"sample\", every = \"1s\" }\n[[device.point]]\nid = \"a\"\ndatatype = \"float64\"\naddress = {}\n[[device.point]]\nid = \"b\"\ndatatype = \"float64\"\naddress = {}\n[[device.point]]\nid = \"never\"\ndatatype = \"float64\"\naddress = {}\n",
    "steps": [
     {
      "at": 0,
@@ -3012,7 +3012,7 @@
   },
   {
    "name": "sample and hold: a stale device publishes nothing until it is healthy again",
-   "config": "[connector]\nprotocol = \"opcua\"\noutput = \"measurements\"\n\n[[device]]\nname = \"plc1\"\nprotocol_address = {}\nbatch = { group_by = \"sample\", every = \"1s\" }\n[[device.point]]\nid = \"a\"\ndatatype = \"float64\"\naddress = {}\n",
+   "config": "[connector]\nprotocol = \"opcua\"\noutput = \"group\"\n\n[[device]]\nname = \"plc1\"\nprotocol_address = {}\ngrouping = { by = \"sample\", every = \"1s\" }\n[[device.point]]\nid = \"a\"\ndatatype = \"float64\"\naddress = {}\n",
    "steps": [
     {
      "at": 0,
@@ -3067,7 +3067,7 @@
   },
   {
    "name": "sample and hold: event points keep every occurrence with its own time",
-   "config": "[connector]\nprotocol = \"opcua\"\noutput = \"measurements\"\n\n[[device]]\nname = \"plc1\"\nprotocol_address = {}\nbatch = { group_by = \"sample\", every = \"1s\" }\n[[device.point]]\nid = \"a\"\ndatatype = \"float64\"\naddress = {}\n[[device.point]]\nid = \"trip\"\ndatatype = \"float64\"\nmeta = { event = { type = \"trip\", every = true } }\naddress = {}\n",
+   "config": "[connector]\nprotocol = \"opcua\"\noutput = \"group\"\n\n[[device]]\nname = \"plc1\"\nprotocol_address = {}\ngrouping = { by = \"sample\", every = \"1s\" }\n[[device.point]]\nid = \"a\"\ndatatype = \"float64\"\naddress = {}\n[[device.point]]\nid = \"trip\"\ndatatype = \"float64\"\nmeta = { event = { type = \"trip\", every = true } }\naddress = {}\n",
    "steps": [
     {
      "at": 100,
@@ -3176,8 +3176,8 @@
    ]
   },
   {
-   "name": "aggregate: the time-weighted mean of change-only data; aggregate without group_by means sample",
-   "config": "[connector]\nprotocol = \"opcua\"\noutput = \"measurements\"\n\n[[device]]\nname = \"plc1\"\nprotocol_address = {}\nbatch = { aggregate = \"mean\", every = \"1s\" }\n[[device.point]]\nid = \"a\"\ndatatype = \"float64\"\naddress = {}\n",
+   "name": "aggregate: the time-weighted mean of change-only data; aggregate without by means sample",
+   "config": "[connector]\nprotocol = \"opcua\"\noutput = \"group\"\n\n[[device]]\nname = \"plc1\"\nprotocol_address = {}\ngrouping = { aggregate = \"mean\", every = \"1s\" }\n[[device.point]]\nid = \"a\"\ndatatype = \"float64\"\naddress = {}\n",
    "steps": [
     {
      "at": 0,
@@ -3241,7 +3241,7 @@
   },
   {
    "name": "aggregate: the mean of evenly polled readings",
-   "config": "[connector]\nprotocol = \"opcua\"\noutput = \"measurements\"\n\n[[device]]\nname = \"plc1\"\nprotocol_address = {}\nbatch = { group_by = \"sample\", every = \"1s\", aggregate = \"mean\" }\n[[device.point]]\nid = \"a\"\ndatatype = \"float64\"\naddress = {}\n",
+   "config": "[connector]\nprotocol = \"opcua\"\noutput = \"group\"\n\n[[device]]\nname = \"plc1\"\nprotocol_address = {}\ngrouping = { by = \"sample\", every = \"1s\", aggregate = \"mean\" }\n[[device.point]]\nid = \"a\"\ndatatype = \"float64\"\naddress = {}\n",
    "steps": [
     {
      "at": 0,
@@ -3395,7 +3395,7 @@
   },
   {
    "name": "aggregate: a list publishes <series>_<aggregate> with the unit; min and max include the value held at the start",
-   "config": "[connector]\nprotocol = \"opcua\"\noutput = \"measurements\"\n\n[[device]]\nname = \"plc1\"\nprotocol_address = {}\nbatch = { group_by = \"sample\", every = \"1s\", aggregate = [\"min\", \"max\", \"last\"] }\n[[device.point]]\nid = \"a\"\ndatatype = \"float64\"\nunit = \"°C\"\naddress = {}\n",
+   "config": "[connector]\nprotocol = \"opcua\"\noutput = \"group\"\n\n[[device]]\nname = \"plc1\"\nprotocol_address = {}\ngrouping = { by = \"sample\", every = \"1s\", aggregate = [\"min\", \"max\", \"last\"] }\n[[device.point]]\nid = \"a\"\ndatatype = \"float64\"\nunit = \"°C\"\naddress = {}\n",
    "steps": [
     {
      "at": 0,
@@ -3491,7 +3491,7 @@
   },
   {
    "name": "aggregate: the mean of a boolean is the fraction of the period it was true",
-   "config": "[connector]\nprotocol = \"opcua\"\noutput = \"measurements\"\n\n[[device]]\nname = \"plc1\"\nprotocol_address = {}\nbatch = { aggregate = \"mean\", every = \"1s\" }\n[[device.point]]\nid = \"a\"\ndatatype = \"bool\"\naddress = {}\n",
+   "config": "[connector]\nprotocol = \"opcua\"\noutput = \"group\"\n\n[[device]]\nname = \"plc1\"\nprotocol_address = {}\ngrouping = { aggregate = \"mean\", every = \"1s\" }\n[[device.point]]\nid = \"a\"\ndatatype = \"bool\"\naddress = {}\n",
    "steps": [
     {
      "at": 0,
@@ -3554,7 +3554,7 @@
   },
   {
    "name": "aggregate: stale time does not count; a period without good time leaves the point out",
-   "config": "[connector]\nprotocol = \"opcua\"\noutput = \"measurements\"\n\n[[device]]\nname = \"plc1\"\nprotocol_address = {}\nbatch = { aggregate = \"mean\", every = \"1s\" }\n[[device.point]]\nid = \"a\"\ndatatype = \"float64\"\naddress = {}\n",
+   "config": "[connector]\nprotocol = \"opcua\"\noutput = \"group\"\n\n[[device]]\nname = \"plc1\"\nprotocol_address = {}\ngrouping = { aggregate = \"mean\", every = \"1s\" }\n[[device.point]]\nid = \"a\"\ndatatype = \"float64\"\naddress = {}\n",
    "steps": [
     {
      "at": 0,
@@ -3636,7 +3636,7 @@
   },
   {
    "name": "aggregate: a mean that is not exactly representable prints as the shortest round-trip form",
-   "config": "[connector]\nprotocol = \"opcua\"\noutput = \"measurements\"\n\n[[device]]\nname = \"plc1\"\nprotocol_address = {}\nbatch = { aggregate = \"mean\", every = \"1s\" }\n[[device.point]]\nid = \"a\"\ndatatype = \"float64\"\naddress = {}\n",
+   "config": "[connector]\nprotocol = \"opcua\"\noutput = \"group\"\n\n[[device]]\nname = \"plc1\"\nprotocol_address = {}\ngrouping = { aggregate = \"mean\", every = \"1s\" }\n[[device.point]]\nid = \"a\"\ndatatype = \"float64\"\naddress = {}\n",
    "steps": [
     {
      "at": 0,
@@ -3685,8 +3685,360 @@
    ]
   },
   {
+   "name": "several fragments of one type and time share one message; the units hold every fragment",
+   "config": "[connector]\nprotocol = \"opcua\"\noutput = \"group\"\nmeasurement = { type = \"c8y_CombinedSensorReading\" }\n\n[[device]]\nname = \"plc1\"\nprotocol_address = {}\n\n[[device.point]]\nid = \"t\"\ndatatype = \"float64\"\nunit = \"°C\"\nmeta = { measurement = { fragment = \"c8y_Environmental\", series = \"temperature\" } }\naddress = {}\n[[device.point]]\nid = \"b\"\ndatatype = \"float64\"\nunit = \"%\"\nmeta = { measurement = { fragment = \"c8y_Battery\", series = \"level\" } }\naddress = {}\n[[device.point]]\nid = \"v\"\ndatatype = \"float64\"\nunit = \"V\"\nmeta = { measurement = { fragment = \"c8y_Battery\", series = \"voltage\" } }\naddress = {}\n[[device.point]]\nid = \"h\"\ndatatype = \"float64\"\nunit = \"%\"\nmeta = { measurement = { fragment = \"c8y_Environmental\", series = \"humidity\" } }\naddress = {}\n",
+   "steps": [
+    {
+     "at": 0,
+     "read": {
+      "device": "plc1",
+      "point": "b",
+      "value": 85,
+      "ts": "2026-01-01T00:00:00.000Z"
+     }
+    },
+    {
+     "at": 0,
+     "read": {
+      "device": "plc1",
+      "point": "t",
+      "value": 23.4,
+      "ts": "2026-01-01T00:00:00.000Z"
+     }
+    },
+    {
+     "at": 0,
+     "read": {
+      "device": "plc1",
+      "point": "v",
+      "value": 3.7,
+      "ts": "2026-01-01T00:00:00.000Z"
+     }
+    },
+    {
+     "at": 0,
+     "read": {
+      "device": "plc1",
+      "point": "h",
+      "value": 48.5,
+      "ts": "2026-01-01T00:00:00.000Z"
+     }
+    },
+    {
+     "at": 0,
+     "pass": true
+    }
+   ],
+   "messages": [
+    {
+     "topic": "te/device/plc1///m/c8y_CombinedSensorReading/meta",
+     "retain": true,
+     "payload": {
+      "c8y_Battery.level": {
+       "unit": "%"
+      },
+      "c8y_Battery.voltage": {
+       "unit": "V"
+      },
+      "c8y_Environmental.humidity": {
+       "unit": "%"
+      },
+      "c8y_Environmental.temperature": {
+       "unit": "°C"
+      }
+     }
+    },
+    {
+     "topic": "te/device/plc1///m/c8y_CombinedSensorReading",
+     "retain": false,
+     "payload": {
+      "time": "2026-01-01T00:00:00.000Z",
+      "c8y_Environmental": {
+       "temperature": 23.4,
+       "humidity": 48.5
+      },
+      "c8y_Battery": {
+       "level": 85,
+       "voltage": 3.7
+      }
+     }
+    }
+   ],
+   "routing": [
+    {
+     "sample": false,
+     "measured": true
+    },
+    {
+     "sample": false,
+     "measured": true
+    },
+    {
+     "sample": false,
+     "measured": true
+    },
+    {
+     "sample": false,
+     "measured": true
+    }
+   ]
+  },
+  {
+   "name": "a device's measurement names the type of its points; the fragment defaults to the type",
+   "config": "[connector]\nprotocol = \"opcua\"\noutput = \"group\"\n\n[[device]]\nname = \"plc1\"\nprotocol_address = {}\nmeasurement = { type = \"c8y_Sensor\" }\n\n[[device.point]]\nid = \"flow\"\ndatatype = \"float64\"\naddress = {}\n[[device.point]]\nid = \"level\"\ndatatype = \"float64\"\nunit = \"m\"\nmeta = { measurement = { fragment = \"c8y_Level\" } }\naddress = {}\n\n[[device]]\nname = \"plc2\"\nprotocol_address = {}\n\n[[device.point]]\nid = \"flow\"\ndatatype = \"float64\"\naddress = {}\n",
+   "steps": [
+    {
+     "at": 0,
+     "read": {
+      "device": "plc1",
+      "point": "flow",
+      "value": 1,
+      "ts": "2026-01-01T00:00:00.000Z"
+     }
+    },
+    {
+     "at": 0,
+     "read": {
+      "device": "plc1",
+      "point": "level",
+      "value": 2,
+      "ts": "2026-01-01T00:00:00.000Z"
+     }
+    },
+    {
+     "at": 0,
+     "read": {
+      "device": "plc2",
+      "point": "flow",
+      "value": 3,
+      "ts": "2026-01-01T00:00:00.000Z"
+     }
+    },
+    {
+     "at": 0,
+     "pass": true
+    }
+   ],
+   "messages": [
+    {
+     "topic": "te/device/plc1///m/c8y_Sensor/meta",
+     "retain": true,
+     "payload": {
+      "c8y_Level.level": {
+       "unit": "m"
+      }
+     }
+    },
+    {
+     "topic": "te/device/plc1///m/c8y_Sensor",
+     "retain": false,
+     "payload": {
+      "time": "2026-01-01T00:00:00.000Z",
+      "c8y_Sensor": {
+       "flow": 1
+      },
+      "c8y_Level": {
+       "level": 2
+      }
+     }
+    },
+    {
+     "topic": "te/device/plc2///m/opcua",
+     "retain": false,
+     "payload": {
+      "time": "2026-01-01T00:00:00.000Z",
+      "opcua": {
+       "flow": 3
+      }
+     }
+    }
+   ],
+   "routing": [
+    {
+     "sample": false,
+     "measured": true
+    },
+    {
+     "sample": false,
+     "measured": true
+    },
+    {
+     "sample": false,
+     "measured": true
+    }
+   ]
+  },
+  {
+   "name": "under a type, the point id split names the fragment and the series; a point without the separator goes into the type's own fragment",
+   "config": "[connector]\nprotocol = \"opcua\"\noutput = \"group\"\nmeasurement = { type = \"Combined\", point_separator = \".\" }\n\n[[device]]\nname = \"plc1\"\nprotocol_address = {}\n\n[[device.point]]\nid = \"c8y_Battery.level\"\ndatatype = \"float64\"\naddress = {}\n[[device.point]]\nid = \"c8y_Environmental.temperature\"\ndatatype = \"float64\"\naddress = {}\n[[device.point]]\nid = \"plain\"\ndatatype = \"float64\"\naddress = {}\n[[device.point]]\nid = \"c8y_Battery.voltage\"\ndatatype = \"float64\"\naddress = {}\n",
+   "steps": [
+    {
+     "at": 0,
+     "read": {
+      "device": "plc1",
+      "point": "c8y_Battery.level",
+      "value": 85,
+      "ts": "2026-01-01T00:00:00.000Z"
+     }
+    },
+    {
+     "at": 0,
+     "read": {
+      "device": "plc1",
+      "point": "c8y_Environmental.temperature",
+      "value": 23.4,
+      "ts": "2026-01-01T00:00:00.000Z"
+     }
+    },
+    {
+     "at": 0,
+     "read": {
+      "device": "plc1",
+      "point": "plain",
+      "value": 7,
+      "ts": "2026-01-01T00:00:00.000Z"
+     }
+    },
+    {
+     "at": 0,
+     "read": {
+      "device": "plc1",
+      "point": "c8y_Battery.voltage",
+      "value": 3.7,
+      "ts": "2026-01-01T00:00:00.000Z"
+     }
+    },
+    {
+     "at": 0,
+     "pass": true
+    }
+   ],
+   "messages": [
+    {
+     "topic": "te/device/plc1///m/Combined",
+     "retain": false,
+     "payload": {
+      "time": "2026-01-01T00:00:00.000Z",
+      "c8y_Battery": {
+       "level": 85,
+       "voltage": 3.7
+      },
+      "c8y_Environmental": {
+       "temperature": 23.4
+      },
+      "Combined": {
+       "plain": 7
+      }
+     }
+    }
+   ],
+   "routing": [
+    {
+     "sample": false,
+     "measured": true
+    },
+    {
+     "sample": false,
+     "measured": true
+    },
+    {
+     "sample": false,
+     "measured": true
+    },
+    {
+     "sample": false,
+     "measured": true
+    }
+   ]
+  },
+  {
+   "name": "sample and hold: the series of every fragment of a type go into one sample message",
+   "config": "[connector]\nprotocol = \"opcua\"\noutput = \"group\"\nmeasurement = { type = \"Combined\" }\ngrouping = { by = \"sample\", every = \"1s\" }\n\n[[device]]\nname = \"plc1\"\nprotocol_address = {}\n\n[[device.point]]\nid = \"a\"\ndatatype = \"float64\"\nmeta = { measurement = { fragment = \"F1\" } }\naddress = {}\n[[device.point]]\nid = \"b\"\ndatatype = \"float64\"\nmeta = { measurement = { fragment = \"F2\" } }\naddress = {}\n",
+   "steps": [
+    {
+     "at": 0,
+     "read": {
+      "device": "plc1",
+      "point": "a",
+      "value": 1,
+      "ts": "2026-01-01T00:00:00.000Z"
+     }
+    },
+    {
+     "at": 100,
+     "read": {
+      "device": "plc1",
+      "point": "b",
+      "value": 2,
+      "ts": "2026-01-01T00:00:00.100Z"
+     }
+    },
+    {
+     "at": 1000,
+     "due": true
+    }
+   ],
+   "messages": [
+    {
+     "topic": "te/device/plc1///m/Combined",
+     "retain": false,
+     "payload": {
+      "time": "2026-01-01T00:00:01.000Z",
+      "F1": {
+       "a": 1
+      },
+      "F2": {
+       "b": 2
+      }
+     }
+    }
+   ],
+   "routing": [
+    {
+     "sample": false,
+     "measured": true
+    },
+    {
+     "sample": false,
+     "measured": true
+    }
+   ]
+  },
+  {
+   "name": "the size estimate counts every fragment: a pass with a fragment per series is split before 15,000 bytes",
+   "config": "[connector]\nprotocol = \"opcua\"\noutput = \"group\"\nmeasurement = { type = \"T\", point_separator = \".\" }\n\n[[device]]\nname = \"plc1\"\nprotocol_address = {}\n\n",
+   "generate": {
+    "device": "plc1",
+    "count": 400,
+    "id": "f{i:04}.a_series_name_long_enough_to_fill_the_budget_{i:04}",
+    "datatype": "float64"
+   },
+   "steps": [
+    {
+     "at": 0,
+     "read_all": {
+      "device": "plc1",
+      "value": 123.456,
+      "ts": "2026-01-01T00:00:00.000Z"
+     }
+    },
+    {
+     "at": 0,
+     "pass": true
+    }
+   ],
+   "split": {
+    "topic": "te/device/plc1///m/T",
+    "series": [
+     182,
+     182,
+     36
+    ]
+   }
+  },
+  {
    "name": "units: one retained message per topic with every series that has a unit, published once",
-   "config": "[connector]\nprotocol = \"opcua\"\noutput = \"measurements\"\n\n[[device]]\nname = \"plc1\"\nprotocol_address = {}\n\n[[device.point]]\nid = \"t\"\ndatatype = \"float64\"\nunit = \"°C\"\naddress = {}\n[[device.point]]\nid = \"h\"\ndatatype = \"float64\"\nunit = \"%\"\naddress = {}\n[[device.point]]\nid = \"n\"\ndatatype = \"float64\"\naddress = {}\n[[device.point]]\nid = \"x\"\ndatatype = \"float64\"\nunit = \"m\"\nmeta = { measurement = { group = \"Other\" } }\naddress = {}\n[[device.point]]\nid = \"y\"\ndatatype = \"float64\"\nmeta = { measurement = { group = \"Bare\" } }\naddress = {}\n",
+   "config": "[connector]\nprotocol = \"opcua\"\noutput = \"group\"\n\n[[device]]\nname = \"plc1\"\nprotocol_address = {}\n\n[[device.point]]\nid = \"t\"\ndatatype = \"float64\"\nunit = \"°C\"\naddress = {}\n[[device.point]]\nid = \"h\"\ndatatype = \"float64\"\nunit = \"%\"\naddress = {}\n[[device.point]]\nid = \"n\"\ndatatype = \"float64\"\naddress = {}\n[[device.point]]\nid = \"x\"\ndatatype = \"float64\"\nunit = \"m\"\nmeta = { measurement = { group = \"Other\" } }\naddress = {}\n[[device.point]]\nid = \"y\"\ndatatype = \"float64\"\nmeta = { measurement = { group = \"Bare\" } }\naddress = {}\n",
    "steps": [
     {
      "at": 0,
@@ -3799,7 +4151,7 @@
   },
   {
    "name": "names are escaped and may be long or non-ASCII",
-   "config": "[connector]\nprotocol = \"opcua\"\noutput = \"measurements\"\n\n[[device]]\nname = \"plc1\"\nprotocol_address = {}\n\n[[device.point]]\nid = \"q\"\ndatatype = \"float64\"\nmeta = { measurement = { group = \"Halle \\\"A\\\"\", series = \"Température_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\" } }\naddress = {}\n",
+   "config": "[connector]\nprotocol = \"opcua\"\noutput = \"group\"\n\n[[device]]\nname = \"plc1\"\nprotocol_address = {}\n\n[[device.point]]\nid = \"q\"\ndatatype = \"float64\"\nmeta = { measurement = { group = \"Halle \\\"A\\\"\", series = \"Température_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\" } }\naddress = {}\n",
    "steps": [
     {
      "at": 0,
@@ -3836,7 +4188,7 @@
   },
   {
    "name": "a large pass is split before its estimated c8y size passes 15,000 bytes",
-   "config": "[connector]\nprotocol = \"opcua\"\noutput = \"measurements\"\n\n[[device]]\nname = \"plc1\"\nprotocol_address = {}\n\n",
+   "config": "[connector]\nprotocol = \"opcua\"\noutput = \"group\"\n\n[[device]]\nname = \"plc1\"\nprotocol_address = {}\n\n",
    "generate": {
     "device": "plc1",
     "count": 2000,

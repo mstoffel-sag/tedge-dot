@@ -1,21 +1,33 @@
-// The gateway playground's examples show what its page says they show, on the configuration
+// The grouping playground's examples show what its page says they show, on the configuration
 // the config builder would show for them.
 import { describe, expect, it } from 'vitest';
-import { batchToml, c8yMeasurement, EXAMPLES, simulate, type BatchForm } from '../src/lib/batching';
+import {
+  c8yMeasurement,
+  connectorToml,
+  EXAMPLES,
+  fragmentWrites,
+  groupingToml,
+  layoutOf,
+  simulate,
+  tedgeMeasurement,
+  withLayout,
+  type GroupingForm,
+} from '../src/lib/batching';
 import { readFileSync } from 'node:fs';
 import { parseToml } from '../src/lib/config-builder';
-import { addPoint, configFor, expandLibraries, resolve, setLibraries, signalsFor, switchProtocol, withBatch } from '../src/lib/gateway';
+import { addPoint, configFor, expandLibraries, formOfGrouping, hasOwnGrouping, resolve, setLibraries, signalsFor, switchProtocol, withGrouping } from '../src/lib/gateway';
 import type { SignalSpec } from '../src/lib/playground';
 import { stateOf } from '../src/lib/signals-store';
 
-const form = (f: Partial<BatchForm>): BatchForm => ({ group_by: 'time', window: '500ms', every: '1s', aggregate: 'none', ...f });
+const form = (f: Partial<GroupingForm>): GroupingForm => ({ by: 'time', window: '500ms', every: '1s', aggregate: 'none', ...f });
 const example = (label: string) => EXAMPLES.find((e) => e.label === label)!;
-const run = (label: string, f: Partial<BatchForm>) => {
+const run = (label: string, f: Partial<GroupingForm>, layout: 'type' | 'signal' = 'type') => {
   const e = example(label);
-  return simulate(e.signals, e.durationMs, withBatch(configFor(e.protocol, e.signals), form(f)));
+  return simulate(e.signals, e.durationMs, withLayout(withGrouping(configFor(e.protocol, e.signals), form(f)), layout));
 };
+const values = (r: ReturnType<typeof run>, fragment: string, series: string) => r.measurements.map((m) => m.fragments[fragment]?.[series]);
 
-describe('batching playground', () => {
+describe('grouping playground', () => {
   it('polled points read in one pass share a measurement; a filtered or slower one is missing from most', () => {
     const r = run('Three polled points, filtered', {});
     expect(r.measurements.length).toBeGreaterThan(0);
@@ -31,14 +43,14 @@ describe('batching playground', () => {
   it('pushed times a few ms apart: one measurement each under time, far fewer under frame', () => {
     const time = run('Pushed points, times ms apart', {});
     expect(time.measurements.every((m) => m.has.filter(Boolean).length === 1)).toBe(true);
-    const frame = run('Pushed points, times ms apart', { group_by: 'frame', window: '100ms' });
+    const frame = run('Pushed points, times ms apart', { by: 'frame', window: '100ms' });
     expect(frame.measurements.length).toBeLessThan(time.measurements.length);
     expect(frame.maxShift).toBeLessThan(100);
     expect(frame.dropped).toEqual([]);
   });
 
   it('a signal in an outage is left out of samples and of time measurements', () => {
-    const held = run('A signal drops out', { group_by: 'sample', every: '5s' });
+    const held = run('A signal drops out', { by: 'sample', every: '5s' });
     const gap = held.measurements.filter((m) => m.time > 50_000 && m.time < 75_000);
     expect(gap.length).toBeGreaterThan(0);
     expect(gap.every((m) => m.has[0] && !m.has[1])).toBe(true);
@@ -48,11 +60,11 @@ describe('batching playground', () => {
   });
 
   it('sample and hold misses the spike; the max aggregate keeps it', () => {
-    const held = run('A spike between samples', { group_by: 'sample', every: '10s' });
-    expect(held.measurements.map((m) => m.series.pressure)).not.toContain(5.2);
+    const held = run('A spike between samples', { by: 'sample', every: '10s' });
+    expect(values(held, 'Process', 'pressure')).not.toContain(5.2);
     expect(held.dropped.length).toBeGreaterThan(0);
-    const agg = run('A spike between samples', { group_by: 'sample', every: '10s', aggregate: 'mean_min_max' });
-    expect(agg.measurements.map((m) => m.series.pressure_max)).toContain(5.2);
+    const agg = run('A spike between samples', { by: 'sample', every: '10s', aggregate: 'mean_min_max' });
+    expect(values(agg, 'Process', 'pressure_max')).toContain(5.2);
     expect(c8yMeasurement(agg.measurements[0], agg).Process.pressure_max).toEqual({ value: expect.any(Number), unit: 'bar' });
     expect(agg.topic).toBe('te/device/line1///m/Process');
   });
@@ -64,17 +76,62 @@ describe('batching playground', () => {
     for (const m of r.measurements) expect(m.time).toBe(r.inputs[m.from[0]].ts);
   });
 
-  it('a point batch table over [connector] is what the batcher runs', () => {
+  it('a point grouping table over [connector] is what the engine runs', () => {
     const e = example('A spike between samples');
-    const config = configFor(e.protocol, e.signals, { group_by: 'time' });
-    config.device[0].point[0].batch = { aggregate: ['mean', 'min', 'max'], every: '10s' };
+    const config = configFor(e.protocol, e.signals, { by: 'time' });
+    config.device[0].point[0].grouping = { aggregate: ['mean', 'min', 'max'], every: '10s' };
     const r = simulate(e.signals, e.durationMs, config);
-    expect(r.measurements.some((m) => 'pressure_max' in m.series && !('temperature' in m.series))).toBe(true);
+    expect(r.measurements.some((m) => 'pressure_max' in m.fragments.Process && !('temperature' in m.fragments.Process))).toBe(true);
   });
 
-  it('writes the batch table', () => {
-    expect(batchToml(form({ group_by: 'frame', window: '100ms' }))).toBe('batch = { group_by = "frame", window = "100ms" }');
-    expect(batchToml(form({ group_by: 'sample', aggregate: 'mean_min_max' }))).toBe('batch = { aggregate = ["mean", "min", "max"], every = "1s" }');
+  it('a deprecated batch table runs as grouping, and the form reads it', () => {
+    const e = example('A spike between samples');
+    const config = configFor(e.protocol, e.signals, null);
+    config.device[0].point[0].batch = { group_by: 'sample', every: '10s', aggregate: ['mean', 'min', 'max'] };
+    const r = simulate(e.signals, e.durationMs, config);
+    expect(r.measurements.some((m) => 'pressure_max' in m.fragments.Process)).toBe(true);
+    expect(hasOwnGrouping(config)).toBe(true);
+    expect(formOfGrouping({ batch: { group_by: 'frame', window: '2s' } }, form({}))).toMatchObject({ by: 'frame', window: '2s' });
+    // The comparison strip drops it with the other tables.
+    expect(hasOwnGrouping(withGrouping(config, form({})))).toBe(false);
+  });
+
+  it('writes the grouping table and the connector settings', () => {
+    expect(groupingToml(form({ by: 'frame', window: '100ms' }))).toBe('grouping = { by = "frame", window = "100ms" }');
+    expect(groupingToml(form({ by: 'sample', aggregate: 'mean_min_max' }))).toBe('grouping = { aggregate = ["mean", "min", "max"], every = "1s" }');
+    const toml = connectorToml(form({}), 'Process', 'signal');
+    expect(toml).toContain('output = "group"');
+    expect(toml).toContain('measurement = { type = "Process" }');
+    expect(toml).not.toMatch(/batch|group_by|measurements/);
+    expect(parseToml(toml)).toBeTruthy();
+  });
+
+  it('a fragment per signal: one measurement per pass holds several fragments of one type', () => {
+    const one = run('Three polled points, filtered', {});
+    const per = run('Three polled points, filtered', {}, 'signal');
+    // The same messages, on the same topic: the fragments do not split them.
+    expect(per.measurements.length).toBe(one.measurements.length);
+    expect(per.measurements.every((m) => m.type === 'Process')).toBe(true);
+    const full = per.measurements.find((m) => m.has.every(Boolean))!;
+    expect(Object.keys(full.fragments)).toEqual(['temperature', 'setpoint', 'outdoor']);
+    expect(Object.keys(full.fragments.temperature)).toEqual(['value']);
+    expect(tedgeMeasurement(full)).toMatchObject({ time: expect.any(String), temperature: { value: expect.any(Number) } });
+    expect(c8yMeasurement(full, per)).toMatchObject({ type: 'Process', temperature: { value: { value: expect.any(Number), unit: '°C' } } });
+    // Every fragment of a measurement is a write of its own in Streaming Lake Ingestion.
+    expect(fragmentWrites(one)).toBe(one.measurements.length);
+    expect(fragmentWrites(per)).toBeGreaterThan(per.measurements.length);
+  });
+
+  it('reads and writes the fragment layout', () => {
+    const e = example('Three polled points, filtered');
+    const config = configFor(e.protocol, e.signals);
+    expect(layoutOf(config)).toBe('type');
+    const per = withLayout(config, 'signal');
+    expect(layoutOf(per)).toBe('signal');
+    expect(per.device[0].point[0].meta).toEqual({ measurement: { fragment: 'temperature', series: 'value' } });
+    expect(layoutOf(withLayout(per, 'type'))).toBe('type');
+    per.device[0].point[0].meta.measurement.series = 'T';
+    expect(layoutOf(per)).toBe('custom');
   });
 });
 
@@ -157,11 +214,12 @@ describe('signals and configuration', () => {
 
 describe('the tools keep up with the contract schema', async () => {
   const schema = (await import('../../doc/contract/schemas/config.schema.json')).default as any;
-  const { POLICIES, AGGREGATES } = await import('../src/lib/batching');
+  const { POLICIES, AGGREGATES, OUTPUTS } = await import('../src/lib/batching');
   const { REPORT_FIELDS } = await import('../src/lib/playground');
 
-  it('the batching playground and the config builder offer every batch.group_by and every aggregate', () => {
-    expect(POLICIES.map((p) => p.id).sort()).toEqual([...schema.$defs.batch.properties.group_by.enum].sort());
+  it('the grouping playground and the config builder offer every grouping.by, every aggregate and the current output names', () => {
+    expect(POLICIES.map((p) => p.id).sort()).toEqual([...schema.$defs.grouping.properties.by.enum].sort());
+    expect(OUTPUTS).toEqual(schema.properties.connector.properties.output.enum.filter((o: string) => o !== 'samples' && o !== 'measurements'));
     const offered = new Set(AGGREGATES.flatMap((a) => a.value ?? []));
     expect(schema.$defs.aggregate.enum.filter((a: string) => !offered.has(a)), 'aggregates the tools do not offer').toEqual([]);
   });

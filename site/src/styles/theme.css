@@ -48,7 +48,7 @@
   --td-chart-grid: #2a2860;
   --td-chart-window: rgb(106 168 255 / 0.1);
   --td-chart-outage: rgb(255 107 107 / 0.14);
-  /* One colour per measurement in the batching playground, cycled. */
+  /* One colour per measurement in the grouping playground, cycled. */
   --td-chart-msg-0: #c98200;
   --td-chart-msg-1: #3f86de;
   --td-chart-msg-2: #2fa37a;

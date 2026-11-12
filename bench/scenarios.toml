@@ -54,8 +54,8 @@ rates = [50000]
 
 [[scenario]]
 name = "polled-latency"
-description = "64 polled bench devices on separate endpoints, 20 ms per 500-point block, measurement output: bound by round trips unless devices are read concurrently (contract §5.6)"
-output = "measurements"
+description = "64 polled bench devices on separate endpoints, 20 ms per 500-point block, grouped output: bound by round trips unless devices are read concurrently (contract §5.6)"
+output = "group"
 devices = 64
 poll_interval = "1s"
 latency = "20ms"
@@ -64,9 +64,9 @@ rates = [64000]
 
 [[scenario]]
 name = "opcua-latency"
-description = "One OPC UA device with 20,000 polled nodes behind a 20 ms round trip (the simulator's --latency), measurement output: bound by round trips unless Reads are pipelined (contract §5.6)"
+description = "One OPC UA device with 20,000 polled nodes behind a 20 ms round trip (the simulator's --latency), grouped output: bound by round trips unless Reads are pipelined (contract §5.6)"
 module = "opcua"
-output = "measurements"
+output = "group"
 devices = 1
 points = 20000
 latency = "20ms"
@@ -80,13 +80,13 @@ devices = 1
 points = 20000
 rates = [20000, 100000]
 
-# Measurement output (contract §5.5): the runtime publishes batched thin-edge measurements, and
+# Grouped output (contract §5.5): the runtime publishes thin-edge measurements with many series each, and
 # samples only for points that flows read. Compare with the samples-* scenarios of the same shape.
 
 [[scenario]]
 name = "native-polled"
-description = "As samples-noflows, in measurement output: one measurement per device and poll pass"
-output = "measurements"
+description = "As samples-noflows, in grouped output: one measurement per device and poll pass"
+output = "group"
 devices = 100
 poll_interval = "1s"
 rates = [10000, 50000, 100000]
@@ -94,7 +94,7 @@ rates = [10000, 50000, 100000]
 [[scenario]]
 name = "native-flows"
 description = "As native-polled at 100k, with the ot-* flows installed and 1 % of points declaring an alarm"
-output = "measurements"
+output = "group"
 flows = true
 alarm_share = 0.01
 devices = 100
@@ -103,8 +103,8 @@ rates = [100000]
 
 [[scenario]]
 name = "native-push-jitter"
-description = "As samples-push-jitter (1 ms), in measurement output, once per grouping policy"
-output = "measurements"
+description = "As samples-push-jitter (1 ms), in grouped output, once per grouping policy"
+output = "group"
 push = true
 devices = 100
 points = 1000

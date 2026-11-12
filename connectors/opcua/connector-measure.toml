@@ -1,7 +1,8 @@
-# The `opcm` device of the OPC UA e2e harness, in measurement output (contract §5.5, openspec
-# change native-batched-output): the connector publishes the thin-edge measurements itself,
-# batched, and samples only for the points a flow reads. `output` is a connector setting, so the
-# device is its own connector instance (entrypoint.sh runs every connector-*.toml).
+# The `opcm` device of the OPC UA e2e harness, in grouped output (contract §5.5, openspec change
+# native-batched-output): the connector publishes the thin-edge measurements itself, several
+# series per message, and samples only for the points a flow reads. `output` is a connector
+# setting, so the device is its own connector instance (entrypoint.sh runs every
+# connector-*.toml).
 #
 #   temperature  polled, with a unit           -> a series of m/opcua, and the units metadata
 #   hot          polled, declares an alarm     -> a series, and a sample marked "measured" that
@@ -23,7 +24,7 @@ service_name  = "tedge-dot-measure"
 poll_interval = "1s"
 log_level     = "info"
 operation_timeout = "5s"
-output        = "measurements"
+output        = "group"
 
 [mqtt]
 host = "broker"
@@ -58,7 +59,7 @@ default_mode     = "typed"
   subscribe = false
   datatype  = "uint32"
   address   = { node_id = "ns=2;s=Count" }
-  meta      = { measurement = { group = "Plant", series = "Count" } }
+  meta      = { measurement = { type = "Plant", series = "Count" } }
 
   [[device.point]]
   id        = "stamped"
@@ -71,7 +72,7 @@ name              = "opcf"
 protocol_address  = { endpoint = "opc.tcp://load-simulator:4840/" }
 default_mode      = "typed"
 sampling_interval = "1s"
-batch             = { group_by = "frame", window = "500ms" }
+grouping          = { by = "frame", window = "500ms" }
 
   [[device.point]]
   id       = "burst"
@@ -88,7 +89,7 @@ name             = "opca"
 protocol_address = { endpoint = "opc.tcp://simulator:4840/", security_policy = "None", security_mode = "none" }
 default_mode     = "typed"
 poll_interval    = "200ms"
-batch            = { aggregate = ["mean", "max"], every = "2s" }
+grouping         = { aggregate = ["mean", "max"], every = "2s" }
 
   [[device.point]]
   id        = "ticks"

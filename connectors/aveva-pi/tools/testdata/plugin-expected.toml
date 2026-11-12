@@ -4,7 +4,7 @@
 protocol      = "aveva-pi"
 service_name  = "tedge-dot-aveva-pi"
 poll_interval = "30s"
-output        = "measurements"
+output        = "group"
 
 [connection]
 auth = { method = "basic", username = "CORP\\pi-reader", password_file = "/etc/tedge/plugins/ot/secrets/aveva-pi.password" }

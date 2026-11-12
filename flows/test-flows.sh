@@ -141,7 +141,7 @@ check_multi() {
 S='{"ts":"2026-05-30T10:00:00.000Z","device":"plc1","protocol":"modbus","point":"level_f32","mode":"typed","datatype":"float32","value":404.17,"value_repr":"number","raw":"43ca 15c3","quality":"good","addr":{}}'
 SBAD='{"ts":"2026-05-30T10:00:00.000Z","device":"plc1","protocol":"modbus","point":"level_f32","mode":"typed","datatype":"float32","quality":"bad","error":"timeout","addr":{}}'
 SBOOL='{"ts":"2026-05-30T10:00:00.000Z","device":"plc1","protocol":"modbus","point":"coil_rw","mode":"typed","datatype":"bool","value":true,"value_repr":"boolean","raw":"01","quality":"good","addr":{}}'
-# Same contract envelope from a different protocol: the group is derived from sample.protocol.
+# Same contract envelope from a different protocol: the type is derived from sample.protocol.
 SOPCUA='{"ts":"2026-05-30T10:00:00.000Z","device":"opc1","protocol":"opcua","point":"temperature","mode":"typed","datatype":"float32","value":21.5,"value_repr":"number","raw":"41ac0000","quality":"good","addr":{"node_id":"ns=2;s=Temperature"}}'
 
 # --- ot-measurement (OT sample -> thin-edge measurement) ---
@@ -197,7 +197,7 @@ else
   echo "       got: $uout"
   fail=$((fail + 1))
 fi
-check "units: two series of one group share one message" ot-measurement \
+check "units: two series of one type share one message" ot-measurement \
   "$(printf '[te/device/plc1/ot/modbus/sample/a] %s\n[te/device/plc1/ot/modbus/sample/b] %s' "$UA" "$UB")" \
   '[te/device/plc1///m/power/meta] {"power.a":{"unit":"V"},"power.b":{"unit":"A"}}'
 check_empty "units: an opted-out point publishes nothing" ot-measurement \
@@ -239,9 +239,9 @@ check_params "measurement: passes connector-scaled value through" ot-measurement
   "[te/device/plc1/ot/modbus/sample/temp_u16] $SINT" \
   '[te/device/plc1///m/modbus] {"modbus":{"temp_u16":17001},"time":"2026-05-30T10:00:00.000Z"}'
 
-# point_separator: a dotted point id remaps the signal to group/series without per-point config.
+# point_separator: a dotted point id remaps the signal to type/fragment/series without per-point config.
 SDOTTED='{"ts":"2026-05-30T10:00:00.000Z","device":"plc1","protocol":"modbus","point":"Environment.Temperature","mode":"typed","datatype":"uint16","value":17001,"value_repr":"number","raw":"4269","quality":"good","addr":{}}'
-check_params "measurement: point_separator remaps signal to group.series" ot-measurement \
+check_params "measurement: point_separator remaps signal to type.series" ot-measurement \
   'point_separator = "."' \
   "[te/device/plc1/ot/modbus/sample/Environment.Temperature] $SDOTTED" \
   '[te/device/plc1///m/Environment] {"Environment":{"Temperature":17001},"time":"2026-05-30T10:00:00.000Z"}'
@@ -292,10 +292,10 @@ check_absent "measurement: meta.debounce waits for stability" ot-measurement \
   "$(printf '[te/device/plc1/ot/modbus/sample/b1] %s\n[te/device/plc1/ot/modbus/sample/b1] %s\n[te/device/plc1/ot/modbus/sample/b1] %s' "$DE1" "$DE2" "$DE3")" \
   '"time":"2026-05-30T10:00:03.000Z"' '"time":"2026-05-30T10:00:04.000Z"'
 
-# meta.measurement: per-signal group/series naming echoed from the connector point config
+# meta.measurement: per-signal naming echoed from the connector point config
 # (e.g. written by the Cloud Fieldbus import shim from a device type's measurementMapping).
 MMEAS='{"ts":"2026-05-30T10:00:00.000Z","device":"plc1","protocol":"modbus","point":"temperature","mode":"typed","datatype":"uint16","value":17.001,"value_repr":"number","raw":"4269","quality":"good","addr":{},"meta":{"measurement":{"group":"Environment","series":"Temperature"}}}'
-check "measurement: meta.measurement names group/series" ot-measurement \
+check "measurement: the deprecated meta.measurement.group names type and fragment" ot-measurement \
   "[te/device/plc1/ot/modbus/sample/temperature] $MMEAS" \
   '[te/device/plc1///m/Environment] {"Environment":{"Temperature":17.001},"time":"2026-05-30T10:00:00.000Z"}'
 
@@ -312,6 +312,42 @@ else
   echo "       got: $mmout"
   fail=$((fail + 1))
 fi
+
+# Type and fragment: the type names the topic (the Cumulocity type), the fragment the body key.
+MTF='{"ts":"2026-05-30T10:00:00.000Z","device":"plc1","protocol":"modbus","point":"bat","mode":"typed","datatype":"uint16","value":85,"value_repr":"number","raw":"0055","quality":"good","addr":{},"meta":{"measurement":{"type":"c8y_CombinedSensorReading","fragment":"c8y_Battery","series":"level"}}}'
+check "measurement: meta.measurement names type, fragment and series" ot-measurement \
+  "[te/device/plc1/ot/modbus/sample/bat] $MTF" \
+  '[te/device/plc1///m/c8y_CombinedSensorReading] {"c8y_Battery":{"level":85},"time":"2026-05-30T10:00:00.000Z"}'
+check_params "measurement: the fragment defaults to the type" ot-measurement \
+  'type = "c8y_Sensor"' \
+  "[te/device/plc1/ot/modbus/sample/temp_u16] $SINT" \
+  '[te/device/plc1///m/c8y_Sensor] {"c8y_Sensor":{"temp_u16":17001},"time":"2026-05-30T10:00:00.000Z"}'
+check_params "measurement: a fragment param keeps the protocol as the type" ot-measurement \
+  'fragment = "c8y_Level"' \
+  "[te/device/plc1/ot/modbus/sample/temp_u16] $SINT" \
+  '[te/device/plc1///m/modbus] {"c8y_Level":{"temp_u16":17001},"time":"2026-05-30T10:00:00.000Z"}'
+# With a type set, the point_separator prefix names the fragment only.
+SBATDOT='{"ts":"2026-05-30T10:00:00.000Z","device":"plc1","protocol":"modbus","point":"c8y_Battery.level","mode":"typed","datatype":"uint16","value":85,"value_repr":"number","raw":"0055","quality":"good","addr":{}}'
+check_params "measurement: point_separator names the fragment under a type" ot-measurement \
+  "$(printf 'type = "Combined"\npoint_separator = "."')" \
+  "[te/device/plc1/ot/modbus/sample/c8y_Battery.level] $SBATDOT" \
+  '[te/device/plc1///m/Combined] {"c8y_Battery":{"level":85},"time":"2026-05-30T10:00:00.000Z"}'
+# group is the deprecated name of type + fragment: the output is what it was.
+check_params "measurement: the group param still sets type and fragment" ot-measurement \
+  'group = "Environment"' \
+  "[te/device/plc1/ot/modbus/sample/temp_u16] $SINT" \
+  '[te/device/plc1///m/Environment] {"Environment":{"temp_u16":17001},"time":"2026-05-30T10:00:00.000Z"}'
+# A point's meta.measurement.group wins over a flow-wide type, as a point-level group always did.
+check_params "measurement: meta.measurement.group wins over the type param" ot-measurement \
+  'type = "c8y_Sensor"' \
+  "[te/device/plc1/ot/modbus/sample/temperature] $MMEAS" \
+  '[te/device/plc1///m/Environment] {"Environment":{"Temperature":17.001},"time":"2026-05-30T10:00:00.000Z"}'
+# Units of several fragments on one topic: one metadata message keyed <fragment>.<series>.
+UTA="$(unit_sample t '°C' 23.4 '"meta":{"measurement":{"type":"c8y_Combined","fragment":"c8y_Environmental","series":"temperature"}}')"
+UTB="$(unit_sample b '%' 85 '"meta":{"measurement":{"type":"c8y_Combined","fragment":"c8y_Battery","series":"level"}}' 1)"
+check "units: two fragments of one type share one message" ot-measurement \
+  "$(printf '[te/device/plc1/ot/modbus/sample/t] %s\n[te/device/plc1/ot/modbus/sample/b] %s' "$UTA" "$UTB")" \
+  '[te/device/plc1///m/c8y_Combined/meta] {"c8y_Battery.level":{"unit":"%"},"c8y_Environmental.temperature":{"unit":"°C"}}'
 
 # meta.measurement = false: the signal stays off the measurements entirely — a parameter whose
 # value belongs on its twin fragment only. Without it (the default), a parameter is published both
@@ -355,6 +391,14 @@ check_params "measurement: combine merges series on interval" ot-measurement \
   "$(printf 'combine = "true"\ncombine_interval = "1s"')" \
   "$(printf '[te/device/plc1/ot/modbus/sample/temp_u16] %s\n[te/device/plc1/ot/modbus/sample/level_f32] %s' "$SINT" "$SLVL")" \
   '[te/device/plc1///m/modbus] {"modbus":{"level_f32":404.17,"temp_u16":17001}' \
+  --final-on-interval
+# ...and two fragments of one type go into one message, one entry per fragment.
+CTEMP='{"ts":"2026-05-30T10:00:00.000Z","device":"plc1","protocol":"modbus","point":"t","mode":"typed","datatype":"float32","value":23.4,"value_repr":"number","raw":"00","quality":"good","addr":{},"meta":{"measurement":{"fragment":"c8y_Environmental","series":"temperature"}}}'
+CBAT='{"ts":"2026-05-30T10:00:00.000Z","device":"plc1","protocol":"modbus","point":"b","mode":"typed","datatype":"uint16","value":85,"value_repr":"number","raw":"0055","quality":"good","addr":{},"meta":{"measurement":{"fragment":"c8y_Battery","series":"level"}}}'
+check_params "measurement: combine merges two fragments of one type" ot-measurement \
+  "$(printf 'combine = "true"\ncombine_interval = "1s"\ntype = "c8y_CombinedSensorReading"')" \
+  "$(printf '[te/device/plc1/ot/modbus/sample/t] %s\n[te/device/plc1/ot/modbus/sample/b] %s' "$CTEMP" "$CBAT")" \
+  '[te/device/plc1///m/c8y_CombinedSensorReading] {"c8y_Battery":{"level":85},"c8y_Environmental":{"temperature":23.4},"time":"2026-05-30T10:00:00.000Z"}' \
   --final-on-interval
 # ...and an opted-out signal never reaches the combine buffer, so the flush leaves it out.
 check_params "measurement: combine leaves an opted-out signal out" ot-measurement \

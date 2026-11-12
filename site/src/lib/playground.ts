@@ -1,6 +1,6 @@
 // Simulation behind the playgrounds: generate a point's readings (polled, or pushed by the
 // source on change), run each through the SDK's reporting policy (src/lib/report.ts), and keep
-// what it publishes. The batching playground (src/lib/batching.ts) takes those samples from here.
+// what it publishes. The grouping playground (src/lib/batching.ts) takes those samples from here.
 
 import { changed, parseDuration, policyFromTable, ReportState, type Obs, type Quality, type ReportTable } from './report';
 

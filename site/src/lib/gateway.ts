@@ -6,7 +6,8 @@
 // The configuration is the plain object TOML parses to, so the batcher (src/lib/batch.ts) runs
 // on exactly the config the builder shows.
 
-import { batchTable, type BatchForm } from './batching';
+import { groupingTable, type GroupingForm } from './batching';
+import { groupingOf } from './batch';
 import { parseToml, protocolInfo, type Config } from './config-builder';
 import { SIGNALS, type Outage, type SignalId, type SignalSpec } from './playground';
 import type { ReportTable } from './report';
@@ -47,16 +48,16 @@ export function pointFor(protocol: string, signal: SimSignal, index: number, ext
 }
 
 /** A whole configuration for the signals: one device, a point per signal. */
-export function configFor(protocol: string, signals: SignalSpec[], batch: Record<string, unknown> | null = { group_by: 'time' }): Config {
+export function configFor(protocol: string, signals: SignalSpec[], grouping: Record<string, unknown> | null = { by: 'time' }): Config {
   const device = structuredClone(protocolInfo(protocol).newDevice);
   return {
     connector: {
       protocol,
       service_name: `tedge-dot-${protocol}`,
       poll_interval: '1s',
-      output: 'measurements',
-      measurement: { group: 'Process' },
-      ...(batch ? { batch } : {}),
+      output: 'group',
+      measurement: { type: 'Process' },
+      ...(grouping ? { grouping } : {}),
     },
     mqtt: { host: '127.0.0.1', port: 1883 },
     device: [
@@ -239,38 +240,45 @@ export function resolve(config: Config, sims: SimSignal[]): Resolved {
   return { specs, unread, orphans, origins };
 }
 
-/** The configuration with one `batch` policy for every point (the comparison strip's rows). */
-export function withBatch(config: Config, form: BatchForm): Config {
+/**
+ * The configuration with one `grouping` policy for every point (the comparison strip's rows).
+ * A deprecated `batch` table anywhere is dropped with the others.
+ */
+export function withGrouping(config: Config, form: GroupingForm): Config {
   const strip = (o: Config) => {
-    const { batch: _, ...rest } = o;
+    const { batch: _, grouping: __, ...rest } = o;
     return rest;
   };
   return {
     ...config,
-    connector: { ...(config.connector ?? {}), batch: batchTable(form) },
+    connector: { ...strip(config.connector ?? {}), grouping: groupingTable(form) },
     device: ((config.device ?? []) as Config[]).map((d) => ({ ...strip(d), point: ((d.point ?? []) as Config[]).map(strip) })),
   };
 }
 
-/** The batch form a `[connector] batch` table stands for; `memory` fills durations it lacks. */
-export function formOfBatch(table: Config | undefined, memory: BatchForm): BatchForm {
-  const t = table ?? {};
+/**
+ * The grouping form a `[connector] grouping` table stands for (or a deprecated `batch`, with
+ * `group_by`); `memory` fills durations it lacks.
+ */
+export function formOfGrouping(connector: Config | undefined, memory: GroupingForm): GroupingForm {
+  const t: Config = groupingOf(connector) ?? {};
   const aggregate = t.aggregate;
   const id =
     aggregate === undefined ? 'none' : typeof aggregate === 'string' ? aggregate : aggregate.length === 3 ? 'mean_min_max' : 'all';
-  const group_by = t.group_by ?? (aggregate !== undefined ? 'sample' : 'time');
+  const by = t.by ?? (aggregate !== undefined ? 'sample' : 'time');
   return {
-    group_by: ['time', 'frame', 'sample'].includes(group_by) ? group_by : 'time',
+    by: ['time', 'frame', 'sample'].includes(by) ? by : 'time',
     window: typeof t.window === 'string' ? t.window : memory.window,
     every: typeof t.every === 'string' ? t.every : memory.every,
-    aggregate: group_by === 'sample' ? id : memory.aggregate,
+    aggregate: by === 'sample' ? id : memory.aggregate,
   };
 }
 
-/** Whether any device or point sets its own `batch` table over `[connector]`'s. */
-export function hasOwnBatch(config: Config): boolean {
+/** Whether any device or point sets its own `grouping` (or deprecated `batch`) over `[connector]`'s. */
+export function hasOwnGrouping(config: Config): boolean {
   config = expandLibraries(config);
-  return ((config.device ?? []) as Config[]).some((d) => d.batch || ((d.point ?? []) as Config[]).some((p) => p.batch));
+  const own = (o: Config) => o.grouping !== undefined || o.batch !== undefined;
+  return ((config.device ?? []) as Config[]).some((d) => own(d) || ((d.point ?? []) as Config[]).some(own));
 }
 
 /** The package-picker answers a configuration settles: its protocol and the features it uses. */

@@ -34,9 +34,9 @@ every connector speaks the same [OT Connector Contract](/tedge-dot/reference/con
 the same flows work for every protocol.
 
 For many points at a high rate, a connector can publish the measurements itself, hundreds of
-readings per message (`output = "measurements"`), and keep samples only for the points that a
-flow still reads. It reads its devices in parallel, within a per-endpoint budget of requests in
-flight. See [measurement output](/tedge-dot/reference/configuration/measurement-output/) and
+readings per message (`output = "group"`), and keep samples only for the points that a flow
+still reads. It reads its devices in parallel, within a per-endpoint budget of requests in
+flight. See [grouped output](/tedge-dot/reference/configuration/measurement-output/) and
 [concurrent reads](/tedge-dot/reference/configuration/concurrent-reads/).
 
 Writes never open a second protocol session. A write, or an edit in the Cumulocity

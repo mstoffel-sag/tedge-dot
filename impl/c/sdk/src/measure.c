@@ -1,4 +1,4 @@
-/* Measurement output (contract §5.5): the point tables and the batcher. See
+/* Grouped output (contract §5.5): the point tables and the batcher. See
  * tedge_dot/measure.h; the same rules as impl/rust/crates/sdk/src/measure.rs,
  * checked against the same vectors. */
 #include <math.h>
@@ -11,9 +11,11 @@
 #include "tedge_dot/connector.h"
 #include "tedge_dot/measure.h"
 
-/* `{"time":"2026-01-01T00:00:00.000Z",` + `:{` + `}}`, around the group name
- * and the series. */
-#define FRAME_BYTES (9 + 24 + 2 + 2 + 2)
+/* `{"time":"2026-01-01T00:00:00.000Z",` + the closing `}`, around the
+ * fragments. */
+#define FRAME_BYTES (9 + 24 + 2 + 1)
+/* `:{` + `}` around one fragment's series, after its quoted name. */
+#define FRAGMENT_BYTES 3
 
 /* A frame holds at most this many layers; a reading that would open one more
  * publishes them and starts a new frame in the same window. */
@@ -44,23 +46,27 @@ static bool buf_put(buf_t *b, const char *s, size_t n) {
 static bool buf_str(buf_t *b, const char *s) { return buf_put(b, s, strlen(s)); }
 
 typedef struct {
-    char *topic;      /* te/device/<device>///m/<group> */
-    char *group;      /* as resolved, to find the topic of a group */
-    char *group_json; /* "<group>", escaped and quoted */
-    char *units;      /* the retained units message; "" when no series has a unit */
+    char *topic; /* te/device/<device>///m/<type> */
+    char *type;  /* as resolved, to find the topic of a type */
+    /* "<fragment>", escaped and quoted, in the order their first point is
+     * configured. */
+    char **fragments;
+    size_t nfragments;
+    char *units; /* the retained units message; "" when no series has a unit */
     bool units_settled;
     long time_slot; /* the slot of the topic's `time` message, -1 when none */
 } mtopic_t;
 
 typedef struct {
     size_t topic;
+    size_t fragment;  /* index into the topic's fragments */
     size_t slot;      /* the open message it goes into: one per topic and policy */
     char *series_key; /* "<series>": escaped and quoted, with the colon */
     bool measurable, sample;
     tdot_group_by_t group_by;
     bool has_value; /* the sample slot: the good value held */
     double value;
-    /* Under "sample" with batch.aggregate: each aggregate and its series key
+    /* Under "sample" with grouping.aggregate: each aggregate and its series key
      * ("<series>": or "<series>_<aggregate>":); naggs 0 otherwise. */
     size_t naggs;
     tdot_aggregate_t aggs[TDOT_MAX_AGGREGATES];
@@ -77,15 +83,77 @@ typedef struct {
     unsigned char depth;
 } mpoint_t;
 
+/* The series of a message not yet published, per fragment of its topic. */
+typedef struct {
+    buf_t *parts; /* per fragment, "a":1,"b":2 without the braces; empty when none */
+    size_t nparts;
+    size_t len;       /* the length of the message text; meaningless while n is 0 */
+    size_t fragments; /* the fragments holding a series */
+    size_t n;         /* the series */
+} mbody_t;
+
 /* One message being filled: the open `time` message, or a layer of a frame. */
 typedef struct {
     double time_ms;     /* the layer's time */
     long long time_key; /* time_ms at the contract's millisecond precision */
-    buf_t body;         /* "a":1,"b":2 without the braces: the part not yet published */
-    size_t n;           /* the series in body */
+    mbody_t body;       /* the part not yet published */
     size_t *points;     /* every point in the layer, parts published by a split included */
     size_t npoints, cap;
 } mlayer_t;
+
+/* The text length after adding a `piece` long series to fragment `f`, whose
+ * quoted name is `name_len` bytes long. As Body::len_with in measure.rs. */
+static size_t body_len_with(const mbody_t *b, size_t f, size_t name_len, size_t piece) {
+    size_t base = b->n == 0 ? FRAME_BYTES : b->len;
+    if (f >= b->nparts || b->parts[f].len == 0)
+        return base + (b->fragments > 0 ? 1 : 0) + name_len + FRAGMENT_BYTES + piece;
+    return base + 1 + piece;
+}
+
+/* The estimated Cumulocity size after adding that series (§5.5). */
+static size_t body_estimate_with(const mbody_t *b, size_t f, size_t name_len, size_t piece) {
+    return body_len_with(b, f, name_len, piece) + TDOT_SERIES_OVERHEAD * (b->n + 1);
+}
+
+static bool body_push(mbody_t *b, size_t f, size_t name_len, const char *piece, size_t len) {
+    if (f >= b->nparts) {
+        buf_t *grown = realloc(b->parts, (f + 1) * sizeof *grown);
+        if (!grown)
+            return false;
+        memset(grown + b->nparts, 0, (f + 1 - b->nparts) * sizeof *grown);
+        b->parts = grown;
+        b->nparts = f + 1;
+    }
+    size_t total = body_len_with(b, f, name_len, len);
+    buf_t *part = &b->parts[f];
+    bool first = part->len == 0;
+    if ((!first && !buf_put(part, ",", 1)) || !buf_put(part, piece, len))
+        return false;
+    if (first)
+        b->fragments++;
+    b->len = total;
+    b->n++;
+    return true;
+}
+
+static void body_clear(mbody_t *b) {
+    for (size_t f = 0; f < b->nparts; f++) {
+        b->parts[f].len = 0;
+        if (b->parts[f].s)
+            b->parts[f].s[0] = '\0';
+    }
+    b->len = 0;
+    b->fragments = 0;
+    b->n = 0;
+}
+
+static void body_free(mbody_t *b) {
+    for (size_t f = 0; f < b->nparts; f++)
+        free(b->parts[f].s);
+    free(b->parts);
+    b->parts = NULL;
+    b->nparts = 0;
+}
 
 typedef struct {
     bool used; /* a message is open */
@@ -233,9 +301,8 @@ static char *quoted(const char *s) {
 
 /* ---- the plan of each point -------------------------------------------------- */
 
-/* A non-empty string `meta.measurement.<key>`, or NULL. */
-static const char *named(const cJSON *meta, const char *key) {
-    const cJSON *m = cJSON_GetObjectItemCaseSensitive(meta, "measurement");
+/* A non-empty string `<key>` of a `measurement` object, or NULL. */
+static const char *named(const cJSON *m, const char *key) {
     const cJSON *v = cJSON_IsObject(m) ? cJSON_GetObjectItemCaseSensitive(m, key) : NULL;
     return cJSON_IsString(v) && v->valuestring[0] ? v->valuestring : NULL;
 }
@@ -257,34 +324,63 @@ bool tdot_publishes_sample(const tdot_point_t *pt) {
     return yes;
 }
 
-/* A point's group and series, in ot-measurement's order: meta.measurement,
- * then the connector's group/series, then a split of the point id at the
- * separator, then the protocol and the point id. Caller frees both. */
-static void resolve_naming(const tdot_config_t *cfg, const tdot_point_t *pt,
-                           const cJSON *meta, char **group, char **series) {
-    const char *g = named(meta, "group");
-    const char *s = named(meta, "series");
-    if (!g && cfg->measurement_group && cfg->measurement_group[0])
-        g = cfg->measurement_group;
-    if (!s && cfg->measurement_series && cfg->measurement_series[0])
-        s = cfg->measurement_series;
-    *group = g ? strdup(g) : NULL;
-    *series = s ? strdup(s) : NULL;
+/* The names one level gives a series, borrowed (see tdot_naming_t). */
+typedef struct {
+    const char *type, *fragment, *series;
+} level_t;
+
+/* The level of a point's meta.measurement: `group` names the type and the
+ * fragment it does not name itself. */
+static level_t meta_level(const cJSON *meta) {
+    const cJSON *m = cJSON_GetObjectItemCaseSensitive(meta, "measurement");
+    const char *group = named(m, "group");
+    level_t l = {named(m, "type"), named(m, "fragment"), named(m, "series")};
+    if (!l.type)
+        l.type = group;
+    if (!l.fragment)
+        l.fragment = group;
+    return l;
+}
+
+static level_t naming_level(const tdot_naming_t *n) {
+    return (level_t){n->type, n->fragment, n->series};
+}
+
+/* A point's type, fragment and series, in ot-measurement's order, key by key:
+ * the point's meta.measurement, the device's `measurement`, [connector]
+ * measurement, then a split of the point id at the separator (the prefix for
+ * the type and the fragment, the suffix for the series), then the protocol for
+ * the type, the type for the fragment and the point id for the series. As
+ * Naming::resolve in measure.rs. Caller frees all three. */
+static void resolve_naming(const tdot_config_t *cfg, const tdot_device_t *dev,
+                           const tdot_point_t *pt, const cJSON *meta, char **type,
+                           char **fragment, char **series) {
+    level_t levels[3] = {meta_level(meta), naming_level(&dev->measurement),
+                         naming_level(&cfg->measurement)};
+    const char *t = NULL, *f = NULL, *s = NULL;
+    for (size_t i = 0; i < 3; i++) {
+        if (!t)
+            t = levels[i].type;
+        if (!f)
+            f = levels[i].fragment;
+        if (!s)
+            s = levels[i].series;
+    }
+    char *prefix = NULL;
+    const char *suffix = NULL;
     const char *sep = cfg->measurement_separator;
-    if (sep && sep[0] && (!*group || !*series)) {
+    if (sep && sep[0]) {
         const char *at = strstr(pt->id, sep);
         size_t len = strlen(pt->id), seplen = strlen(sep);
         if (at && at > pt->id && (size_t)(at - pt->id) + seplen < len) {
-            if (!*group)
-                *group = strndup(pt->id, (size_t)(at - pt->id));
-            if (!*series)
-                *series = strdup(at + seplen);
+            prefix = strndup(pt->id, (size_t)(at - pt->id));
+            suffix = at + seplen;
         }
     }
-    if (!*group)
-        *group = strdup(cfg->protocol);
-    if (!*series)
-        *series = strdup(pt->id);
+    *type = strdup(t ? t : prefix ? prefix : cfg->protocol);
+    *fragment = strdup(f ? f : prefix ? prefix : *type);
+    *series = strdup(s ? s : suffix ? suffix : pt->id);
+    free(prefix);
 }
 
 typedef struct {
@@ -297,9 +393,9 @@ static int by_key(const void *a, const void *b) {
 }
 
 /* The retained units message of topic `t`: every measurable point of it with a
- * unit, by "<group>.<series>" in byte order. "" when there is none. */
+ * unit, by "<fragment>.<series>" in byte order. "" when there is none. */
 static char *units_of(const tdot_device_t *dev, const mdevice_t *md, size_t t,
-                      char *const *series) {
+                      char *const *fragments, char *const *series) {
     unit_t *units = calloc(dev->npoints ? dev->npoints * TDOT_MAX_AGGREGATES : 1, sizeof *units);
     size_t n = 0;
     for (size_t k = 0; units && k < dev->npoints; k++) {
@@ -307,7 +403,7 @@ static char *units_of(const tdot_device_t *dev, const mdevice_t *md, size_t t,
         const mpoint_t *p = &md->points[k];
         if (p->topic != t || !p->measurable || !pt->unit || !pt->unit[0])
             continue;
-        const char *group = md->topics[t].group;
+        const char *group = fragments[k];
         bool suffixed = p->naggs > 0 && pt->aggregate_suffixed;
         for (size_t a = 0; a < (suffixed ? p->naggs : 1); a++) {
             const char *agg = suffixed ? tdot_aggregate_name(p->aggs[a]) : NULL;
@@ -347,8 +443,10 @@ static bool build_device(mdevice_t *md, const tdot_config_t *cfg, const tdot_dev
     md->open = calloc(dev->npoints ? dev->npoints : 1, sizeof *md->open);
     md->samplers = calloc(dev->npoints ? dev->npoints : 1, sizeof *md->samplers);
     char **series = calloc(dev->npoints ? dev->npoints : 1, sizeof *series);
-    if (!md->points || !md->topics || !md->open || !md->samplers || !series) {
+    char **fragments = calloc(dev->npoints ? dev->npoints : 1, sizeof *fragments);
+    if (!md->points || !md->topics || !md->open || !md->samplers || !series || !fragments) {
         free(series);
+        free(fragments);
         return false;
     }
     md->npoints = dev->npoints;
@@ -356,23 +454,46 @@ static bool build_device(mdevice_t *md, const tdot_config_t *cfg, const tdot_dev
         const tdot_point_t *pt = &dev->points[k];
         mpoint_t *p = &md->points[k];
         cJSON *meta = pt->meta_json ? cJSON_Parse(pt->meta_json) : NULL;
-        char *group;
-        resolve_naming(cfg, pt, meta, &group, &series[k]);
+        char *type;
+        resolve_naming(cfg, dev, pt, meta, &type, &fragments[k], &series[k]);
         size_t t = 0;
-        while (t < md->ntopics && strcmp(md->topics[t].group, group) != 0)
+        while (t < md->ntopics && strcmp(md->topics[t].type, type) != 0)
             t++;
         if (t == md->ntopics) {
             mtopic_t *topic = &md->topics[md->ntopics++];
-            size_t len = strlen(dev->name) + strlen(group) + 20;
+            size_t len = strlen(dev->name) + strlen(type) + 20;
             topic->topic = malloc(len);
-            snprintf(topic->topic, len, "te/device/%s///m/%s", dev->name, group);
-            topic->group = group;
-            topic->group_json = quoted(group);
+            snprintf(topic->topic, len, "te/device/%s///m/%s", dev->name, type);
+            topic->type = type;
             topic->time_slot = -1;
         } else {
-            free(group);
+            free(type);
         }
         p->topic = t;
+        mtopic_t *topic = &md->topics[t];
+        char *fq = quoted(fragments[k]);
+        size_t f = 0;
+        while (f < topic->nfragments && strcmp(topic->fragments[f], fq) != 0)
+            f++;
+        if (f == topic->nfragments) {
+            char **grown = realloc(topic->fragments, (f + 1) * sizeof *grown);
+            if (!grown) {
+                free(fq);
+                cJSON_Delete(meta);
+                for (size_t i = 0; i <= k; i++) {
+                    free(series[i]);
+                    free(fragments[i]);
+                }
+                free(series);
+                free(fragments);
+                return false;
+            }
+            topic->fragments = grown;
+            topic->fragments[topic->nfragments++] = fq;
+        } else {
+            free(fq);
+        }
+        p->fragment = f;
         char *q = quoted(series[k]);
         size_t len = strlen(q) + 2;
         p->series_key = malloc(len);
@@ -435,10 +556,13 @@ static bool build_device(mdevice_t *md, const tdot_config_t *cfg, const tdot_dev
         cJSON_Delete(meta);
     }
     for (size_t t = 0; t < md->ntopics; t++)
-        md->topics[t].units = units_of(dev, md, t, series);
-    for (size_t k = 0; k < dev->npoints; k++)
+        md->topics[t].units = units_of(dev, md, t, fragments, series);
+    for (size_t k = 0; k < dev->npoints; k++) {
         free(series[k]);
+        free(fragments[k]);
+    }
     free(series);
+    free(fragments);
     return true;
 }
 
@@ -483,13 +607,15 @@ void tdot_batcher_free(tdot_batcher_t *b) {
         }
         for (size_t t = 0; t < md->ntopics; t++) {
             free(md->topics[t].topic);
-            free(md->topics[t].group);
-            free(md->topics[t].group_json);
+            free(md->topics[t].type);
+            for (size_t f = 0; f < md->topics[t].nfragments; f++)
+                free(md->topics[t].fragments[f]);
+            free(md->topics[t].fragments);
             free(md->topics[t].units);
         }
         for (size_t i = 0; md->open && i < md->nslots; i++) {
             for (size_t l = 0; l < md->open[i].cap_layers; l++) {
-                free(md->open[i].layers[l].body.s);
+                body_free(&md->open[i].layers[l].body);
                 free(md->open[i].layers[l].points);
             }
             free(md->open[i].layers);
@@ -539,16 +665,25 @@ static void settle_units(tdot_batcher_t *b, mtopic_t *topic, tdot_measure_out_fn
     out(ctx, meta, topic->units, true);
 }
 
-/* Publish `body` (the series, without braces) on topic `t` with `time_ms`. */
+/* Publish `body` on `topic` with `time_ms`:
+ * {"time":"<time>","<fragment>":{<series>},...}, the fragments in the topic's
+ * order. As Body::render in measure.rs. */
 static void publish_body(tdot_batcher_t *b, mtopic_t *topic, double time_ms,
-                         const char *body, size_t len, tdot_measure_out_fn out, void *ctx) {
+                         const mbody_t *body, tdot_measure_out_fn out, void *ctx) {
     settle_units(b, topic, out, ctx);
     char time[40];
     tdot_format_rfc3339_ms(time_ms, time, sizeof time);
     buf_t msg = {0};
-    if (buf_str(&msg, "{\"time\":\"") && buf_str(&msg, time) && buf_str(&msg, "\",") &&
-        buf_str(&msg, topic->group_json) && buf_str(&msg, ":{") && buf_put(&msg, body, len) &&
-        buf_str(&msg, "}}"))
+    bool ok = buf_str(&msg, "{\"time\":\"") && buf_str(&msg, time) && buf_str(&msg, "\"");
+    for (size_t f = 0; ok && f < topic->nfragments && f < body->nparts; f++) {
+        const buf_t *part = &body->parts[f];
+        if (part->len == 0)
+            continue;
+        ok = buf_put(&msg, ",", 1) && buf_str(&msg, topic->fragments[f]) &&
+             buf_put(&msg, ":{", 2) && buf_put(&msg, part->s, part->len) &&
+             buf_put(&msg, "}", 1);
+    }
+    if (ok && buf_put(&msg, "}", 1))
         out(ctx, topic->topic, msg.s, false);
     free(msg.s);
 }
@@ -567,10 +702,7 @@ static mlayer_t *open_layer(mopen_t *o, double time_ms, long long time_key) {
     mlayer_t *l = &o->layers[o->nlayers++];
     l->time_ms = time_ms;
     l->time_key = time_key;
-    l->body.len = 0;
-    if (l->body.s)
-        l->body.s[0] = '\0';
-    l->n = 0;
+    body_clear(&l->body);
     l->npoints = 0;
     return l;
 }
@@ -583,9 +715,8 @@ static void close_open(tdot_batcher_t *b, mdevice_t *md, mopen_t *o, tdot_measur
         mlayer_t *l = &o->layers[i];
         for (size_t j = 0; j < l->npoints; j++)
             md->points[l->points[j]].depth = 0;
-        if (l->n > 0)
-            publish_body(b, &md->topics[o->topic], l->time_ms, l->body.s ? l->body.s : "",
-                         l->body.len, out, ctx);
+        if (l->body.n > 0)
+            publish_body(b, &md->topics[o->topic], l->time_ms, &l->body, out, ctx);
     }
     o->nlayers = 0;
 }
@@ -680,16 +811,13 @@ static void add(tdot_batcher_t *b, mdevice_t *md, size_t k, double ts_ms, double
     }
     memcpy(text, p->series_key, keylen);
     memcpy(text + keylen, number, numlen + 1);
-    size_t group_len = strlen(md->topics[p->topic].group_json);
-    size_t estimate = FRAME_BYTES + group_len + l->body.len + 1 + len +
-                      TDOT_SERIES_OVERHEAD * (l->n + 1);
-    if (l->n > 0 && estimate > TDOT_SIZE_BUDGET) {
+    size_t name_len = strlen(md->topics[p->topic].fragments[p->fragment]);
+    if (l->body.n > 0 &&
+        body_estimate_with(&l->body, p->fragment, name_len, len) > TDOT_SIZE_BUDGET) {
         /* Split: the full part goes now; the rest keeps the layer's time and
          * the frame's window. */
-        publish_body(b, &md->topics[o->topic], l->time_ms, l->body.s, l->body.len, out, ctx);
-        l->body.len = 0;
-        l->body.s[0] = '\0';
-        l->n = 0;
+        publish_body(b, &md->topics[o->topic], l->time_ms, &l->body, out, ctx);
+        body_clear(&l->body);
     }
     if (l->npoints == l->cap) {
         size_t cap = l->cap ? l->cap * 2 : 64;
@@ -701,10 +829,7 @@ static void add(tdot_batcher_t *b, mdevice_t *md, size_t k, double ts_ms, double
         l->points = grown;
         l->cap = cap;
     }
-    if (l->body.len > 0)
-        buf_put(&l->body, ",", 1);
-    buf_put(&l->body, text, len);
-    l->n++;
+    body_push(&l->body, p->fragment, name_len, text, len);
     l->points[l->npoints++] = k;
     p->depth++;
     free(dyn);
@@ -774,13 +899,9 @@ void tdot_batcher_flush_all(tdot_batcher_t *b, tdot_measure_out_fn out, void *ct
 static void sample_device(tdot_batcher_t *b, mdevice_t *md, long long every_ms,
                           long long now_ns, double wall_ms, tdot_measure_out_fn out,
                           void *ctx) {
-    buf_t *bodies = calloc(md->ntopics ? md->ntopics : 1, sizeof *bodies);
-    size_t *counts = calloc(md->ntopics ? md->ntopics : 1, sizeof *counts);
-    if (!bodies || !counts) {
-        free(bodies);
-        free(counts);
+    mbody_t *bodies = calloc(md->ntopics ? md->ntopics : 1, sizeof *bodies);
+    if (!bodies)
         return;
-    }
     for (size_t k = 0; k < md->npoints; k++) {
         mpoint_t *p = &md->points[k];
         if (p->group_by.kind != TDOT_GROUP_SAMPLE || p->group_by.ms != every_ms)
@@ -830,31 +951,32 @@ static void sample_device(tdot_batcher_t *b, mdevice_t *md, long long every_ms,
         for (size_t i = 0; i < nseries; i++) {
             char number[40];
             size_t numlen = tdot_format_number(values[i], number, sizeof number);
-            size_t len = strlen(keys[i]) + numlen;
+            size_t keylen = strlen(keys[i]), len = keylen + numlen;
+            char piece[600];
+            char *text = len + 1 > sizeof piece ? malloc(len + 1) : piece;
+            if (!text)
+                continue;
+            memcpy(text, keys[i], keylen);
+            memcpy(text + keylen, number, numlen + 1);
             mtopic_t *topic = &md->topics[p->topic];
-            buf_t *body = &bodies[p->topic];
-            size_t *n = &counts[p->topic];
-            size_t size = FRAME_BYTES + strlen(topic->group_json) + body->len + 1 + len +
-                          TDOT_SERIES_OVERHEAD * (*n + 1);
-            if (*n > 0 && size > TDOT_SIZE_BUDGET) {
-                publish_body(b, topic, wall_ms, body->s, body->len, out, ctx);
-                body->len = 0;
-                *n = 0;
+            mbody_t *body = &bodies[p->topic];
+            size_t name_len = strlen(topic->fragments[p->fragment]);
+            if (body->n > 0 &&
+                body_estimate_with(body, p->fragment, name_len, len) > TDOT_SIZE_BUDGET) {
+                publish_body(b, topic, wall_ms, body, out, ctx);
+                body_clear(body);
             }
-            if (body->len > 0)
-                buf_put(body, ",", 1);
-            buf_str(body, keys[i]);
-            buf_put(body, number, numlen);
-            (*n)++;
+            body_push(body, p->fragment, name_len, text, len);
+            if (text != piece)
+                free(text);
         }
     }
     for (size_t t = 0; t < md->ntopics; t++) {
-        if (counts[t] > 0)
-            publish_body(b, &md->topics[t], wall_ms, bodies[t].s, bodies[t].len, out, ctx);
-        free(bodies[t].s);
+        if (bodies[t].n > 0)
+            publish_body(b, &md->topics[t], wall_ms, &bodies[t], out, ctx);
+        body_free(&bodies[t]);
     }
     free(bodies);
-    free(counts);
 }
 
 typedef struct {
@@ -937,7 +1059,7 @@ int tdot_measure_check_series(const tdot_config_t *cfg, const tdot_device_t *dev
                               size_t errlen) {
     size_t cap = dev->npoints * TDOT_MAX_AGGREGATES + 1, n = 0;
     struct {
-        char *group, *series;
+        char *type, *fragment, *series;
         const char *point;
         bool aggregated;
     } *names = calloc(cap, sizeof *names);
@@ -949,8 +1071,8 @@ int tdot_measure_check_series(const tdot_config_t *cfg, const tdot_device_t *dev
         cJSON *meta = pt->meta_json ? cJSON_Parse(pt->meta_json) : NULL;
         bool measurable = !cJSON_IsFalse(cJSON_GetObjectItemCaseSensitive(meta, "measurement")) &&
                           pt->mode == TDOT_MODE_TYPED;
-        char *group, *series;
-        resolve_naming(cfg, pt, meta, &group, &series);
+        char *type, *fragment, *series;
+        resolve_naming(cfg, dev, pt, meta, &type, &fragment, &series);
         cJSON_Delete(meta);
         bool aggregated = pt->naggregates > 0;
         size_t count = aggregated && pt->aggregate_suffixed ? pt->naggregates : 1;
@@ -961,28 +1083,33 @@ int tdot_measure_check_series(const tdot_config_t *cfg, const tdot_device_t *dev
             else
                 snprintf(name, sizeof name, "%s", series);
             size_t i = 0;
-            while (i < n && !(strcmp(names[i].group, group) == 0 && strcmp(names[i].series, name) == 0))
+            while (i < n && !(strcmp(names[i].type, type) == 0 &&
+                              strcmp(names[i].fragment, fragment) == 0 &&
+                              strcmp(names[i].series, name) == 0))
                 i++;
             if (i < n) {
                 if (aggregated || names[i].aggregated) {
                     snprintf(err, errlen,
                              "device '%s': points '%s' and '%s' both publish the series '%s' in the "
-                             "group '%s'",
-                             dev->name, names[i].point, pt->id, name, group);
+                             "fragment '%s' of the type '%s'",
+                             dev->name, names[i].point, pt->id, name, fragment, type);
                     rc = -1;
                 }
                 continue;
             }
-            names[n].group = strdup(group);
+            names[n].type = strdup(type);
+            names[n].fragment = strdup(fragment);
             names[n].series = strdup(name);
             names[n].point = pt->id;
             names[n++].aggregated = aggregated;
         }
-        free(group);
+        free(type);
+        free(fragment);
         free(series);
     }
     for (size_t i = 0; i < n; i++) {
-        free(names[i].group);
+        free(names[i].type);
+        free(names[i].fragment);
         free(names[i].series);
     }
     free(names);

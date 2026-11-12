@@ -33,7 +33,7 @@ ${HEALTH_TOPIC}         te/device/main/service/${SERVICE}/status/health
 # Use a generous startup timeout and a short per-sample timeout.
 ${READY_TIMEOUT}        90
 ${SAMPLE_TIMEOUT}       5
-# Measurement output (connector-measure.toml, openspec native-batched-output): the `canm` device.
+# Grouped output (connector-measure.toml, openspec native-batched-output): the `canm` device.
 ${MEASURE_TOPIC}            te/device/canm///m/${PROTOCOL}
 ${MEASURE_SAMPLE_PREFIX}    te/device/canm/ot/${PROTOCOL}/sample
 

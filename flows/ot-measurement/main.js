@@ -2,22 +2,22 @@
 //
 // Direction: OT protocol format  ->  thin-edge.io data model.
 //   in:  te/device/<device>/ot/<protocol>/sample/<point>   (connector sample envelope)
-//   out: te/device/<device>///m/<group>                    (thin-edge measurement)
+//   out: te/device/<device>///m/<type>                     (thin-edge measurement)
 //
 // Protocol-neutral: it consumes the generic OT Connector Contract sample, so the same flow maps
 // modbus, opcua or any other connector. The connector is the "dumb" driver plus the per-point
 // engineering transform (multiplier/divisor/decimal_shift/offset is declared on the point and
 // applied by the connector via the SDK), so the sample already carries the scaled value. This
-// flow owns naming (group/series), units, change-detection (on_change/deadband), debounce,
-// rate limiting (min_interval) and optional batching of a device's series into one
-// measurement (combine).
+// flow owns naming (type/fragment/series), units, change-detection (on_change/deadband), debounce,
+// rate limiting (min_interval) and optional grouping of a device's series into one
+// measurement per type (combine).
 //
 // Per-signal overrides: the connector echoes the point's free-form `meta` table in every
 // sample (sample.meta). When present, meta.on_change / meta.deadband / meta.min_interval /
 // meta.debounce override the flow-wide params for that signal only — so one flow instance can
 // serve a whole plant while individual signals opt into their own behaviour, declared next to
 // the signal's address in the connector config. Naming works the same way:
-// meta.measurement.group / meta.measurement.series name the signal's measurement per point
+// meta.measurement.type / .fragment / .series name the signal's measurement per point
 // (e.g. written by the Cloud Fieldbus import from a device type's measurementMapping), and
 // meta.measurement = false keeps the signal out of the measurements altogether (e.g. a parameter
 // whose value should reach the cloud only through its twin fragment).
@@ -60,7 +60,7 @@ function numSetting(metaValue, cfgValue, dflt) {
 }
 
 // Recursively merge src into target (nested objects merged, other values overwritten).
-// Group/series names come from point ids and meta, so a key like "__proto__" must never be
+// Type/fragment/series names come from point ids and meta, so a key like "__proto__" must never be
 // followed into (or assigned onto) an object's prototype.
 function deepMerge(target, src) {
   for (const key of Object.keys(src)) {
@@ -80,48 +80,71 @@ function deepMerge(target, src) {
 }
 
 // Shape the measurement body (without the time field) from a scaled value:
-//   { <group>: { <series>: value } }
+//   { <fragment>: { <series>: value } }
 // Series values are BARE numbers on purpose: the tedge c8y mapper's measurement converter
 // silently drops any object-shaped series value ({ value } and { value, unit } alike), so
 // embedding sample.unit here would strand the measurement on the device. The unit travels as
 // retained measurement metadata instead (see unitMessages).
-function shapeBody(cfg, sample, scaled) {
-  const { group, series } = resolveNaming(cfg, sample);
-  return { [group]: { [series]: scaled } };
+function shapeBody(naming, scaled) {
+  return { [naming.fragment]: { [naming.series]: scaled } };
 }
 
-// Resolve the measurement group + series for a sample. Precedence:
-//   1. per-signal sample.meta.measurement.group / .series (echoed from the connector point's
-//      `meta` table, e.g. written by the Cloud Fieldbus import from a device type's
-//      measurementMapping.type/series) — meta wins over the flow params, consistent with the
-//      other per-signal meta overrides,
-//   2. explicit cfg.group / cfg.series (flow-wide overrides),
-//   3. point-id convention: when point_separator is set and the point id contains it, the id is
-//      split once into "<group><sep><series>" (e.g. "." maps "Environment.Temperature" ->
-//      group "Environment", series "Temperature"). This lets ONE flow instance remap many
-//      signals just by how their point ids are named on the connector.
-//   4. defaults: group = sample protocol, series = point id.
+// A non-empty string, else "".
+function str(v) {
+  return typeof v === "string" ? v : "";
+}
+
+// The type, fragment and series one level names. `group` is the deprecated name that sets both the
+// type and the fragment at its level, unless the level sets them itself.
+function levelNaming(level) {
+  const group = str(level.group);
+  return {
+    type: str(level.type) || group,
+    fragment: str(level.fragment) || group,
+    series: str(level.series),
+  };
+}
+
+// Resolve the measurement type (the topic te/device/<d>///m/<type>, the Cumulocity type), fragment
+// (the body key) and series of a sample, key by key, as the SDK runtime does in grouped output
+// (contract §5.5) minus its device level:
+//   1. per-signal sample.meta.measurement.type / .fragment / .series (echoed from the connector
+//      point's `meta` table, e.g. written by the Cloud Fieldbus import from a device type's
+//      measurementMapping) — meta wins over the flow params, like the other meta overrides,
+//   2. the flow params type / fragment / series,
+//   3. point-id convention: when point_separator is set and the point id contains it with
+//      something on both sides, the id is split once into "<prefix><sep><suffix>". The prefix
+//      names the type and the fragment, the suffix the series (e.g. "." maps
+//      "Environment.Temperature" -> m/Environment, {"Environment":{"Temperature":…}}). With a type
+//      set, the prefix still names the fragment: type "Combined" and the point
+//      "c8y_Battery.level" give m/Combined, {"c8y_Battery":{"level":…}},
+//   4. defaults: type = sample protocol, fragment = the type, series = point id.
+// `group` (meta or param) is the deprecated name that sets type and fragment at its level.
 function resolveNaming(cfg, sample) {
   const mm =
     (sample.meta &&
       typeof sample.meta.measurement === "object" &&
+      sample.meta.measurement !== null &&
       !Array.isArray(sample.meta.measurement) &&
       sample.meta.measurement) ||
     {};
-  let group = mm.group || cfg.group || "";
-  let series = mm.series || cfg.series || "";
-  const sep = cfg.point_separator || "";
-  if (sep && (!group || !series)) {
-    const id = sample.point || "";
+  const point = levelNaming(mm);
+  const flow = levelNaming(cfg);
+  let prefix = "";
+  let suffix = "";
+  const sep = str(cfg.point_separator);
+  const id = sample.point || "";
+  if (sep) {
     const idx = id.indexOf(sep);
     if (idx > 0 && idx < id.length - sep.length) {
-      if (!group) group = id.slice(0, idx);
-      if (!series) series = id.slice(idx + sep.length);
+      prefix = id.slice(0, idx);
+      suffix = id.slice(idx + sep.length);
     }
   }
-  group = group || sample.protocol || "ot";
-  series = series || sample.point;
-  return { group, series };
+  const type = point.type || flow.type || prefix || sample.protocol || "ot";
+  const fragment = point.fragment || flow.fragment || prefix || type;
+  const series = point.series || flow.series || suffix || sample.point;
+  return { type, fragment, series };
 }
 
 // True when the signal opted out of measurements: `meta.measurement = false`, a boolean. Same
@@ -137,7 +160,7 @@ const MEASUREMENT_TOPIC = /^te\/[^/]*\/[^/]*\/[^/]*\/[^/]*\/m\/[^/]+$/;
 
 // Units (contract §5, sample.unit) as retained thin-edge.io measurement metadata: one message per
 // measurement topic, on <measurement topic>/meta, holding every series of that topic that has a
-// unit: { "<group>.<series>": { "unit": "<unit>" }, ... }. thin-edge.io's units flow keeps it, and
+// unit: { "<fragment>.<series>": { "unit": "<unit>" }, ... }, every fragment of the topic in one map. thin-edge.io's units flow keeps it, and
 // the c8y mapper adds the unit to each series of the measurements on that topic. Mappers without
 // that support ignore the retained message, and the measurement body stays bare numbers.
 //
@@ -145,12 +168,12 @@ const MEASUREMENT_TOPIC = /^te\/[^/]*\/[^/]*\/[^/]*\/[^/]*\/m\/[^/]+$/;
 // kept in the mapper-wide store, which units-state.js also fills from the retained messages: after
 // a mapper restart a change merges into the units already standing instead of replacing them with
 // only the series seen since. An emptied map clears the topic with an empty retained message.
-function unitMessages(context, measurementTopic, group, series, unit) {
+function unitMessages(context, measurementTopic, fragment, series, unit) {
   if (!MEASUREMENT_TOPIC.test(measurementTopic)) return [];
   const metaTopic = `${measurementTopic}/meta`;
   const storeKey = `ot-measurement-units:${metaTopic}`;
   const stored = context.mapper.get(storeKey) || {};
-  const key = `${group}.${series}`;
+  const key = `${fragment}.${series}`;
   const current = stored[key] && typeof stored[key] === "object" ? stored[key].unit : undefined;
   const wanted = typeof unit === "string" && unit !== "" ? unit : undefined;
   if (current === wanted) return [];
@@ -201,9 +224,9 @@ export function onMessage(message, context) {
   // Derive the device from the source topic: te/device/<device>/ot/<protocol>/sample/<point>
   const parts = message.topic.split("/");
   const device = parts[2] || "main";
-  const { group, series } = resolveNaming(cfg, sample);
-  const targetTopic = cfg.target_topic || `te/device/${device}///m/${group}`;
-  const units = unitMessages(context, targetTopic, group, series, sample.unit);
+  const naming = resolveNaming(cfg, sample);
+  const targetTopic = cfg.target_topic || `te/device/${device}///m/${naming.type}`;
+  const units = unitMessages(context, targetTopic, naming.fragment, naming.series, sample.unit);
 
   // Per-signal settings from the sample's meta (echoed from the connector point config),
   // falling back to the flow-wide params.
@@ -249,9 +272,10 @@ export function onMessage(message, context) {
   context.script.set(`last:${sample.point}`, scaled);
   context.script.set(`lastts:${sample.point}`, now);
 
-  const body = shapeBody(cfg, sample, scaled);
+  const body = shapeBody(naming, scaled);
 
-  // Combine mode: buffer each device's series and flush one merged measurement on interval.
+  // Combine mode: buffer each device's series and flush one merged measurement per topic (type)
+  // on interval. Series of several fragments of one type go into the same message.
   if (String(cfg.combine ?? "false") === "true") {
     const buffer = context.flow.get("buffer") || {};
     const merged = buffer[targetTopic] || {};

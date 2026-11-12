@@ -24,8 +24,8 @@ This guide explains how to use them.
 | CAN, CANopen, PROFIBUS | No: one bus | No |
 
 Whatever runs in parallel, a device is never read twice at once, its readings keep their order,
-and every point of one read has one read time, so measurement output still publishes one
-measurement per device and pass ([measurement output](measurement-output.md)). Writes, commands
+and every point of one read has one read time, so grouped output still publishes one
+measurement per device, type and pass ([grouped output](measurement-output.md)). Writes, commands
 and method calls are not concurrent: they wait for the device's read in flight.
 
 ## Endpoints and their budget

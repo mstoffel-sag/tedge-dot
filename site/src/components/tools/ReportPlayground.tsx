@@ -1,8 +1,8 @@
 /** @jsxImportSource preact */
 // The config workbench's first outcome: for each point that reads a simulated signal, its
 // readings and what its effective `report` policy publishes. Signals and configuration are the
-// page's shared state (src/lib/signals-store.ts); the batching view below
-// batches what these points publish. The engine is src/lib/report.ts, which runs the contract's
+// page's shared state (src/lib/signals-store.ts); the grouping view below
+// groups what these points publish. The engine is src/lib/report.ts, which runs the contract's
 // test vectors in CI.
 
 import { useEffect, useMemo, useRef, useState } from 'preact/hooks';

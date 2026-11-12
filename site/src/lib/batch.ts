@@ -1,5 +1,5 @@
-// The measurement-output batcher (contract §5.5), ported from the Rust SDK
-// (impl/rust/crates/sdk/src/measure.rs, `Batcher`) for the batching playground. The docs build
+// The grouped-output engine (contract §5.5), ported from the Rust SDK
+// (impl/rust/crates/sdk/src/measure.rs, `Batcher`) for the grouping playground. The docs build
 // runs it against every case in doc/contract/test-vectors/measurements/vectors.json, the same
 // vectors the Rust and C SDKs run (tests/batch.test.ts).
 //
@@ -11,7 +11,10 @@ export type Quality = 'good' | 'bad' | 'stale';
 
 export const SIZE_BUDGET = 15_000;
 export const SERIES_OVERHEAD = 12;
-const FRAME_BYTES = 9 + 24 + 2 + 2 + 2;
+/** `{"time":"2026-01-01T00:00:00.000Z",` + the closing `}`, around the fragments. */
+const FRAME_BYTES = 9 + 24 + 2 + 1;
+/** `:{` + `}` around one fragment's series, after its quoted name. */
+const FRAGMENT_BYTES = 3;
 const MAX_LAYERS = 64;
 
 export type GroupBy = { kind: 'time' } | { kind: 'frame'; window: number } | { kind: 'sample'; every: number };
@@ -41,10 +44,10 @@ export interface Reading {
 
 type Table = Record<string, any>;
 
-/** `group_by` of a merged `batch` table; `null` when the duration it needs is missing. */
+/** `by` of a merged `grouping` table; `null` when the duration it needs is missing. */
 export function groupByOf(table: Table): GroupBy | null {
   const duration = (key: string) => (typeof table[key] === 'string' ? parseDuration(table[key]) : null);
-  switch (table.group_by ?? 'time') {
+  switch (table.by ?? 'time') {
     case 'frame': {
       const window = duration('window');
       return window === null ? null : { kind: 'frame', window };
@@ -58,7 +61,7 @@ export function groupByOf(table: Table): GroupBy | null {
   }
 }
 
-/** The aggregates of a merged `batch` table and whether they are suffixed to the series name. */
+/** The aggregates of a merged `grouping` table and whether they are suffixed to the series name. */
 export function aggregatesOf(table: Table): { aggregates: Aggregate[]; suffixed: boolean } | null {
   const a = table.aggregate;
   if (typeof a === 'string') return AGGREGATES.includes(a as Aggregate) ? { aggregates: [a as Aggregate], suffixed: false } : null;
@@ -66,12 +69,25 @@ export function aggregatesOf(table: Table): { aggregates: Aggregate[]; suffixed:
   return null;
 }
 
-/** Merge one level's `batch` table over `base`; `aggregate` without `group_by` chooses "sample". */
-export function mergeBatchLevel(base: Table, level: unknown): Table {
+/** Merge one level's `grouping` table over `base`; `aggregate` without `by` chooses "sample". */
+export function mergeGroupingLevel(base: Table, level: unknown): Table {
   if (!level || typeof level !== 'object' || Array.isArray(level)) return base;
   const out = { ...base, ...(level as Table) };
-  if ('aggregate' in level && !('group_by' in level)) out.group_by = 'sample';
+  if ('aggregate' in level && !('by' in level)) out.by = 'sample';
   return out;
+}
+
+/**
+ * A level's `grouping` table: `grouping`, else the deprecated `batch` rewritten as the loaders
+ * rewrite it (`group_by` is `by`). The loaders refuse a level that sets both.
+ */
+export function groupingOf(level: Table | undefined): Table | undefined {
+  if (!level) return undefined;
+  if (level.grouping !== undefined) return level.grouping;
+  const batch = level.batch;
+  if (!batch || typeof batch !== 'object' || Array.isArray(batch)) return batch;
+  const { group_by, ...rest } = batch as Table;
+  return group_by === undefined ? rest : { ...rest, by: group_by };
 }
 
 const sameGroupBy = (a: GroupBy, b: GroupBy) =>
@@ -97,12 +113,58 @@ export function formatNumber(n: number): string {
 const bytes = (s: string) => new TextEncoder().encode(s).length;
 const iso = (ms: number) => new Date(ms).toISOString();
 
-function body(groupJson: string, time: number, series: string): string {
-  return `{"time":"${iso(time)}",${groupJson}:{${series}}}`;
+/** The series of a message not yet published, per fragment of its topic. */
+class Body {
+  /** Per fragment, `"a":1,"b":2` without the braces; empty when it holds none. */
+  parts: string[] = [];
+  /** The byte length of the message text with these series; meaningless while `n` is 0. */
+  len = 0;
+  /** The fragments holding a series. */
+  fragments = 0;
+  /** The series. */
+  n = 0;
+
+  /** The text length after adding `piece` (bytes) to fragment `f`, whose quoted name is `nameLen` bytes. */
+  lenWith(f: number, nameLen: number, piece: number): number {
+    const base = this.n === 0 ? FRAME_BYTES : this.len;
+    if (!this.parts[f]) return base + (this.fragments > 0 ? 1 : 0) + nameLen + FRAGMENT_BYTES + piece;
+    return base + 1 + piece;
+  }
+
+  /** The estimated Cumulocity size after adding `piece` to fragment `f` (§5.5). */
+  estimateWith(f: number, nameLen: number, piece: number): number {
+    return this.lenWith(f, nameLen, piece) + SERIES_OVERHEAD * (this.n + 1);
+  }
+
+  push(f: number, nameLen: number, piece: string) {
+    this.len = this.lenWith(f, nameLen, bytes(piece));
+    while (this.parts.length <= f) this.parts.push('');
+    if (!this.parts[f]) this.fragments += 1;
+    this.parts[f] += (this.parts[f] ? ',' : '') + piece;
+    this.n += 1;
+  }
+
+  clear() {
+    this.parts = this.parts.map(() => '');
+    this.len = 0;
+    this.fragments = 0;
+    this.n = 0;
+  }
+
+  /** `{"time":"<time>","<fragment>":{<series>},…}`, the fragments in the topic's order. */
+  render(fragments: string[], time: number): string {
+    let out = `{"time":"${iso(time)}"`;
+    fragments.forEach((name, f) => {
+      if (this.parts[f]) out += `,${name}:{${this.parts[f]}}`;
+    });
+    return `${out}}`;
+  }
 }
 
 interface PointPlan {
   topic: number;
+  /** Index into the topic's `fragments`. */
+  fragment: number;
   seriesKey: string;
   measurable: boolean;
   sample: boolean;
@@ -112,7 +174,10 @@ interface PointPlan {
 
 interface Topic {
   topic: string;
-  groupJson: string;
+  /** The measurement type the topic ends with. */
+  type: string;
+  /** `"<fragment>"`, escaped and quoted, in the order their first point is configured. */
+  fragments: string[];
   units: string;
   unitsSettled: boolean;
 }
@@ -120,8 +185,7 @@ interface Topic {
 interface Open {
   time: number;
   opened: number;
-  body: string;
-  n: number;
+  body: Body;
   points: number[];
 }
 
@@ -175,7 +239,7 @@ export function publishesSample(point: Table): boolean {
 }
 
 /**
- * The point tables of a connector's devices in measurement output, and the messages they
+ * The point tables of a connector's devices in grouped output, and the messages they
  * produce. `config` is the parsed TOML of a connector configuration.
  */
 export class Batcher {
@@ -188,8 +252,7 @@ export class Batcher {
     const connector = config.connector ?? {};
     const protocol: string = connector.protocol ?? '';
     const m = connector.measurement ?? {};
-    const text = (v: unknown) => (typeof v === 'string' ? v : '');
-    const naming = { group: text(m.group), series: text(m.series), separator: text(m.point_separator) };
+    const naming = { connector: levelNaming(m), separator: typeof m.point_separator === 'string' ? m.point_separator : '' };
     this.includeBoolean = typeof m.include_boolean === 'boolean' ? m.include_boolean : true;
 
     for (const device of (config.device ?? []) as Table[]) {
@@ -199,18 +262,20 @@ export class Batcher {
       const index = new Map<string, number>();
       const samplers: { every: number; next: number }[] = [];
       for (const point of (device.point ?? []) as Table[]) {
-        const [group, series] = resolveName(naming, protocol, point);
-        const groupJson = JSON.stringify(group);
-        let topic = topics.findIndex((t) => t.groupJson === groupJson);
+        const { type, fragment, series } = resolveName(naming, protocol, device, point);
+        let topic = topics.findIndex((t) => t.type === type);
         if (topic < 0) {
-          topics.push({ topic: `te/device/${device.name}///m/${group}`, groupJson, units: '', unitsSettled: false });
+          topics.push({ topic: `te/device/${device.name}///m/${type}`, type, fragments: [], units: '', unitsSettled: false });
           units.push(new Map());
           topic = topics.length - 1;
         }
+        const fragmentJson = JSON.stringify(fragment);
+        let fragmentIndex = topics[topic].fragments.indexOf(fragmentJson);
+        if (fragmentIndex < 0) fragmentIndex = topics[topic].fragments.push(fragmentJson) - 1;
         const mode = point.mode ?? device.default_mode ?? 'typed';
         const measurable = point.meta?.measurement !== false && mode === 'typed';
         let table: Table = {};
-        for (const level of [connector.batch, device.batch, point.batch]) table = mergeBatchLevel(table, level);
+        for (const level of [connector, device, point]) table = mergeGroupingLevel(table, groupingOf(level));
         let groupBy = groupByOf(table) ?? { kind: 'time' };
         if (groupBy.kind === 'sample' && point.meta?.event?.every === true) groupBy = { kind: 'time' };
         const aggs = groupBy.kind === 'sample' ? aggregatesOf(table) : null;
@@ -218,7 +283,7 @@ export class Batcher {
           ? aggs.aggregates.map((a) => ({ aggregate: a, name: aggs.suffixed ? `${series}_${a}` : series }))
           : [{ aggregate: null, name: series }];
         if (measurable && typeof point.unit === 'string' && point.unit) {
-          for (const { name } of names) units[topic].set(`${group}.${name}`, point.unit);
+          for (const { name } of names) units[topic].set(`${fragment}.${name}`, point.unit);
         }
         if (groupBy.kind === 'sample') {
           const every = groupBy.every;
@@ -227,6 +292,7 @@ export class Batcher {
         index.set(point.id, points.length);
         points.push({
           topic,
+          fragment: fragmentIndex,
           seriesKey: `${JSON.stringify(series)}:`,
           measurable,
           sample: publishesSample(point),
@@ -319,21 +385,20 @@ export class Batcher {
         if (last !== undefined && ts <= last) time = last + 1;
         dev.lastLayerMs.set(key, time);
       }
-      layers.push({ time, opened: layers[0]?.opened ?? opened, body: '', n: 0, points: [] });
+      layers.push({ time, opened: layers[0]?.opened ?? opened, body: new Body(), points: [] });
     }
     const topic = dev.topics[plan.topic];
+    const f = plan.fragment;
+    const nameLen = bytes(topic.fragments[f]);
     const piece = plan.seriesKey + formatNumber(value);
     const open = layers[layer];
-    const estimate = (b: number, n: number) => FRAME_BYTES + bytes(topic.groupJson) + b + SERIES_OVERHEAD * n;
-    if (open.n > 0 && estimate(bytes(open.body) + 1 + bytes(piece), open.n + 1) > SIZE_BUDGET) {
+    if (open.body.n > 0 && open.body.estimateWith(f, nameLen, bytes(piece)) > SIZE_BUDGET) {
       // Split: the full part goes now; the rest keeps the message's time and window.
       this.settleUnits(topic, out);
-      out.push({ topic: topic.topic, payload: body(topic.groupJson, open.time, open.body), retain: false });
-      open.body = '';
-      open.n = 0;
+      out.push({ topic: topic.topic, payload: open.body.render(topic.fragments, open.time), retain: false });
+      open.body.clear();
     }
-    open.body += (open.body ? ',' : '') + piece;
-    open.n += 1;
+    open.body.push(f, nameLen, piece);
     open.points.push(k);
     dev.depth[k] += 1;
   }
@@ -346,9 +411,9 @@ export class Batcher {
     const topic = dev.topics[entry.topic];
     for (const open of entry.layers) {
       for (const k of open.points) dev.depth[k] = 0;
-      if (open.n === 0) continue;
+      if (open.body.n === 0) continue;
       this.settleUnits(topic, out);
-      out.push({ topic: topic.topic, payload: body(topic.groupJson, open.time, open.body), retain: false });
+      out.push({ topic: topic.topic, payload: open.body.render(topic.fragments, open.time), retain: false });
     }
   }
 
@@ -392,7 +457,7 @@ export class Batcher {
 
   private sample(d: number, every: number, now: number, wall: number, out: Message[]) {
     const dev = this.devices[d];
-    const bodies = dev.topics.map(() => ({ text: '', n: 0 }));
+    const bodies = dev.topics.map(() => new Body());
     dev.points.forEach((plan, k) => {
       if (plan.groupBy.kind !== 'sample' || plan.groupBy.every !== every) return;
       const series: [string, number][] = [];
@@ -418,22 +483,20 @@ export class Batcher {
         const piece = key + formatNumber(value);
         const topic = dev.topics[plan.topic];
         const b = bodies[plan.topic];
-        const size = FRAME_BYTES + bytes(topic.groupJson) + bytes(b.text) + 1 + bytes(piece) + SERIES_OVERHEAD * (b.n + 1);
-        if (b.n > 0 && size > SIZE_BUDGET) {
+        const nameLen = bytes(topic.fragments[plan.fragment]);
+        if (b.n > 0 && b.estimateWith(plan.fragment, nameLen, bytes(piece)) > SIZE_BUDGET) {
           this.settleUnits(topic, out);
-          out.push({ topic: topic.topic, payload: body(topic.groupJson, wall, b.text), retain: false });
-          b.text = '';
-          b.n = 0;
+          out.push({ topic: topic.topic, payload: b.render(topic.fragments, wall), retain: false });
+          b.clear();
         }
-        b.text += (b.text ? ',' : '') + piece;
-        b.n += 1;
+        b.push(plan.fragment, nameLen, piece);
       }
     });
     bodies.forEach((b, t) => {
       if (!b.n) return;
       const topic = dev.topics[t];
       this.settleUnits(topic, out);
-      out.push({ topic: topic.topic, payload: body(topic.groupJson, wall, b.text), retain: false });
+      out.push({ topic: topic.topic, payload: b.render(topic.fragments, wall), retain: false });
     });
   }
 
@@ -473,23 +536,55 @@ export class Batcher {
   }
 }
 
-/** A point's group and series, in `ot-measurement`'s order. */
-/** A point's measurement group and series name (contract §5.5 naming). */
-export function resolveName(naming: { group: string; series: string; separator: string }, protocol: string, point: Table): [string, string] {
-  const named = (key: string) => {
-    const v = point.meta?.measurement?.[key];
-    return typeof v === 'string' && v ? v : null;
-  };
-  let group = named('group') ?? naming.group;
-  let series = named('series') ?? naming.series;
+/** The names one level gives a series: `type`, `fragment` and `series`, empty when unnamed. */
+export interface LevelNaming {
+  type: string;
+  fragment: string;
+  series: string;
+}
+
+/** A level's names; `group` (deprecated) names the type and the fragment it does not name itself. */
+export function levelNaming(table: unknown): LevelNaming {
+  const t = table && typeof table === 'object' && !Array.isArray(table) ? (table as Table) : {};
+  const text = (v: unknown) => (typeof v === 'string' ? v : '');
+  const group = text(t.group);
+  return { type: text(t.type) || group, fragment: text(t.fragment) || group, series: text(t.series) };
+}
+
+/** A series' resolved names. */
+export interface Name {
+  type: string;
+  fragment: string;
+  series: string;
+}
+
+/**
+ * A point's type, fragment and series (contract §5.5 naming), key by key: the point's
+ * `meta.measurement`, the device's `measurement`, `[connector] measurement`, then the point id
+ * split at `point_separator` (the prefix names the type and the fragment, the suffix the series),
+ * then the protocol for the type, the type for the fragment and the point id for the series.
+ */
+export function resolveName(
+  naming: { connector: LevelNaming; separator: string },
+  protocol: string,
+  device: Table,
+  point: Table,
+): Name {
+  const levels = [levelNaming(point.meta?.measurement), levelNaming(device.measurement), naming.connector];
+  const first = (key: keyof LevelNaming) => levels.map((l) => l[key]).find((v) => v) ?? '';
   const sep = naming.separator;
   const id: string = point.id;
-  if (sep && (!group || !series)) {
+  let prefix = '';
+  let suffix = '';
+  if (sep) {
     const at = id.indexOf(sep);
     if (at > 0 && at + sep.length < id.length) {
-      if (!group) group = id.slice(0, at);
-      if (!series) series = id.slice(at + sep.length);
+      prefix = id.slice(0, at);
+      suffix = id.slice(at + sep.length);
     }
   }
-  return [group || protocol, series || id];
+  const type = first('type') || prefix || protocol;
+  const fragment = first('fragment') || prefix || type;
+  const series = first('series') || suffix || id;
+  return { type, fragment, series };
 }

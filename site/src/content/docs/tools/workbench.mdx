@@ -48,7 +48,7 @@ Pick a protocol, or start from one of the
 [demo configs](https://github.com/thin-edge/tedge-dot/tree/main/demo/config), which are wired to
 the demo simulators. Loading a configuration gives it a signal per point (up to four), including
 the points a device takes from a point library (`points_from`). Set the
-reporting policy (`report`) and the grouping in measurement output (`batch`) on `[connector]` or
+reporting policy (`report`) and the grouping in grouped output (`grouping`) on `[connector]` or
 on a point; a point's own table is merged key by key over `[connector]`'s, as on the gateway.
 Select a point to open it.
 
@@ -111,15 +111,23 @@ see [Reducing data volume](/tedge-dot/reference/configuration/reducing-data-volu
 
 </details>
 
-### Batching: from readings to Cumulocity measurements
+### Grouping: from readings to Cumulocity measurements
 
-With [measurement output](/tedge-dot/reference/configuration/measurement-output/)
-(`output = "measurements"` in `[connector]`), the connector publishes the thin-edge measurements
-itself, many readings per message. The `batch` policy decides which readings share a message and
-which time it carries. The form here is `[connector] batch` of the configuration. The strip runs
-the same samples through all three policies; the chart below it shows the configured one. Each
-measurement has **one cell per signal**: a hollow cell is a signal missing from it. Select a
-measurement to see the message the connector publishes and the measurement Cumulocity stores.
+With [grouped output](/tedge-dot/reference/configuration/measurement-output/)
+(`output = "group"` in `[connector]`), the connector publishes the thin-edge measurements
+itself, many readings per message. The `grouping` policy decides which readings share a message
+and which time it carries. The form here is `[connector] grouping` of the configuration. The
+strip runs the same samples through all three policies; the chart below it shows the configured
+one. Each measurement has **one cell per signal**: a hollow cell is a signal missing from it.
+Select a measurement to see the message the connector publishes and the measurement Cumulocity
+stores.
+
+The fragment choice sets how the series are laid out in the measurement: all in one fragment
+named after the type, or a fragment per signal (`meta.measurement.fragment` on each point). Both
+publish the same number of measurements, because series of one type and time share a message
+whatever their fragments. With Streaming Lake Ingestion each fragment is a table and a separate
+write, so the layout is a storage decision: the **Fragments sent** count is the number of lake
+writes.
 
 <BatchPlayground client:visible />
 
@@ -158,12 +166,13 @@ complete, at the price of the readings between two samples (unless you aggregate
 - **A spike between samples** with `sample`, then with `aggregate = ["mean", "min", "max"]`:
   sample-and-hold sends the value held at each sample time and misses the spike;
   `pressure_max` keeps it.
+- **Any example** with *a fragment per signal*: the measurements and their times stay the same,
+  and each one holds a fragment per signal it carries. **Fragments sent** grows with them.
 
-The batching engine is a port of the Rust SDK's measurement batcher, and the docs build runs it
-against every case in the contract's
-[measurement-output test vectors](/tedge-dot/reference/contract/measurement-vectors/), the same
-vectors the Rust and C SDKs run. The thin-edge.io mapper turns each message into one Cumulocity
-measurement of type `Process` (the message's group) and takes the units from the connector's
-retained `meta` message.
+The grouping engine is a port of the Rust SDK's, and the docs build runs it against every case
+in the contract's [grouped-output test vectors](/tedge-dot/reference/contract/measurement-vectors/),
+the same vectors the Rust and C SDKs run. The thin-edge.io mapper turns each message into one
+Cumulocity measurement of type `Process` (the message's type, `[connector] measurement.type`)
+and takes the units from the connector's retained `meta` message.
 
 </details>

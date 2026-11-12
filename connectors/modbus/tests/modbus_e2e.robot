@@ -41,7 +41,7 @@ ${FLOWS_TIMEOUT}        120
 # Generous timeout: the connector waits for the simulator/broker before it starts.
 ${READY_TIMEOUT}        90
 ${SAMPLE_TIMEOUT}       15
-# Measurement output (connector-measure.toml, openspec native-batched-output): the `plcm` device.
+# Grouped output (connector-measure.toml, openspec native-batched-output): the `plcm` device.
 ${MEASURE_TOPIC}            te/device/plcm///m/${PROTOCOL}
 ${MEASURE_SAMPLE_PREFIX}    te/device/plcm/ot/${PROTOCOL}/sample
 

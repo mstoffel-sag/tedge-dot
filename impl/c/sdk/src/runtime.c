@@ -100,7 +100,7 @@ typedef struct {
     tdot_point_t **batch;
     tdot_sample_t *batch_out;
     int *batch_rc;
-    /* Measurement output (contract §5.5): the point tables, NULL in samples
+    /* Grouped output (contract §5.5): the point tables, NULL in single
      * output and in stdout mode, which prints samples. */
     tdot_batcher_t *batcher;
     /* This pass's wait for the broker: the tick, or less when a frame or a
@@ -190,11 +190,11 @@ static void publish_measurement(void *ctx, const char *topic, const char *payloa
 }
 
 /* The batcher for the running configuration (contract §5.5), or NULL in
- * samples output; `previous` hands over the units already published. */
+ * single output; `previous` hands over the units already published. */
 static void rebuild_batcher(rt_t *rt) {
     tdot_batcher_t *previous = rt->batcher;
     rt->batcher = NULL;
-    if (rt->output == TDOT_OUTPUT_MQTT && rt->cfg->output_measurements)
+    if (rt->output == TDOT_OUTPUT_MQTT && rt->cfg->output_group)
         rt->batcher = tdot_batcher_new(rt->cfg, mono_ns(), previous);
     else
         tdot_batcher_free(previous);
@@ -208,7 +208,7 @@ static void end_of_pass(rt_t *rt) {
 }
 
 /* Publish one reading with the time it was taken: as a sample, or in
- * measurement output into the point table, and a sample only for the points
+ * grouped output into the point table, and a sample only for the points
  * flows read. */
 static void publish_item(rt_t *rt, tdot_device_t *dev, tdot_point_t *pt,
                          const tdot_report_item_t *item) {
@@ -342,7 +342,7 @@ static void publish_link_status(rt_t *rt, tdot_device_t *dev) {
 }
 
 static void publish_link(rt_t *rt, tdot_device_t *dev, tdot_link_t status) {
-    /* A device that is not connected leaves the samples of measurement output
+    /* A device that is not connected leaves the samples of grouped output
      * (its slots are stale) until it is again. */
     tdot_batcher_set_stale(rt->batcher, (size_t)(dev - rt->cfg->devices),
                            status != TDOT_LINK_CONNECTED, mono_ns());
@@ -2538,7 +2538,7 @@ static int run_connector(tdot_connector_t *conn, tdot_config_t *cfg,
         collect_reads(&rt, false);
         report_pass(&rt, ctl);
 
-        /* Measurement output: the frames that ended and the samples due, and a
+        /* Grouped output: the frames that ended and the samples due, and a
          * wait no longer than until the next of them. */
         rt.wait_ms = rt.tick_ms;
         /* With reads in flight, wait for the first of them to return rather
