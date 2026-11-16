@@ -1223,7 +1223,44 @@ check_empty "command-forward: non-init ignored" ot-command-forward \
 # ot_call_method -> call-method: the arguments pass through, the outputs come back.
 check_params "command-forward: ot_call_method -> call-method with its arguments" ot-command-forward 'protocol = "opcua"' \
   '[te/device/Pump01///cmd/ot_call_method/m1] {"status":"init","point":"setOperatingLevel","arguments":[75]}' \
-  '[te/device/Pump01/ot/opcua/cmd/call-method/ot--m1] {"status":"init","point":"setOperatingLevel","arguments":[75]}'
+  '[te/device/Pump01/ot/opcua/cmd/call-method/ot--m1] {"status":"init","point":"setOperatingLevel","arguments":[75],"origin":{"request":{"point":"setOperatingLevel","arguments":[75]}}}'
+# c8y_CallMethod without `arguments`: the mapper renders the missing field as "".
+check_params "command-forward: call-method arguments \"\" (c8y_CallMethod without arguments) become []" ot-command-forward 'protocol = "opcua"' \
+  '[te/device/Pump01///cmd/ot_call_method/m3] {"status":"init","point":"startPump","arguments":""}' \
+  '{"status":"init","point":"startPump","arguments":[],'
+check_params "command-forward: call-method without arguments gets []" ot-command-forward 'protocol = "opcua"' \
+  '[te/device/Pump01///cmd/ot_call_method/m4] {"status":"init","point":"startPump"}' \
+  '{"status":"init","point":"startPump","arguments":[],'
+check_params "command-forward: call-method arguments null become []" ot-command-forward 'protocol = "opcua"' \
+  '[te/device/Pump01///cmd/ot_call_method/m5] {"status":"init","point":"startPump","arguments":null}' \
+  '{"status":"init","point":"startPump","arguments":[],'
+check_params "command-forward: call-method arguments that are not an array reach the connector unchanged" ot-command-forward 'protocol = "opcua"' \
+  '[te/device/Pump01///cmd/ot_call_method/m6] {"status":"init","point":"setOperatingLevel","arguments":"60"}' \
+  '"arguments":"60"'
+check_params "command-forward: call-method keeps an existing origin next to the request copy" ot-command-forward 'protocol = "opcua"' \
+  '[te/device/Pump01///cmd/ot_call_method/m7] {"status":"init","point":"startPump","origin":{"trace":"t1"}}' \
+  '"origin":{"trace":"t1","request":{"point":"startPump","arguments":[]}}'
+# The completed command carries what was called and what came back: the shape a mapper result
+# fragment (`c8y_CallMethod.outputs = "${.payload.outputs}"`) reads.
+CALL_INIT='[te/device/Pump01/ot/opcua/cmd/call-method/ot--c8y-mapper-9] {"status":"init","point":"setOperatingLevel","arguments":[60],"c8y-mapper":{"on_fragment":"c8y_CallMethod"},"origin":{"request":{"point":"setOperatingLevel","arguments":[60],"c8y-mapper":{"on_fragment":"c8y_CallMethod"}}}}'
+CALL_DONE='[te/device/Pump01/ot/opcua/cmd/call-method/ot--c8y-mapper-9] {"status":"successful","point":"setOperatingLevel","outputs":[60],"origin":{"request":{"point":"setOperatingLevel","arguments":[60],"c8y-mapper":{"on_fragment":"c8y_CallMethod"}}}}'
+CALL_TOPIC='[te/device/Pump01///cmd/ot_call_method/c8y-mapper-9]'
+for field in '"status":"successful"' '"point":"setOperatingLevel"' '"arguments":[60]' \
+             '"c8y-mapper":{"on_fragment":"c8y_CallMethod"}' '"outputs":[60]'; do
+  check "command-result: completed call-method carries $field" ot-command-result \
+    "$CALL_INIT"$'\n'"$CALL_DONE" "$field"
+  check "command-result: replayed call-method (no init) restores $field" ot-command-result \
+    "$CALL_DONE" "$field"
+done
+check_absent "command-result: completed call-method drops the origin.request copy" ot-command-result \
+  "$CALL_INIT"$'\n'"$CALL_DONE" "$CALL_TOPIC" '"request"'
+check_absent "command-result: replayed call-method drops the origin.request copy" ot-command-result \
+  "$CALL_DONE" "$CALL_TOPIC" '"request"'
+for field in '"status":"failed"' '"arguments":[]' '"reason":"unknown point"'; do
+  check "command-result: failed call-method carries $field" ot-command-result \
+    '[te/device/Pump01/ot/opcua/cmd/call-method/ot--m8] {"status":"failed","point":"nope","reason":"unknown point","origin":{"request":{"point":"nope","arguments":[]}}}' \
+    "$field"
+done
 check_multi "command-result: call-method outputs complete the ot_call_method command" \
   "ot-command-forward ot-command-result" \
   '[te/device/Pump01///cmd/ot_call_method/m2] {"status":"init","point":"startPump"}

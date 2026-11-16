@@ -31,6 +31,7 @@ always use the default.
 | `c8y_SetCoil` | [`c8y_SetCoil`](c8y_SetCoil) | `ot_write_coil` | `write-coil` | protocol module |
 | `c8y_ModbusConfiguration` | [`c8y_ModbusConfiguration`](c8y_ModbusConfiguration) | `ot_set_config` | `set-config` | SDK runtime |
 | `c8y_SerialConfiguration` | [`c8y_SerialConfiguration`](c8y_SerialConfiguration) | `ot_set_config` | `set-config` | SDK runtime |
+| `c8y_CallMethod` (new) | [`c8y_CallMethod`](c8y_CallMethod) | `ot_call_method` | `call-method` | protocol module |
 | `c8y_ModbusDevice` (+ `c8y_Coils`/`c8y_Registers`) | [`c8y_ModbusDevice`](c8y_ModbusDevice) → [`c8y-fieldbus-import`](c8y-fieldbus-import) | `ot_define_device` | `define-device` | SDK runtime |
 | `c8y_ParameterUpdate` (device parameters) | *none here* — the [tedge-parameter-plugin](https://github.com/thin-edge/tedge-parameter-plugin)'s `c8y_ParameterUpdate.template` | `parameter_update` | `write-batch` (reshaped by `ot-command-forward`) | SDK runtime |
 
@@ -54,6 +55,11 @@ the operation payloads carry logical fields:
 // c8y_SetRegister / c8y_SetCoil
 { "c8y_SetRegister": { "point": "boiler_setpoint", "value": 21.5 } }
 { "c8y_SetCoil":     { "point": "pump_run",        "value": true  } }
+
+// c8y_CallMethod — call a `call_method` point (e.g. an OPC UA method). `arguments` follows the
+// point's `inputs` order and is optional (a method without inputs).
+{ "c8y_CallMethod": { "point": "setOperatingLevel", "arguments": [60] } }
+{ "c8y_CallMethod": { "point": "startPump" } }
 
 // c8y_ModbusConfiguration  (only pollingRate maps; transmitRate corresponds to connector.report.min_interval)
 { "c8y_ModbusConfiguration": { "pollingRate": "5s" } }
@@ -98,6 +104,15 @@ the script header and unit-tested offline by
 { "c8y_ParameterUpdate": {}, "c8y_ParameterUpdate_acme_meter_v2_control_parameters": {},
   "acme_meter_v2_control_parameters": { "temp_u16": 4343, "coil_rw": true } }
 ```
+
+`c8y_CallMethod` completes the operation as SUCCESSFUL or FAILED (with the connector's reason).
+The method's `outputs` do **not** reach the operation yet: the thin-edge `output` template key sends
+them as SmartREST `503`/`506` parameters, which Cumulocity drops for a custom fragment. The
+completed `ot_call_method` command carries everything a REST update of the operation needs —
+`point`, `arguments`, `outputs` and the `c8y-mapper` metadata, also after a mapper restart — so a
+mapper that writes result fragments into the operation can map
+`c8y_CallMethod.outputs = "${.payload.outputs}"` without changes here
+([tedge-dot#114](https://github.com/thin-edge/tedge-dot/issues/114)).
 
 Device parameters are protocol-neutral and need no operation file in this repository: the
 c8y mapper binds `.template` files **by fragment name**, so only one template may exist for
@@ -156,7 +171,7 @@ tedge mqtt pub -r -q 1 'te/device/plc1///twin/modbus_parameters' ''
 ## Deploy
 
 Copy the shim files into the device's Cumulocity operations directory and the bridge flows into the
-c8y mapper. Operations that target the OT child devices (`c8y_SetRegister`, `c8y_SetCoil`)
+c8y mapper. Operations that target the OT child devices (`c8y_SetRegister`, `c8y_SetCoil`, `c8y_CallMethod`)
 must be installed as **templates** (`.template` suffix): the mapper instantiates a template per
 child device that advertises the matching `ot_*` command capability, which `ot-registration`
 publishes. Gateway-level operations (`c8y_ModbusDevice`, `c8y_ModbusConfiguration`,
@@ -168,6 +183,7 @@ here ([`cloud/modbus/Dockerfile.tedge`](../cloud/modbus/Dockerfile.tedge) is the
 sudo apt-get install tedge-parameter-plugin   # thin-edge community repo: owns c8y_ParameterUpdate
 sudo cp operations/c8y_SetRegister /etc/tedge/operations/c8y/c8y_SetRegister.template
 sudo cp operations/c8y_SetCoil     /etc/tedge/operations/c8y/c8y_SetCoil.template
+sudo cp operations/c8y_CallMethod  /etc/tedge/operations/c8y/c8y_CallMethod.template
 sudo cp operations/c8y_ModbusDevice operations/c8y_ModbusConfiguration operations/c8y_SerialConfiguration /etc/tedge/operations/c8y/
 sudo install -m 0755 operations/c8y-fieldbus-import /usr/bin/c8y-fieldbus-import  # needs jq + curl
 # The three flows below are already in place on a packaged install; from a

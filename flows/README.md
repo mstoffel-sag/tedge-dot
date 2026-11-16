@@ -257,7 +257,11 @@ descriptor and gives every device with methods (`access = "call_method"` points)
 `te/device/<device>///cmd/ot_call_method` listing them; it is cleared when the methods are removed.
 A `te/device/<device>///cmd/ot_call_method/<id>` command then reaches the connector's
 `call-method` verb through `ot-command-forward`, and its result, `outputs` included, comes back
-through `ot-command-result`.
+through `ot-command-result`. A missing, `null` or `""` `arguments` becomes `[]` (a method without
+inputs). The forward flow also copies the request into `origin.request`, which the connector echoes,
+so the completed command carries `point`, `arguments`, the `c8y-mapper` metadata and `outputs` even
+when the mapper restarted during the call. The Cumulocity side is the
+[`c8y_CallMethod`](../operations/c8y_CallMethod) shim.
 
 ## Pipeline
 

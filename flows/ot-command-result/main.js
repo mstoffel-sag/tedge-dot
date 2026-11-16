@@ -42,14 +42,19 @@ export function onMessage(message, context) {
   }
   if (status === "") return []; // ignore clearing/non-JSON messages
 
-  const initPayload = context.script.get(id) ?? {};
+  const cached = context.script.get(id);
   // `origin` from the cached request, else from the result itself: the connector echoes it into
   // every transition it publishes (§6.4), which is what makes a REPLAYED terminal result
   // routable. The cache is in-memory, so a mapper that restarts between the request and the
   // result has lost it — and mirroring onto `ot_write_batch` instead of `parameter_update`
   // would leave the cloud operation waiting forever on a command that never completes.
   const originOf = (p) => (p?.origin && typeof p.origin === "object" ? p.origin : null);
-  const origin = originOf(initPayload) ?? originOf(payload);
+  const origin = originOf(cached) ?? originOf(payload);
+  // Without the cache, the request fields come from `origin.request` when the forward flow put
+  // them there (call-method): the completed command keeps what was asked (`arguments`, the
+  // `c8y-mapper` metadata) next to what came back (`outputs`).
+  const echoed = origin?.request && typeof origin.request === "object" ? origin.request : null;
+  const initPayload = cached ?? echoed ?? {};
   const commandType = origin?.command || prefix + verb.split("-").join("_");
 
   // Merge stored init metadata with the connector result; connector fields win. The request
@@ -57,6 +62,13 @@ export function onMessage(message, context) {
   // shape (`origin.set` / `origin.parameters` say what was asked).
   const { writes: _writes, ...initMeta } = initPayload;
   const merged = { ...initMeta, ...payload };
+  // `origin.request` is a copy of the request for the trip through the connector; the request
+  // fields are already at the top level.
+  if (originOf(merged)?.request !== undefined) {
+    const { request: _request, ...rest } = merged.origin;
+    if (Object.keys(rest).length) merged.origin = rest;
+    else delete merged.origin;
+  }
   if (status === "failed" && origin?.error) {
     merged.reason = [origin.error, payload.reason].filter((r) => r).join("; ");
   }

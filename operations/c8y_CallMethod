@@ -1,0 +1,21 @@
+# c8y_CallMethod -> generic `ot_call_method` command (call a `call_method` point, e.g. an OPC UA method).
+#
+# The Cumulocity operation names the method point (the connector config point id) and its
+# arguments, in the order of the point's `inputs`:
+#   { "c8y_CallMethod": { "point": "setOperatingLevel", "arguments": [60] } }
+# `arguments` is optional. The mapper renders a missing field as "", which ot-command-forward
+# turns into [] for a method without inputs. The connector casts each argument to its input
+# datatype. ot-command-result completes the command with `point`, `arguments` and the method's
+# `outputs`, also after a mapper restart.
+#
+# No `output` key: the mapper would send the outputs as SmartREST 503/506 parameters, which
+# Cumulocity drops for a custom fragment (tested with thin-edge 2.0.1). Getting the outputs into
+# the operation needs a REST update of the operation fragment (tedge-dot#114).
+[exec]
+  topic = "c8y/devicecontrol/notifications"
+  on_fragment = "c8y_CallMethod"
+
+[exec.workflow]
+operation = "ot_call_method"
+input.point = "${.payload.c8y_CallMethod.point}"
+input.arguments = "${.payload.c8y_CallMethod.arguments}"

@@ -15,7 +15,8 @@
 //   ot_define_device -> define-device  (covers c8y_ModbusDevice / c8y_Coils / c8y_Registers)
 //   ot_remove_device -> remove-device
 //   ot_call_method   -> call-method    (call a `call_method` point, e.g. an OPC UA method;
-//                                       `arguments` pass through, `outputs` come back)
+//                                       `arguments` pass through, a missing one becomes [],
+//                                       `outputs` come back; see callMethodRequest)
 //
 // One command type is reshaped rather than passed through: `parameter_update` (device
 // parameters — the command type of the tedge-parameter-plugin, whose c8y_ParameterUpdate
@@ -144,6 +145,21 @@ function parameterBatch(payload, context, device) {
   return out;
 }
 
+// The `call-method` request of an `ot_call_method` command. `arguments` defaults to none: the
+// c8y_CallMethod shim renders a missing field as "", and null means the same. Anything else is
+// passed on, so the connector rejects it with its own reason. The request fields also travel in
+// `origin.request`, which the connector echoes into every transition (§6.4): ot-command-result
+// restores them from there when it has lost the init (a mapper restart), so the completed
+// command still carries what was called — the shape a mapper result fragment reads.
+function callMethodRequest(payload) {
+  const { status: _status, origin, ...fields } = payload;
+  if (fields.arguments === undefined || fields.arguments === null || fields.arguments === "") {
+    fields.arguments = [];
+  }
+  const base = origin && typeof origin === "object" ? origin : {};
+  return { status: "init", ...fields, origin: { ...base, request: fields } };
+}
+
 // The service a management command goes to: the one it names, else `tedge-dot-<protocol>` — the
 // connector's default service_name. Deterministic on purpose: guessing from retained capability
 // descriptors counts services that are long gone (a descriptor outlives its connector).
@@ -177,6 +193,9 @@ export function onMessage(message, context) {
   if (commandType === PARAMETER_UPDATE) {
     verb = "write-batch";
     request = parameterBatch(payload, context, device);
+  } else if (commandType === "ot_call_method") {
+    verb = "call-method";
+    request = callMethodRequest(payload);
   } else {
     verb = commandType.slice(3).split("_").join("-");
     request = payload;
