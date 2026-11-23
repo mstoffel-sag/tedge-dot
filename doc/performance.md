@@ -21,6 +21,15 @@ install it from the main channel (`install.sh --channel main`). In CI the 2.0.1 
 convert measurements on the offline stack within 60 s, so `stack up` failed its check. Nothing
 runs as root, and nothing touches the host's own broker or mapper.
 
+On Ubuntu 26.04 and later, AppArmor lets `/usr/sbin/mosquitto` read config only from
+`/etc/mosquitto`, so the private broker fails with `Unable to open config file`. Allow the stack
+directory once (CI does the same):
+
+```sh
+echo "file $PWD/bench/.stack/** r," | sudo tee /etc/apparmor.d/local/mosquitto
+sudo apparmor_parser -r /etc/apparmor.d/mosquitto
+```
+
 ## How it works
 
 **The stack** (`tedge-dot-bench stack up`, or any `run`) starts a private mosquitto and

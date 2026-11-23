@@ -50,6 +50,14 @@ jobs:
           sudo apt-get install -y cmake ninja-build pkg-config libudev-dev \
             libmodbus-dev libmosquitto-dev libcjson-dev mosquitto
           tedge --version
+      - name: Let mosquitto read the bench stack's config (AppArmor)
+        run: |
+          # Ubuntu 26.04 confines /usr/sbin/mosquitto with an AppArmor profile that reads config
+          # only from /etc/mosquitto, so the private broker could not open bench/.stack/mosquitto.conf.
+          if [ -f /etc/apparmor.d/mosquitto ]; then
+            echo "file ${GITHUB_WORKSPACE}/bench/.stack/** r," | sudo tee /etc/apparmor.d/local/mosquitto
+            sudo apparmor_parser -r /etc/apparmor.d/mosquitto
+          fi
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:

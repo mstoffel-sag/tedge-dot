@@ -181,7 +181,18 @@ pub async fn up(dir: &Path) -> Result<Stack, String> {
         .map_err(|e| format!("cannot start mosquitto: {e}"))?;
     started.0.push(broker.id());
     if !wait_for_port(broker_port, Duration::from_secs(5)).await {
-        return Err(format!("mosquitto did not accept connections on port {broker_port}; see {}", logs.join("mosquitto.log").display()));
+        let log = logs.join("mosquitto.log");
+        let mut err = format!("mosquitto did not accept connections on port {broker_port}; see {}", log.display());
+        let config_denied = std::fs::read_to_string(&log).is_ok_and(|l| l.contains("Unable to open config file"));
+        if config_denied && Path::new("/etc/apparmor.d/mosquitto").exists() {
+            err.push_str(&format!(
+                "\nthe host's AppArmor profile for mosquitto only reads config from /etc/mosquitto; allow the \
+                 stack directory with:\n  echo 'file {}/** r,' | sudo tee /etc/apparmor.d/local/mosquitto\n  \
+                 sudo apparmor_parser -r /etc/apparmor.d/mosquitto",
+                dir.display()
+            ));
+        }
+        return Err(err);
     }
     let mapper_log = logs.join("tedge-mapper-c8y.log");
     let mapper = procs::spawn_logged(Command::new("tedge-mapper").arg("--config-dir").arg(&etc).arg("c8y"), &mapper_log)
