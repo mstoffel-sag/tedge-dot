@@ -108,11 +108,12 @@ the script header and unit-tested offline by
 `c8y_CallMethod` completes the operation as SUCCESSFUL or FAILED (with the connector's reason).
 The method's `outputs` do **not** reach the operation yet: the thin-edge `output` template key sends
 them as SmartREST `503`/`506` parameters, which Cumulocity drops for a custom fragment. The
-completed `ot_call_method` command carries everything a REST update of the operation needs —
-`point`, `arguments`, `outputs` and the `c8y-mapper` metadata, also after a mapper restart — so a
-mapper that writes result fragments into the operation can map
-`c8y_CallMethod.outputs = "${.payload.outputs}"` without changes here
-([tedge-dot#114](https://github.com/thin-edge/tedge-dot/issues/114)).
+completed `ot_call_method` command carries everything an update of the operation fragment needs:
+`point`, `arguments`, `outputs` and the `c8y-mapper` metadata, also after a mapper restart. A
+mapper that writes result fragments into the operation, whether over SmartREST or REST, can then
+map `c8y_CallMethod.outputs = "${.payload.outputs}"` without changes here
+([tedge-dot#114](https://github.com/thin-edge/tedge-dot/issues/114),
+[thin-edge.io#4420](https://github.com/thin-edge/thin-edge.io/issues/4420)).
 
 Device parameters are protocol-neutral and need no operation file in this repository: the
 c8y mapper binds `.template` files **by fragment name**, so only one template may exist for
