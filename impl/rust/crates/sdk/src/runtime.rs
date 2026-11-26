@@ -22,7 +22,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use time::OffsetDateTime;
 use toml_edit::{ArrayOfTables, DocumentMut, InlineTable, Item, Table, Value as EditValue};
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info, warn, Instrument};
 
 type BoxError = Box<dyn std::error::Error + Send + Sync>;
 
@@ -504,6 +504,40 @@ pub async fn run_until_watched(
         .map(|_| ())
 }
 
+/// How often a connector reports losing its broker connection at most; the drops in between
+/// are counted into the next report.
+const DROP_REPORT_INTERVAL: Duration = Duration::from_secs(60);
+
+/// Rate limit for the lost-connection lines. A session another client keeps taking over (two
+/// connectors sharing a service name, so a client id) drops every few seconds, and a line per drop
+/// and reconnect flooded the journal.
+#[derive(Default)]
+struct DropReports {
+    last: Option<Instant>,
+    unreported: u32,
+    /// Whether the latest drop was reported, and so its reconnect is.
+    reported: bool,
+}
+
+impl DropReports {
+    /// A lost connection at `now`: `Some(drops left unreported before it)` when it is to be
+    /// reported, `None` when it only counts towards the next report.
+    fn dropped(&mut self, now: Instant) -> Option<u32> {
+        if self.last.is_some_and(|last| now.duration_since(last) < DROP_REPORT_INTERVAL) {
+            self.unreported += 1;
+            self.reported = false;
+            return None;
+        }
+        self.last = Some(now);
+        self.reported = true;
+        Some(std::mem::take(&mut self.unreported))
+    }
+
+    fn reconnect_reported(&self) -> bool {
+        self.reported
+    }
+}
+
 /// How long a connector attempt waits for the broker to accept its session before it fails.
 const BROKER_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 /// How long one publish may wait for the MQTT client to take it: long enough for a busy but
@@ -635,8 +669,13 @@ pub async fn run_until_reloadable(
     // Ends with this function, however it returns: the process may host other connectors and
     // restart this one, and a leaked event loop would keep its session connected (or keep
     // reconnecting) behind it.
+    let broker = format!("{}:{}", config.mqtt.host, config.mqtt.port);
+    let (task_service, task_broker) = (service.clone(), broker.clone());
+    // In the connector's span, so its lines name the config file as the connector's own do.
     let mut mqtt_task = AbortOnDrop(tokio::spawn(async move {
+        let (service, broker) = (task_service, task_broker);
         let mut sessions = 0u64;
+        let mut drops = DropReports::default();
         loop {
             match eventloop.poll().await {
                 Ok(Event::Incoming(Packet::Publish(p))) => {
@@ -648,7 +687,9 @@ pub async fn run_until_reloadable(
                     online_tx.send_replace(true);
                     sessions += 1;
                     if sessions > 1 {
-                        info!("reconnected to MQTT broker");
+                        if drops.reconnect_reported() {
+                            info!("{service}: reconnected to MQTT broker {broker}");
+                        }
                         reconnected_tx.notify_one();
                     }
                 }
@@ -658,13 +699,30 @@ pub async fn run_until_reloadable(
                 Ok(_) => {}
                 Err(rumqttc::ConnectionError::RequestsDone) => break,
                 Err(e) => {
-                    online_tx.send_replace(false);
-                    warn!("mqtt event loop error: {e}; retrying");
+                    let was_online = online_tx.send_replace(false);
+                    if sessions == 0 {
+                        // Not connected yet: the connector fails unless the broker answers soon.
+                        warn!("{service}: cannot connect to MQTT broker {broker} ({e}); retrying");
+                    } else if !was_online {
+                        debug!("{service}: still no connection to MQTT broker {broker} ({e}); retrying");
+                    } else {
+                        match drops.dropped(Instant::now()) {
+                            Some(0) => warn!(
+                                "{service}: lost connection to MQTT broker {broker} ({e}); reconnecting"
+                            ),
+                            Some(more) => warn!(
+                                "{service}: lost connection to MQTT broker {broker} ({e}); \
+                                 reconnecting ({more} more drop(s) since the last report: does \
+                                 another connector use service_name '{service}'?)"
+                            ),
+                            None => {}
+                        }
+                    }
                     tokio::time::sleep(Duration::from_secs(1)).await;
                 }
             }
         }
-    }));
+    }.in_current_span()));
 
     // The broker must accept the session before the connector starts: nothing it publishes could
     // be delivered otherwise, and a wrong host or port would pass for a running connector. As in
@@ -672,7 +730,6 @@ pub async fn run_until_reloadable(
     // at once on a reload, since the fix is usually in the file. A stop or a reload is honoured
     // while waiting.
     tokio::pin!(shutdown);
-    let broker = format!("{}:{}", config.mqtt.host, config.mqtt.port);
     tokio::select! {
         _ = &mut shutdown => return Ok(RunExit::Stopped),
         _ = reload.notified() => {
@@ -3239,6 +3296,22 @@ pub fn resolve_mode(mode: Option<Mode>, device_default: Option<Mode>) -> Mode {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The first drop is reported; the ones within the next minute only counted, and so are
+    /// their reconnects; the first drop after it reports the count.
+    #[test]
+    fn drops_are_reported_once_a_minute_with_a_count() {
+        let mut drops = DropReports::default();
+        let t0 = Instant::now();
+        assert_eq!(drops.dropped(t0), Some(0));
+        assert!(drops.reconnect_reported());
+        assert_eq!(drops.dropped(t0 + Duration::from_secs(2)), None);
+        assert!(!drops.reconnect_reported());
+        assert_eq!(drops.dropped(t0 + Duration::from_secs(59)), None);
+        assert_eq!(drops.dropped(t0 + Duration::from_secs(60)), Some(2));
+        assert!(drops.reconnect_reported());
+        assert_eq!(drops.dropped(t0 + Duration::from_secs(200)), Some(0));
+    }
 
     const BASE: &str = r#"
 [connector]

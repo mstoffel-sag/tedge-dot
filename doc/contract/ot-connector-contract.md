@@ -1294,7 +1294,11 @@ device would replace the real result of the instance that does.
 - Management commands are addressed to one instance by its service name (§6.3).
 - A device MUST be defined by at most one instance per protocol on a broker, and every instance
   MUST have a unique `service_name`. An SDK runtime starting a directory of configurations warns
-  about both.
+  about a device defined twice, and runs only one connector per `service_name`: the one already
+  running keeps the name (at start-up, the first configuration by path), and every other one is
+  refused, the refusal logged again on each retry until the names differ. Two instances sharing
+  a name would share an MQTT client id, and the broker would drop one session each time the
+  other connects.
 
 #### Other verbs
 

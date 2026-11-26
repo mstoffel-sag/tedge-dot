@@ -92,6 +92,13 @@ typedef struct {
     bool mqtt_up;         /* false from a failed loop until the next CONNACK */
     bool mqtt_resume;     /* the next CONNACK is a reconnect: restore the session */
     double mqtt_retry_at; /* tdot_mono() of the next reconnect attempt */
+    /* Connection-loss lines are reported at most once a minute, with a count
+     * of the drops in between, so a session another instance keeps taking
+     * over (a shared service_name) cannot flood the journal. */
+    bool mqtt_drop_reported;    /* a drop has been reported at all */
+    bool mqtt_drop_logged;      /* the current drop was reported: so is its reconnect */
+    double mqtt_drop_report_at; /* tdot_mono() of the last reported drop */
+    unsigned mqtt_drops_unreported;
     /* The wait between two passes of the main loop: follows the fastest pushed
      * point (tdot_schedule_tick_ms), so a pushed value does not sit in the
      * protocol socket for a whole 200 ms tick. */
@@ -1043,8 +1050,9 @@ static void on_connect(struct mosquitto *mosq, void *ud, int rc) {
     if (!rt->mqtt_resume)
         return;
     rt->mqtt_resume = false;
-    logmsg("info", "reconnected to MQTT broker %s:%d", rt->cfg->mqtt_host,
-           rt->cfg->mqtt_port);
+    if (rt->mqtt_drop_logged)
+        logmsg("info", "%s: reconnected to MQTT broker %s:%d",
+               rt->cfg->service_name, rt->cfg->mqtt_host, rt->cfg->mqtt_port);
     subscribe_commands(rt);
     publish_health(rt, "up");
     publish_capabilities(rt);
@@ -1057,17 +1065,42 @@ static void on_connect(struct mosquitto *mosq, void *ud, int rc) {
             publish_link_status(rt, &rt->cfg->devices[i]);
 }
 
+/* Report a lost broker connection, at most once per MQTT_DROP_REPORT_S: the
+ * drops in between are counted into the next report, and their reconnects not
+ * logged. The line names the service, so a loop is traced to its config. */
+#define MQTT_DROP_REPORT_S 60.0
+static void report_mqtt_drop(rt_t *rt, double now, const char *reason) {
+    if (rt->mqtt_drop_reported && now - rt->mqtt_drop_report_at < MQTT_DROP_REPORT_S) {
+        rt->mqtt_drops_unreported++;
+        rt->mqtt_drop_logged = false;
+        return;
+    }
+    if (rt->mqtt_drops_unreported > 0)
+        logmsg("warn",
+               "%s: lost connection to MQTT broker %s:%d (%s); reconnecting "
+               "(%u more drop(s) since the last report: does another connector "
+               "use service_name '%s'?)",
+               rt->cfg->service_name, rt->cfg->mqtt_host, rt->cfg->mqtt_port, reason,
+               rt->mqtt_drops_unreported, rt->cfg->service_name);
+    else
+        logmsg("warn", "%s: lost connection to MQTT broker %s:%d (%s); reconnecting",
+               rt->cfg->service_name, rt->cfg->mqtt_host, rt->cfg->mqtt_port, reason);
+    rt->mqtt_drop_reported = true;
+    rt->mqtt_drop_logged = true;
+    rt->mqtt_drop_report_at = now;
+    rt->mqtt_drops_unreported = 0;
+}
+
 /* Drive the MQTT client for one tick, reconnecting while the broker is gone. */
 static void mqtt_service(rt_t *rt) {
     int rc = mosquitto_loop(rt->mosq, rt->wait_ms, 1);
     if (rc == MOSQ_ERR_SUCCESS)
         return;
+    double now = tdot_mono();
     if (rt->mqtt_up) {
         rt->mqtt_up = false;
-        logmsg("warn", "lost connection to MQTT broker %s:%d (%s); reconnecting",
-               rt->cfg->mqtt_host, rt->cfg->mqtt_port, mosquitto_strerror(rc));
+        report_mqtt_drop(rt, now, mosquitto_strerror(rc));
     }
-    double now = tdot_mono();
     if (now >= rt->mqtt_retry_at) {
         rt->mqtt_retry_at = now + MQTT_RETRY_S;
         rt->mqtt_resume = true;
@@ -2792,6 +2825,11 @@ typedef struct {
     double retry_at;  /* when a connector that is not running is tried again; 0: never */
 } worker_t;
 
+typedef struct {
+    worker_t **items;
+    size_t n, cap;
+} workers_t;
+
 static void *worker_main(void *arg) {
     worker_t *w = arg;
     w->rc = run_connector(w->conn, w->cfg, w->opts, &w->progress, &w->ctl);
@@ -2830,16 +2868,44 @@ static void worker_retry_later(worker_t *w) {
     logmsg("info", "%s: trying its connector again in %.0fs, or on reload", w->path, delay);
 }
 
+/* The running worker, other than `w`, whose connector uses `service_name`. */
+static const worker_t *service_name_holder(const workers_t *ws, const worker_t *w,
+                                           const char *service_name) {
+    for (size_t i = 0; ws && i < ws->n; i++) {
+        const worker_t *o = ws->items[i];
+        if (o != w && o->running && strcmp(o->cfg->service_name, service_name) == 0)
+            return o;
+    }
+    return NULL;
+}
+
 /* Load the worker's config and start its connector thread. A config that
  * cannot be used is logged and the worker left stopped, to be tried again
  * (worker_retry_later). */
-static bool worker_start(worker_t *w, watchdog_t *wd) {
+static bool worker_start(worker_t *w, const workers_t *ws, watchdog_t *wd) {
     /* Before the file is read: see run_ctl_t.start_gen. */
     w->ctl.start_gen = atomic_load(&g_reload_gen);
     char err[256];
     tdot_config_t *cfg = tdot_config_load(w->path, err, sizeof err);
     if (!cfg) {
         logmsg("error", "%s", err);
+        worker_retry_later(w);
+        return false;
+    }
+    /* Two connectors with one service_name share an MQTT client id: the broker
+     * drops one session whenever the other connects, so both would reconnect
+     * in a loop. The connector already running keeps the name -- at start-up,
+     * the first config by path -- and this one is refused until the clash is
+     * fixed, tried again (and reported again) like any config that cannot
+     * start. */
+    const worker_t *holder = service_name_holder(ws, w, cfg->service_name);
+    if (holder) {
+        logmsg("error",
+               "%s: service_name '%s' is already used by the running connector "
+               "of %s; not starting this one -- give each connector a unique "
+               "service_name",
+               w->path, cfg->service_name, holder->path);
+        tdot_config_free(cfg);
         worker_retry_later(w);
         return false;
     }
@@ -2893,11 +2959,6 @@ static void worker_free(worker_t *w) {
     free(w);
 }
 
-typedef struct {
-    worker_t **items;
-    size_t n, cap;
-} workers_t;
-
 static void workers_push(workers_t *ws, worker_t *w) {
     if (ws->n == ws->cap) {
         ws->cap = ws->cap ? ws->cap * 2 : 8;
@@ -2906,10 +2967,11 @@ static void workers_push(workers_t *ws, worker_t *w) {
     ws->items[ws->n++] = w;
 }
 
-/* Mirrors the Rust supervisor's warnings: instances sharing a service_name
- * take over each other's MQTT session, and two of one protocol defining the
- * same device both own it -- both act on its commands, racing each other's
- * results. Checked over the running connectors, at start and after a reload. */
+/* Mirrors the Rust supervisor's warning: two connectors of one protocol
+ * defining the same device both own it -- both act on its commands, racing
+ * each other's results. Checked over the running connectors, at start and
+ * after a reload. (Two sharing a service_name never both run: worker_start
+ * refuses the second.) */
 static void warn_duplicates(const workers_t *ws) {
     for (size_t i = 0; i < ws->n; i++) {
         const worker_t *wi = ws->items[i];
@@ -2920,12 +2982,6 @@ static void warn_duplicates(const workers_t *ws) {
             if (!wj->running)
                 continue;
             tdot_config_t *a = wi->cfg, *b = wj->cfg;
-            if (strcmp(a->service_name, b->service_name) == 0)
-                logmsg("warn",
-                       "configs %s and %s share service_name '%s'; give each "
-                       "connector a unique service_name or they will steal "
-                       "each other's MQTT session",
-                       wi->path, wj->path, a->service_name);
             if (strcmp(a->protocol, b->protocol) != 0)
                 continue;
             for (size_t x = 0; x < a->ndevices; x++)
@@ -2979,7 +3035,7 @@ static void supervise_reload(workers_t *ws, const tdot_run_opts_t *opts,
 
     for (size_t i = 0; i < ws->n; i++)
         if (!ws->items[i]->running)
-            worker_start(ws->items[i], wd);
+            worker_start(ws->items[i], ws, wd);
 
     if (listed) {
         for (size_t j = 0; j < npaths; j++) {
@@ -2990,7 +3046,7 @@ static void supervise_reload(workers_t *ws, const tdot_run_opts_t *opts,
                 logmsg("info", "new config %s; starting its connector", paths[j]);
                 worker_t *w = worker_new(paths[j], opts);
                 workers_push(ws, w);
-                worker_start(w, wd);
+                worker_start(w, ws, wd);
             }
         }
         for (size_t j = 0; j < npaths; j++)
@@ -3030,7 +3086,7 @@ int tdot_runtime_run_configs(const char *const *paths, size_t npaths,
     for (size_t i = 0; i < npaths; i++) {
         worker_t *w = worker_new(paths[i], opts);
         workers_push(&ws, w);
-        if (worker_start(w, &wd))
+        if (worker_start(w, &ws, &wd))
             started++;
     }
     warn_duplicates(&ws);
@@ -3089,14 +3145,14 @@ int tdot_runtime_run_configs(const char *const *paths, size_t npaths,
                 worker_join(w, &wd);
                 if (wrc == RUN_RESTART) {
                     logmsg("info", "restarting the connector of %s", w->path);
-                    if (!worker_start(w, &wd))
+                    if (!worker_start(w, &ws, &wd))
                         rc = -1;
                 } else if (wrc == RUN_FAILED) {
                     rc = -1;
                     worker_retry_later(w);
                 }
             } else if (service && !w->running && w->retry_at > 0 && now >= w->retry_at) {
-                worker_start(w, &wd);
+                worker_start(w, &ws, &wd);
             }
             if (w->running)
                 alive++;

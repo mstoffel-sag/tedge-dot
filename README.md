@@ -160,6 +160,9 @@ start, or cannot restart, is tried again every `TEDGE_DOT_RESTART_DELAY` seconds
 on every reload; the service keeps running meanwhile. The same goes for a broker that does not
 accept the connection within 10 seconds, such as one still starting at boot: the connector
 starts once it does.
+Each connector needs its own `service_name`: a config whose name another running connector
+already uses is not started (at start-up the first config by path takes the name), and the log
+names the file that holds it on every retry.
 
 ## One point list, many devices
 

@@ -419,7 +419,7 @@ async fn run(args: RunArgs) -> ExitCode {
         );
     }
 
-    warn_duplicate_service_names(&configs);
+    note_service_names(&configs);
     warn_duplicate_devices(&configs);
     let mut connectors = Connectors::new(args.output, restart_delay_from_env());
     for path in configs {
@@ -456,7 +456,7 @@ async fn run(args: RunArgs) -> ExitCode {
         // One reload path for both triggers.
         match discover_configs(&config_args) {
             Ok(configs) => {
-                warn_duplicate_service_names(&configs);
+                note_service_names(&configs);
                 warn_duplicate_devices(&configs);
                 // Stopping the removed connectors can take up to STOP_GRACE; a shutdown must not
                 // wait behind it (`connectors` keeps what is still stopping).
@@ -701,6 +701,8 @@ async fn run_one(
             // then, since the hang is inside it. Losing the race cancels the connector —
             // dropping the hung call and the MQTT client, so the broker publishes the retained
             // last-will health "down" — and returns an error, which the supervisor restarts.
+            // Held until this attempt ends; refused while another connector uses the name.
+            let _claim = ServiceClaim::take(config.connector.service_name(), &path)?;
             let progress = runtime::Progress::new();
             let watchdog = stall_watchdog(progress.clone(), stall);
             tokio::select! {
@@ -870,28 +872,105 @@ fn connector_section(path: &Path) -> Option<tedge_dot_sdk::config::ConnectorSect
     doc.get("connector")?.clone().try_into().ok()
 }
 
-/// Two configs sharing a `service_name` fight over the same MQTT client id and health topic;
-/// call it out loudly instead of letting the connectors steal each other's session.
-fn warn_duplicate_service_names(configs: &[PathBuf]) {
-    let mut by_service: std::collections::HashMap<String, Vec<String>> =
-        std::collections::HashMap::new();
-    for path in configs {
-        if let Some(connector) = connector_section(path) {
-            by_service
-                .entry(connector.service_name())
-                .or_default()
-                .push(path.display().to_string());
+/// Which config's connector may use each `service_name`, across this process.
+///
+/// Two connectors with one service name share an MQTT client id (and health topic): the broker
+/// drops one session whenever the other connects, so both reconnect in a loop. Only one may run
+/// with a name. The connector already running keeps it; when none is, the first config by path
+/// that uses it does — so the outcome at start-up does not depend on which connector task happens
+/// to get there first. Every other one is refused, and the refusal reported on each retry for as
+/// long as the clash lasts.
+#[derive(Default)]
+struct ServiceNames {
+    /// The config whose running connector uses each name.
+    held: std::collections::HashMap<String, PathBuf>,
+    /// For each name more than one discovered config uses, the first of them by path.
+    first: std::collections::HashMap<String, PathBuf>,
+}
+
+impl ServiceNames {
+    /// Record which configs share a service name, from the paths discovered at start-up or on a
+    /// reload (sorted, see `discover_configs`).
+    fn discovered(&mut self, configs: &[(PathBuf, String)]) {
+        let mut by_service: std::collections::HashMap<&str, Vec<&PathBuf>> =
+            std::collections::HashMap::new();
+        for (path, service) in configs {
+            by_service.entry(service).or_default().push(path);
+        }
+        self.first = by_service
+            .into_iter()
+            .filter(|(_, paths)| paths.len() > 1)
+            .map(|(service, paths)| (service.to_string(), paths[0].clone()))
+            .collect();
+    }
+
+    fn claim(&mut self, service: &str, path: &Path) -> Result<(), String> {
+        let advice = "give each connector a unique service_name";
+        if let Some(holder) = self.held.get(service) {
+            if holder == path {
+                return Ok(());
+            }
+            return Err(format!(
+                "service_name '{service}' is already used by the running connector of {}; not \
+                 starting this one ({advice})",
+                holder.display()
+            ));
+        }
+        if let Some(first) = self.first.get(service).filter(|first| *first != path) {
+            return Err(format!(
+                "service_name '{service}' is also used by {}, which takes it; not starting this \
+                 one ({advice})",
+                first.display()
+            ));
+        }
+        self.held.insert(service.to_string(), path.to_path_buf());
+        Ok(())
+    }
+
+    fn release(&mut self, service: &str, path: &Path) {
+        if self.held.get(service).is_some_and(|holder| holder == path) {
+            self.held.remove(service);
         }
     }
-    for (service, paths) in by_service {
-        if paths.len() > 1 {
-            warn!(
-                "configs {} share service_name '{service}'; give each connector a unique \
-                 service_name or they will steal each other's MQTT session",
-                paths.join(", ")
-            );
-        }
+}
+
+static SERVICE_NAMES: std::sync::LazyLock<std::sync::Mutex<ServiceNames>> =
+    std::sync::LazyLock::new(Default::default);
+
+fn service_names() -> std::sync::MutexGuard<'static, ServiceNames> {
+    SERVICE_NAMES.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// A connector attempt's hold on its service name, released when the attempt ends (however it
+/// ends: stopped, failed, restarted with a changed name, or cancelled).
+struct ServiceClaim {
+    service: String,
+    path: PathBuf,
+}
+
+impl ServiceClaim {
+    fn take(service: String, path: &Path) -> Result<Self, String> {
+        service_names().claim(&service, path)?;
+        Ok(ServiceClaim {
+            service,
+            path: path.to_path_buf(),
+        })
     }
+}
+
+impl Drop for ServiceClaim {
+    fn drop(&mut self) {
+        service_names().release(&self.service, &self.path);
+    }
+}
+
+/// Note which of the discovered configs share a service name (see [`ServiceNames`]).
+fn note_service_names(configs: &[PathBuf]) {
+    let named: Vec<(PathBuf, String)> = configs
+        .iter()
+        .filter_map(|path| Some((path.clone(), connector_section(path)?.service_name())))
+        .collect();
+    service_names().discovered(&named);
 }
 
 /// Two configs of one protocol defining the same device both own it: both act on its commands
@@ -1545,6 +1624,39 @@ mod tests {
 
     fn config_with(connector_section: &str) -> ConnectorConfig {
         toml::from_str(&format!("[connector]\nprotocol = \"modbus\"\n{connector_section}")).unwrap()
+    }
+
+    /// Of configs sharing a service name, the first by path takes it when none runs; a running
+    /// one keeps it against a config discovered later, even one sorting before it; and a name
+    /// is free again once its connector's attempt ends.
+    #[test]
+    fn a_service_name_is_used_by_one_connector_only() {
+        let (a, b, c) = (PathBuf::from("/a.toml"), PathBuf::from("/b.toml"), PathBuf::from("/c.toml"));
+        let named = |paths: &[(&PathBuf, &str)]| -> Vec<(PathBuf, String)> {
+            paths.iter().map(|(p, s)| ((*p).clone(), s.to_string())).collect()
+        };
+        let mut names = ServiceNames::default();
+        names.discovered(&named(&[(&b, "x"), (&c, "x")]));
+        // c's task gets there first: refused anyway, b comes first.
+        let refused = names.claim("x", &c).unwrap_err();
+        assert!(refused.contains("/b.toml") && refused.contains("unique service_name"), "{refused}");
+        assert_eq!(names.claim("x", &b), Ok(()));
+        assert!(names.claim("x", &c).unwrap_err().contains("already used by the running connector of /b.toml"));
+
+        // a.toml appears later with the same name: b keeps running, a is refused.
+        names.discovered(&named(&[(&a, "x"), (&b, "x"), (&c, "x")]));
+        assert!(names.claim("x", &a).is_err());
+        assert_eq!(names.claim("x", &b), Ok(()), "a running connector's restart keeps its name");
+
+        // b's attempt ends: the name goes to the first config again, and only to it.
+        names.release("x", &b);
+        assert!(names.claim("x", &c).is_err());
+        assert_eq!(names.claim("x", &a), Ok(()));
+        // A release by a config that does not hold the name changes nothing.
+        names.release("x", &c);
+        assert!(names.claim("x", &b).is_err());
+        // A unique name is never refused.
+        assert_eq!(names.claim("y", &c), Ok(()));
     }
 
     /// A device two configs of one protocol define would have its commands answered by both
