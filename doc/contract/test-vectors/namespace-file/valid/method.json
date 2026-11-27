@@ -1,0 +1,63 @@
+{
+  "format": "tedge-dot-namespace",
+  "version": 1,
+  "protocol": "opcua",
+  "server": {
+    "endpoint": "opc.tcp://plc-7:4840",
+    "application_uri": "urn:acme:plc-7"
+  },
+  "namespaces": [
+    "http://opcfoundation.org/UA/",
+    "urn:acme:plc-7",
+    "urn:acme:line"
+  ],
+  "scan": {
+    "time": "2026-11-27T10:00:00Z",
+    "tool": "opcua-scan",
+    "tool_version": "0.3.0",
+    "root": "i=85",
+    "depth": "unlimited",
+    "types": [
+      "Variable",
+      "Method"
+    ],
+    "device": "plc-7",
+    "connector_file": "opcua"
+  },
+  "nodes": [
+    {
+      "id": "i=85",
+      "browse_name": "Objects",
+      "display_name": "Objects",
+      "node_class": "Object"
+    },
+    {
+      "id": "nsu=urn:acme:line;s=Line1",
+      "parent": "i=85",
+      "browse_name": "Line1",
+      "display_name": "Line1",
+      "node_class": "Object"
+    },
+    {
+      "id": "nsu=urn:acme:line;s=Line1.Reset",
+      "parent": "nsu=urn:acme:line;s=Line1",
+      "browse_name": "Reset",
+      "display_name": "Reset",
+      "node_class": "Method",
+      "points": [
+        {
+          "id": "line1_reset",
+          "name": "Reset",
+          "access": "call_method",
+          "address": {
+            "object_id": "ns=2;s=Line1",
+            "method_id": "ns=2;s=Line1.Reset",
+            "inputs": [
+              "uint32"
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}

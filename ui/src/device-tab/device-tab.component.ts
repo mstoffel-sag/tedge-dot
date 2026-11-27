@@ -19,6 +19,7 @@ import {
 import { BsModalService } from 'ngx-bootstrap/modal';
 
 import { SendToGatewayComponent } from '../connectors/send-to-gateway.component';
+import { NamespacesCardComponent } from '../namespaces/namespaces-card.component';
 import { connectorTypes, libraryTypes } from '../shared/gateway';
 
 /**
@@ -34,6 +35,7 @@ import { connectorTypes, libraryTypes } from '../shared/gateway';
     DeviceConfigurationListComponent,
     ConfigurationPreviewComponent,
     ResizableGridComponent,
+    NamespacesCardComponent,
   ],
   template: `
     <c8y-action-bar-item [placement]="'right'">
@@ -174,6 +176,9 @@ import { connectorTypes, libraryTypes } from '../shared/gateway';
         </div>
       </c8y-resizable-grid>
     </div>
+    @if (device().id) {
+      <tdot-namespaces-card [gateway]="device()" />
+    }
   `,
 })
 export class DeviceTabComponent implements OnInit {

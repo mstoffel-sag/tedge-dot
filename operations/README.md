@@ -33,6 +33,7 @@ always use the default.
 | `c8y_SerialConfiguration` | [`c8y_SerialConfiguration`](c8y_SerialConfiguration) | `ot_set_config` | `set-config` | SDK runtime |
 | `c8y_CallMethod` (new) | [`c8y_CallMethod`](c8y_CallMethod) | `ot_call_method` | `call-method` | protocol module |
 | `c8y_ModbusDevice` (+ `c8y_Coils`/`c8y_Registers`) | [`c8y_ModbusDevice`](c8y_ModbusDevice) → [`c8y-fieldbus-import`](c8y-fieldbus-import) | `ot_define_device` | `define-device` | SDK runtime |
+| `c8y_ScanAddressSpace` (new) | [`c8y_ScanAddressSpace`](c8y_ScanAddressSpace) → [`ot-scan-address-space`](ot-scan-address-space) | *none*: runs opcua-scan on the gateway | — | the script |
 | `c8y_ParameterUpdate` (device parameters) | *none here* — the [tedge-parameter-plugin](https://github.com/thin-edge/tedge-parameter-plugin)'s `c8y_ParameterUpdate.template` | `parameter_update` | `write-batch` (reshaped by `ot-command-forward`) | SDK runtime |
 
 `c8y_Coils` and `c8y_Registers` no longer have standalone shims: the legacy operations only staged
@@ -114,6 +115,25 @@ mapper that writes result fragments into the operation, whether over SmartREST o
 map `c8y_CallMethod.outputs = "${.payload.outputs}"` without changes here
 ([tedge-dot#114](https://github.com/thin-edge/tedge-dot/issues/114),
 [thin-edge.io#4420](https://github.com/thin-edge/thin-edge.io/issues/4420)).
+
+`c8y_ScanAddressSpace` is not an OT command: it goes to the **gateway** and names an OPC UA device
+of its connector files. Like `c8y_ModbusDevice` it is a `command` shim, because tedge-agent runs
+workflows only for its own entity and the flows that serve child devices cannot run programs or
+call HTTP. [`ot-scan-address-space`](ot-scan-address-space) runs
+[opcua-scan](https://github.com/reubenmiller/opcua-discovery) with the device's settings from its
+connector file, uploads the result as a `tedge-dot-namespace` binary and writes `binaryId` and
+`nodes` into the operation ([doc/namespace-files.md](../doc/namespace-files.md)). Unlike the other
+shims here, the template and the script are packaged, in `/etc/tedge/operations/c8y/` and
+`/usr/bin/`. The script is tested offline by
+[`tests/test_scan_address_space.sh`](tests/test_scan_address_space.sh).
+
+```jsonc
+// c8y_ScanAddressSpace — to the gateway; only `device` is required.
+{ "c8y_ScanAddressSpace": { "device": "plc-7", "include": ["Objects/Factory/**"], "depth": "unlimited" } }
+// completed by the script:
+{ "c8y_ScanAddressSpace": { "device": "plc-7", "include": ["Objects/Factory/**"], "depth": "unlimited",
+                            "binaryId": "4711", "nodes": 1200 } }
+```
 
 Device parameters are protocol-neutral and need no operation file in this repository: the
 c8y mapper binds `.template` files **by fragment name**, so only one template may exist for

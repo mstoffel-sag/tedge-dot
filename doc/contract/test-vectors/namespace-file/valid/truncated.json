@@ -1,0 +1,44 @@
+{
+  "format": "tedge-dot-namespace",
+  "version": 1,
+  "protocol": "opcua",
+  "server": {
+    "endpoint": "opc.tcp://plc-7:4840",
+    "application_uri": "urn:acme:plc-7"
+  },
+  "namespaces": [
+    "http://opcfoundation.org/UA/",
+    "urn:acme:plc-7",
+    "urn:acme:line"
+  ],
+  "scan": {
+    "time": "2026-11-27T10:00:00Z",
+    "tool": "opcua-scan",
+    "tool_version": "0.3.0",
+    "root": "i=85",
+    "depth": "unlimited",
+    "types": [
+      "Variable",
+      "Method"
+    ],
+    "device": "plc-7",
+    "connector_file": "opcua",
+    "max_children": 5000
+  },
+  "nodes": [
+    {
+      "id": "i=85",
+      "browse_name": "Objects",
+      "display_name": "Objects",
+      "node_class": "Object"
+    },
+    {
+      "id": "nsu=urn:acme:line;s=Line1",
+      "parent": "i=85",
+      "browse_name": "Line1",
+      "display_name": "Line1",
+      "node_class": "Object",
+      "truncated": "max_children"
+    }
+  ]
+}

@@ -1,0 +1,10 @@
+{
+  "nodes": [
+    {
+      "browse_path": "Objects/Line1",
+      "node_id": "ns=2;s=Line1",
+      "node_class": "Object",
+      "subscribable": false
+    }
+  ]
+}

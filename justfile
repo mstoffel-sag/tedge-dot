@@ -176,6 +176,10 @@ c-sanitize-aveva-pi:
 test-flows:
     ./flows/test-flows.sh
 
+# Test the c8y_ScanAddressSpace script offline (fake opcua-scan and curl; needs jq and gzip).
+test-scan-operation:
+    ./operations/tests/test_scan_address_space.sh
+
 # --- All-in-one demo ---------------------------------------------------------
 # Start every OT simulator (modbus, opcua, canbus, canopen, profibus) from one
 # compose file. Pairs with the connectors installed from the tedge-dot package

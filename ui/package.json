@@ -56,7 +56,7 @@
   "c8y": {
     "application": {
       "name": "tedge-dot OT connectors",
-      "description": "Edit tedge-dot connector files in a form or as TOML, and install them on thin-edge.io gateways",
+      "description": "Edit tedge-dot connector files in a form or as TOML, build OPC UA points from an address-space scan, and install them on thin-edge.io gateways",
       "contextPath": "tedge-dot-ui",
       "key": "tedge-dot-ui-application-key",
       "globalTitle": "tedge-dot OT connectors",

@@ -16,15 +16,16 @@ import { canAddEntries } from '../shared/permissions';
 import { managedEntriesQuery } from '../shared/queries';
 import { SendToGatewayComponent } from './send-to-gateway.component';
 import { SendToGroupComponent } from './send-to-group.component';
+import { NamespacesCardComponent } from '../namespaces/namespaces-card.component';
 import { UploadFileComponent } from './upload-file.component';
 
 /**
- * Management > OT connectors: the configuration repository's connector files and, in a second
- * list, its point libraries.
+ * Management > OT connectors: the configuration repository's connector files, in a second list
+ * its point libraries, and in a third the namespace files that point libraries can be built from.
  */
 @Component({
   selector: 'tdot-connectors-page',
-  imports: [CoreModule, SharedRepositoryModule, NgTemplateOutlet],
+  imports: [CoreModule, SharedRepositoryModule, NgTemplateOutlet, NamespacesCardComponent],
   providers: [ConnectorOperationsService],
   template: `
     <c8y-title>{{ 'OT connectors' | translate }}</c8y-title>
@@ -147,6 +148,8 @@ import { UploadFileComponent } from './upload-file.component';
         </div>
       }
     </div>
+
+    <tdot-namespaces-card />
 
     <ng-template #actions let-entry>
       <button class="btn btn-default btn-xs m-r-4" type="button" (click)="edit(entry)">

@@ -272,6 +272,15 @@ contents:
     dst: /usr/share/tedge-dot/demo/docker-compose.yaml
     file_info: { owner: tedge, group: tedge, mode: 0644 }
 
+  # c8y_ScanAddressSpace: scan an OPC UA device's address space into a namespace file
+  # (doc/namespace-files.md). Same files as .goreleaser.yaml.
+  - src: operations/c8y_ScanAddressSpace
+    dst: /etc/tedge/operations/c8y/c8y_ScanAddressSpace
+    file_info: { owner: tedge, group: tedge, mode: 0644 }
+  - src: operations/ot-scan-address-space
+    dst: /usr/bin/ot-scan-address-space
+    file_info: { owner: root, group: root, mode: 0755 }
+
   # systemd unit: one process runs every config in /etc/tedge/plugins/ot.
   - src: packaging/tedge-dot.service
     dst: /lib/systemd/system/tedge-dot.service

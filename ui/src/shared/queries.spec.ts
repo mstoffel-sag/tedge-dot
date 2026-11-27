@@ -1,4 +1,4 @@
-import { gatewaysQuery, groupsQuery, libraryEntriesQuery, managedEntriesQuery, queryValue } from './queries';
+import { gatewaysQuery, groupsQuery, libraryEntriesQuery, managedEntriesQuery, namespaceFilesQuery, queryValue, scanGatewaysQuery } from './queries';
 
 describe('queries', () => {
   it('keeps a search term inside its quotes', () => {
@@ -23,5 +23,12 @@ describe('queries', () => {
       "$filter=(has(c8y_IsDevice) and c8y_SupportedConfigurations eq 'tedge-configuration-plugin') $orderby=name"
     );
     expect(groupsQuery('line')).toBe("$filter=(has(c8y_IsDeviceGroup) and name eq '*line*') $orderby=name");
+  });
+
+  it('lists namespace files and the gateways that can scan', () => {
+    expect(namespaceFilesQuery()).toBe("$filter=(type eq 'tedge-dot-namespace') $orderby=creationTime desc");
+    expect(scanGatewaysQuery(" gw' ")).toBe(
+      "$filter=(has(c8y_IsDevice) and c8y_SupportedOperations eq 'c8y_ScanAddressSpace' and name eq '*gw*') $orderby=name"
+    );
   });
 });

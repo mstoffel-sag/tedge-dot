@@ -1,0 +1,328 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://thin-edge.io/ot-connector/namespace-file.schema.json",
+  "title": "tedge-dot namespace file",
+  "description": "A stored scan of an OPC UA server's address space with the tedge-dot points proposed for its nodes (doc/namespace-files.md). Written by `opcua-scan browse --output tedge-dot-namespace`, stored gzip-compressed in Cumulocity as a binary of type `tedge-dot-namespace`, and read by the OT connectors plugin to build point libraries and device points. Nodes are listed parents first.",
+  "type": "object",
+  "required": [
+    "format",
+    "version",
+    "protocol",
+    "server",
+    "namespaces",
+    "scan",
+    "nodes"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "format": {
+      "const": "tedge-dot-namespace",
+      "description": "Identifies the file. A reader refuses any other value."
+    },
+    "version": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Format version. This schema describes version 1; a reader refuses a version it does not know."
+    },
+    "protocol": {
+      "const": "opcua",
+      "description": "The protocol the proposed points are for: the `[library] protocol` of a library built from this file."
+    },
+    "server": {
+      "type": "object",
+      "required": [
+        "endpoint"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "endpoint": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The endpoint URL the scan connected to."
+        },
+        "application_uri": {
+          "type": "string",
+          "description": "The server's ApplicationUri."
+        },
+        "product_name": {
+          "type": "string",
+          "description": "The server's product name, if it reports one."
+        }
+      }
+    },
+    "namespaces": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string"
+      },
+      "description": "The server's NamespaceArray at scan time, in index order; entry 0 is http://opcfoundation.org/UA/. The `ns=<index>` ids inside `points` refer to this table, as `[library] namespaces` does for a library."
+    },
+    "scan": {
+      "type": "object",
+      "required": [
+        "time",
+        "tool",
+        "root"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "time": {
+          "type": "string",
+          "format": "date-time",
+          "description": "When the scan finished (RFC 3339)."
+        },
+        "tool": {
+          "type": "string",
+          "description": "The program that wrote the file, e.g. `opcua-scan`."
+        },
+        "tool_version": {
+          "type": "string"
+        },
+        "root": {
+          "type": "string",
+          "description": "The node the scan started at."
+        },
+        "depth": {
+          "oneOf": [
+            {
+              "type": "integer",
+              "minimum": 0
+            },
+            {
+              "const": "unlimited"
+            }
+          ]
+        },
+        "include": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "exclude": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "types": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "The node classes the scan kept (with the objects above them)."
+        },
+        "max_children": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "preview_values": {
+          "type": "boolean",
+          "description": "Whether nodes carry their current `value`."
+        },
+        "device": {
+          "type": "string",
+          "description": "The tedge-dot device whose connection settings the scan used, if any."
+        },
+        "connector_file": {
+          "type": "string",
+          "description": "The connector file name (without `.toml`) that defines `device`."
+        }
+      }
+    },
+    "nodes": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/node"
+      }
+    }
+  },
+  "examples": [
+    {
+      "format": "tedge-dot-namespace",
+      "version": 1,
+      "protocol": "opcua",
+      "server": {
+        "endpoint": "opc.tcp://plc-7:4840",
+        "application_uri": "urn:acme:plc-7"
+      },
+      "namespaces": [
+        "http://opcfoundation.org/UA/",
+        "urn:acme:plc-7",
+        "urn:acme:line"
+      ],
+      "scan": {
+        "time": "2026-11-27T10:00:00Z",
+        "tool": "opcua-scan",
+        "tool_version": "0.3.0",
+        "root": "i=85",
+        "depth": "unlimited",
+        "types": [
+          "Variable",
+          "Method"
+        ],
+        "device": "plc-7",
+        "connector_file": "opcua"
+      },
+      "nodes": [
+        {
+          "id": "i=85",
+          "browse_name": "Objects",
+          "display_name": "Objects",
+          "node_class": "Object"
+        },
+        {
+          "id": "nsu=urn:acme:line;s=Line1",
+          "parent": "i=85",
+          "browse_name": "Line1",
+          "display_name": "Line1",
+          "node_class": "Object"
+        },
+        {
+          "id": "nsu=urn:acme:line;s=Line1.Temperature",
+          "parent": "nsu=urn:acme:line;s=Line1",
+          "browse_name": "Temperature",
+          "display_name": "Temperature",
+          "node_class": "Variable",
+          "datatype": "Double",
+          "value_rank": -1,
+          "access_level": 3,
+          "user_access_level": 3,
+          "historizing": false,
+          "unit": "°C",
+          "subscribable": true,
+          "points": [
+            {
+              "id": "line1_temperature",
+              "name": "Temperature",
+              "datatype": "float64",
+              "access": "read_write",
+              "unit": "°C",
+              "address": {
+                "node_id": "ns=2;s=Line1.Temperature"
+              }
+            }
+          ]
+        },
+        {
+          "id": "nsu=urn:acme:line;s=Line1.History",
+          "parent": "nsu=urn:acme:line;s=Line1",
+          "browse_name": "History",
+          "display_name": "History",
+          "node_class": "Variable",
+          "datatype": "Double",
+          "value_rank": 1,
+          "access_level": 1,
+          "user_access_level": 1,
+          "subscribable": true,
+          "skipped": "arrays are not supported"
+        }
+      ]
+    }
+  ],
+  "$defs": {
+    "node_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "A node id that does not depend on the server's index order: `nsu=<namespace URI>;<identifier>` for every namespace but 0, plain (`i=85`) for namespace 0."
+    },
+    "node": {
+      "type": "object",
+      "required": [
+        "id",
+        "browse_name",
+        "display_name",
+        "node_class"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/node_id"
+        },
+        "parent": {
+          "$ref": "#/$defs/node_id",
+          "description": "The node this one was browsed from. Absent only for the scan's root. Listed before its children."
+        },
+        "browse_name": {
+          "type": "string"
+        },
+        "display_name": {
+          "type": "string"
+        },
+        "node_class": {
+          "enum": [
+            "Object",
+            "Variable",
+            "Method",
+            "ObjectType",
+            "VariableType",
+            "ReferenceType",
+            "DataType",
+            "View"
+          ]
+        },
+        "description": {
+          "type": "string"
+        },
+        "datatype": {
+          "type": "string",
+          "description": "Variables: the data type's name, or its node id when it has none."
+        },
+        "value_rank": {
+          "type": "integer"
+        },
+        "access_level": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 255
+        },
+        "user_access_level": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 255
+        },
+        "historizing": {
+          "type": "boolean"
+        },
+        "unit": {
+          "type": "string",
+          "description": "The EngineeringUnits display name, if the node has one."
+        },
+        "subscribable": {
+          "type": "boolean"
+        },
+        "value": {
+          "type": "string",
+          "description": "The current value as text; only when the scan previewed values."
+        },
+        "points": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "https://thin-edge.io/ot-connector/config.schema.json#/$defs/point"
+          },
+          "description": "The tedge-dot points proposed for this node, as the point-library writer writes them: one for a scalar variable or a method, one per mappable leaf field for a structure."
+        },
+        "skipped": {
+          "type": "string",
+          "description": "Why a Variable or Method has no proposed point (array, unsupported type, not accessible, ...)."
+        },
+        "truncated": {
+          "enum": [
+            "depth",
+            "max_children",
+            "error"
+          ],
+          "description": "The scan did not browse (all) children of this node, and why."
+        }
+      },
+      "not": {
+        "required": [
+          "points",
+          "skipped"
+        ]
+      }
+    }
+  }
+}

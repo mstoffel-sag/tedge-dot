@@ -70,6 +70,12 @@ at `demo/points.d`. A `points_from` entry that contains `/` or ends in `.toml` i
 than a name, relative to the configuration file.
 </Aside>
 
+<Aside type="tip" title="OPC UA: start from a scan">
+For an OPC UA device type, you don't have to write the library by hand. Scan one instance from
+Cumulocity, check the nodes you want, and the OT connectors plugin writes the library with its
+namespace table ([namespace files](/tedge-dot/reference/configuration/namespace-files/)).
+</Aside>
+
 ## Add the instances
 
 Each device needs a name, an address and the reference. The packaged Modbus default config

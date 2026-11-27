@@ -13,11 +13,16 @@ export interface PendingFile {
   deviceType?: string;
   /** For a copy: the name of the entry it was made from. */
   copyOf?: string;
+  /** For changes to a saved entry: its id. The editor opens that entry with `text` instead. */
+  entryId?: string;
+  /** Shown above the editor until the file is saved, e.g. where the changes came from. */
+  note?: string;
 }
 
 /**
- * Hands a file to the editor, which opens it as a new entry: an uploaded file that needs fixing,
- * or a copy of an entry. The editor takes it once.
+ * Hands a file to the editor, which opens it as a new entry (an uploaded file that needs fixing,
+ * a copy of an entry, a library built from a namespace file) or as changes to a saved entry
+ * (points added from a namespace file). The editor takes it once.
  */
 @Injectable({ providedIn: 'root' })
 export class PendingFileService {
@@ -27,7 +32,21 @@ export class PendingFileService {
     this.pending = file;
   }
 
+  /** A new file, if one was handed. */
   take(): PendingFile | undefined {
+    if (this.pending?.entryId !== undefined) {
+      return undefined;
+    }
+    const file = this.pending;
+    this.pending = undefined;
+    return file;
+  }
+
+  /** Changes to the saved entry `entryId`, if they were handed. */
+  takeFor(entryId: string): PendingFile | undefined {
+    if (this.pending?.entryId !== entryId) {
+      return undefined;
+    }
     const file = this.pending;
     this.pending = undefined;
     return file;

@@ -101,6 +101,8 @@ jobs:
         run: curl -fsSL https://thin-edge.io/install.sh | sh -s
       - name: Run flow tests
         run: ./flows/test-flows.sh
+      - name: Scan operation script tests (offline, fake opcua-scan and curl)
+        run: ./operations/tests/test_scan_address_space.sh
 
   # The AVEVA PI simulator is our own model of the PI Web API, so it has unit tests of its own;
   # the migration script from the community plugin is tested against it. Its golden output is

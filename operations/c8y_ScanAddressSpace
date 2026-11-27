@@ -1,0 +1,18 @@
+# c8y_ScanAddressSpace -> scan an OPC UA device's address space into a namespace file.
+#
+# Sent to the gateway, naming one of its OPC UA devices; everything else is optional:
+#   { "c8y_ScanAddressSpace": { "device": "plc-7", "root": "i=85", "depth": "unlimited",
+#       "include": ["Objects/Factory/**"], "exclude": [], "type": "Variable,Method",
+#       "max_children": 5000 } }
+# /usr/bin/ot-scan-address-space runs opcua-scan with the device's settings from its connector
+# file, uploads the result as a `tedge-dot-namespace` binary and writes `binaryId` and `nodes`
+# into this fragment (doc/namespace-files.md).
+#
+# A `command` shim on the gateway, like c8y_ModbusDevice, not a thin-edge command on the child
+# device: tedge-agent runs workflows only for its own entity, and the flows that serve child
+# devices cannot run programs or call HTTP (openspec/changes/opcua-namespace-browser, D5).
+[exec]
+  topic = "c8y/devicecontrol/notifications"
+  on_fragment = "c8y_ScanAddressSpace"
+  command = "/usr/bin/ot-scan-address-space ${.payload.c8y_ScanAddressSpace} ${.payload.id}"
+  timeout = 600

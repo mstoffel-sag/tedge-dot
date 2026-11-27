@@ -62,6 +62,9 @@ const MARKER_OWNER = 'tedge-dot';
           @if (copyNote(); as note) {
             <div class="alert alert-info" role="status">{{ note }}</div>
           }
+          @if (handedNote(); as note) {
+            <div class="alert alert-info" role="status">{{ note }}</div>
+          }
           <div class="row">
             <div class="col-md-3">
               <c8y-form-group>
@@ -301,6 +304,8 @@ export class ConnectorEditorComponent {
       (service ? ` Its service name is ${service}, so it can run next to the original on the same gateway.` : '')
     );
   });
+  /** Where handed content came from, e.g. points from a namespace file; until it is saved. */
+  readonly handedNote = signal<string | undefined>(undefined);
   readonly view = signal<'form' | 'toml'>('form');
 
   readonly heading = computed(() =>
@@ -400,6 +405,7 @@ export class ConnectorEditorComponent {
       // An uploaded file that needs fixing, or a copy of an entry, comes here from the page.
       const uploaded = this.pending.take();
       this.copyOf.set(uploaded?.copyOf);
+      this.handedNote.set(uploaded?.note);
       if (uploaded) {
         this.kind.set(uploaded.kind);
         this.name.set(uploaded.name ?? uploaded.fileName);
@@ -418,6 +424,7 @@ export class ConnectorEditorComponent {
     }
     this.isNew.set(false);
     this.copyOf.set(undefined);
+    this.handedNote.set(undefined);
     try {
       const { data } = await this.inventory.detail(id);
       if (this.route.snapshot.paramMap.get('id') !== id) {
@@ -432,6 +439,12 @@ export class ConnectorEditorComponent {
       this.deviceType.set(data['deviceType'] ?? '');
       this.fileName.set(file?.name ?? '');
       this.content.set(data['url'] ? await this.repository.getBinaryText(data['url'], { allowExternal: false }) : '');
+      // Changes made elsewhere, such as points from a namespace file, replace the saved text.
+      const handed = this.pending.takeFor(id);
+      if (handed) {
+        this.content.set(handed.text);
+        this.handedNote.set(handed.note);
+      }
       // A file the form cannot read opens as TOML, where the problem is marked.
       if (this.result().config) {
         this.showForm();

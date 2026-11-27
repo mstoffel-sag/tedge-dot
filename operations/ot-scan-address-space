@@ -1,0 +1,301 @@
+#!/usr/bin/env bash
+# ot-scan-address-space: scan an OPC UA device's address space and store it in Cumulocity.
+#
+# Runs for the c8y_ScanAddressSpace operation (operations/c8y_ScanAddressSpace, a `command`
+# template the c8y mapper executes on the gateway). The operation names a device of the
+# gateway's OPC UA connector files; the script
+#   1. finds the connector file that defines that device (/etc/tedge/plugins/ot/*.toml with
+#      [connector] protocol = "opcua" and a [[device]] of that name),
+#   2. runs `opcua-scan browse --tedge-dot-config <file> --device <device>
+#      --output tedge-dot-namespace`, so the scan connects with the device's own endpoint,
+#      security, user, password file and the connector's PKI directory,
+#   3. compresses the namespace file and checks its size,
+#   4. uploads it through the mapper's Cumulocity proxy as a binary of type
+#      tedge-dot-namespace, sets its metadata fragment `tedgeDotNamespace` (with the gateway's
+#      managed object id as `gatewayId`), and adds it as a
+#      child addition of the scanned device (or of the gateway when the device is not
+#      registered),
+#   5. writes `binaryId` and `nodes` into the operation's c8y_ScanAddressSpace fragment.
+# Every failure exits non-zero with one line on stderr, which the mapper reports as the
+# operation's failure reason. No partial file is ever uploaded. The format is documented in
+# doc/namespace-files.md, the design in openspec/changes/opcua-namespace-browser.
+#
+# Usage:
+#   ot-scan-address-space '<c8y_ScanAddressSpace fragment json>' <operation id>
+#       Device-side run (what the template calls).
+#   ot-scan-address-space --find-device <device> [<connector dir>]
+#       Offline: print the connector file that defines <device>.
+#   ot-scan-address-space --scan-args '<fragment json>' <connector file> <out file>
+#       Offline: print the opcua-scan arguments, one per line.
+#   ot-scan-address-space --metadata <namespace file json> <gateway> <device> <connector file>
+#       Offline: print the tedgeDotNamespace fragment for a namespace file.
+#
+# Environment:
+#   C8Y_PROXY                 mapper's local Cumulocity proxy (default http://127.0.0.1:8001/c8y)
+#   OT_CONFIG_DIR             connector files            (default /etc/tedge/plugins/ot)
+#   OPCUA_SCAN                opcua-scan executable      (default opcua-scan on PATH)
+#   TEDGE_DOT_SCAN_TIMEOUT    seconds the scan may run   (default 540; the template allows 600)
+#   TEDGE_DOT_SCAN_MAX_BYTES  compressed size limit      (default 52428800, 50 MB)
+#   TEDGE_DOT_DEVICE_ID       the gateway's device id    (default `tedge config get device.id`)
+# Requires bash, jq, curl, gzip and timeout.
+set -u
+
+C8Y_PROXY="${C8Y_PROXY:-http://127.0.0.1:8001/c8y}"
+OT_CONFIG_DIR="${OT_CONFIG_DIR:-/etc/tedge/plugins/ot}"
+OPCUA_SCAN="${OPCUA_SCAN:-opcua-scan}"
+SCAN_TIMEOUT="${TEDGE_DOT_SCAN_TIMEOUT:-540}"
+MAX_BYTES="${TEDGE_DOT_SCAN_MAX_BYTES:-52428800}"
+INSTALL_GUIDE="https://github.com/thin-edge/tedge-dot/blob/main/doc/namespace-files.md#install-opcua-scan"
+DEFAULT_PKI_DIR=/var/lib/tedge-dot/opcua/pki
+
+die() {
+    echo "ot-scan-address-space: $*" >&2
+    exit 1
+}
+
+# The value of `key` in the TOML table `table` of `file`: a plain string, or nothing. Only the
+# simple `key = "value"` form the connector files use; good enough to find the files and the
+# PKI directory, opcua-scan parses the file properly.
+toml_value() {
+    local file="$1" table="$2" key="$3"
+    awk -v table="$table" -v key="$key" '
+        /^[[:space:]]*\[/ {
+            header = $0
+            sub(/^[[:space:]]*/, "", header); sub(/[[:space:]]*(#.*)?$/, "", header)
+            current = header
+            next
+        }
+        current == table {
+            line = $0
+            if (match(line, "^[[:space:]]*" key "[[:space:]]*=[[:space:]]*")) {
+                value = substr(line, RSTART + RLENGTH)
+                if (value ~ /^"/) { sub(/^"/, "", value); sub(/".*$/, "", value) }
+                else if (value ~ /^\047/) { sub(/^\047/, "", value); sub(/\047.*$/, "", value) }
+                else next
+                print value
+                exit
+            }
+        }
+    ' "$file"
+}
+
+# Device names of the [[device]] tables of `file`, one per line.
+device_names() {
+    awk '
+        /^[[:space:]]*\[/ {
+            header = $0
+            sub(/^[[:space:]]*/, "", header); sub(/[[:space:]]*(#.*)?$/, "", header)
+            in_device = (header == "[[device]]")
+            next
+        }
+        in_device && match($0, /^[[:space:]]*name[[:space:]]*=[[:space:]]*/) {
+            value = substr($0, RSTART + RLENGTH)
+            if (value ~ /^"/) { sub(/^"/, "", value); sub(/".*$/, "", value) }
+            else if (value ~ /^\047/) { sub(/^\047/, "", value); sub(/\047.*$/, "", value) }
+            else next
+            print value
+            in_device = 0
+        }
+    ' "$1"
+}
+
+# The OPC UA connector file that defines `device`; dies when none or several do.
+find_device() {
+    local device="$1" dir="${2:-$OT_CONFIG_DIR}" file protocol found=()
+    shopt -s nullglob
+    for file in "$dir"/*.toml; do
+        protocol="$(toml_value "$file" "[connector]" protocol)"
+        [ "$protocol" = "opcua" ] || continue
+        if device_names "$file" | grep -qxF -- "$device"; then
+            found+=("$file")
+        fi
+    done
+    shopt -u nullglob
+    case "${#found[@]}" in
+        0) die "no OPC UA connector file in $dir defines the device \"$device\"" ;;
+        1) printf '%s\n' "${found[0]}" ;;
+        *) die "several connector files define the device \"$device\": ${found[*]}" ;;
+    esac
+}
+
+# opcua-scan arguments for a fragment, one per line (values may not contain newlines).
+scan_args() {
+    local fragment="$1" file="$2" out="$3" device pki
+    device="$(jq -r '.device // empty' <<<"$fragment")" || die "the operation is not valid JSON"
+    [ -n "$device" ] || die "the operation needs \"device\": the name of an OPC UA device of this gateway"
+    pki="$(toml_value "$file" "[connection]" pki_dir)"
+    printf '%s\n' browse --tedge-dot-config "$file" --device "$device" \
+        --output tedge-dot-namespace --file "$out" --pki-dir "${pki:-$DEFAULT_PKI_DIR}"
+    jq -r '
+        def list: if type == "array" then .[] elif type == "string" and . != "" then . else empty end;
+        (if (.root // "") != "" then "--root", (.root | tostring) else empty end),
+        "--depth", ((.depth // "unlimited") | tostring),
+        (.include | list | "--include", .),
+        (.exclude | list | "--exclude", .),
+        "--type", (if (.type // "") == "" then "Variable,Method"
+                   elif (.type | type) == "array" then (.type | join(","))
+                   else (.type | tostring) end),
+        (if .max_children then "--max-children", (.max_children | tostring) else empty end)
+    ' <<<"$fragment" || die "the operation's scan options are not valid"
+}
+
+# The tedgeDotNamespace fragment for a (decompressed) namespace file.
+metadata() {
+    local file="$1" gateway="$2" device="$3" connector_file="$4"
+    jq -c --arg gateway "$gateway" --arg device "$device" --arg file "$connector_file" '{
+        formatVersion: .version,
+        protocol: .protocol,
+        gateway: $gateway,
+        device: $device,
+        connectorFile: $file,
+        endpoint: .server.endpoint,
+        applicationUri: (.server.application_uri // null),
+        productName: (.server.product_name // null),
+        namespaces: .namespaces,
+        scannedAt: .scan.time,
+        tool: .scan.tool,
+        toolVersion: (.scan.tool_version // null),
+        scope: {
+            root: .scan.root,
+            depth: (.scan.depth // null),
+            include: (.scan.include // []),
+            exclude: (.scan.exclude // []),
+            types: (.scan.types // []),
+            maxChildren: (.scan.max_children // null)
+        },
+        nodes: (.nodes | length),
+        points: ([.nodes[].points // [] | length] | add // 0),
+        truncated: any(.nodes[]; .truncated != null)
+    } | with_entries(select(.value != null))' "$file"
+}
+
+# GET/POST/PUT through the mapper proxy; prints the body, dies with the status on failure.
+c8y() {
+    local method="$1" path="$2" body="${3:-}" type="${4:-application/json}" out code
+    out="$(mktemp)"
+    if [ -n "$body" ]; then
+        code="$(curl -s -o "$out" -w '%{http_code}' -X "$method" -H "Content-Type: $type" \
+            -H 'Accept: application/json' --data-binary "$body" "${C8Y_PROXY}${path}")"
+    else
+        code="$(curl -s -o "$out" -w '%{http_code}' -X "$method" -H 'Accept: application/json' \
+            "${C8Y_PROXY}${path}")"
+    fi
+    case "$code" in
+        2??) cat "$out"; rm -f "$out"; return 0 ;;
+    esac
+    rm -f "$out"
+    echo "$code"
+    return 1
+}
+
+# The managed object id behind a c8y_Serial external id, or nothing.
+managed_object_of() {
+    c8y GET "/identity/externalIds/c8y_Serial/$1" 2>/dev/null | jq -r '.managedObject.id // empty' 2>/dev/null
+}
+
+main() {
+    [ $# -eq 2 ] || die "expected 2 arguments (the c8y_ScanAddressSpace fragment and the operation id), got $#"
+    local fragment="$1" op_id="$2" device file raw gz size gateway name meta
+    local binary_id target nodes code
+
+    for tool in jq curl gzip timeout; do
+        command -v "$tool" >/dev/null 2>&1 || die "$tool is not installed on the gateway"
+    done
+    jq -e 'type == "object"' >/dev/null 2>&1 <<<"$fragment" || die "the operation is not a JSON object"
+    device="$(jq -r '.device // empty' <<<"$fragment")"
+    [ -n "$device" ] || die "the operation needs \"device\": the name of an OPC UA device of this gateway"
+
+    command -v "$OPCUA_SCAN" >/dev/null 2>&1 ||
+        die "opcua-scan is not installed on the gateway, see $INSTALL_GUIDE"
+    "$OPCUA_SCAN" browse --help 2>/dev/null | grep -q 'tedge-dot-namespace' ||
+        die "opcua-scan $("$OPCUA_SCAN" --version 2>/dev/null | awk '{print $NF}') cannot write namespace files (--output tedge-dot-namespace); update it, see $INSTALL_GUIDE"
+
+    file="$(find_device "$device")" || exit 1
+
+    WORK="$(mktemp -d)" || die "cannot create a temporary directory"
+    trap 'rm -rf "$WORK"' EXIT
+    raw="$WORK/namespace.json"
+    gz="$WORK/namespace.json.gz"
+
+    local arg_lines line args=()
+    arg_lines="$(scan_args "$fragment" "$file" "$raw")" || exit 1
+    while IFS= read -r line; do args+=("$line"); done <<<"$arg_lines"
+
+    timeout "$SCAN_TIMEOUT" "$OPCUA_SCAN" "${args[@]}" >"$WORK/scan.log" 2>&1
+    code=$?
+    if [ "$code" -eq 124 ]; then
+        die "the scan of \"$device\" did not finish within ${SCAN_TIMEOUT}s; narrow it with include or depth"
+    elif [ "$code" -ne 0 ]; then
+        die "the scan of \"$device\" failed: $(grep -v '^[[:space:]]*$' "$WORK/scan.log" | tail -n 1)"
+    fi
+    jq -e '.format == "tedge-dot-namespace" and (.nodes | length) > 0' "$raw" >/dev/null 2>&1 ||
+        die "the scan of \"$device\" found no node"
+
+    gzip -9 -c "$raw" >"$gz" || die "cannot compress the namespace file"
+    size="$(wc -c <"$gz" | tr -d ' ')"
+    if [ "$size" -gt "$MAX_BYTES" ]; then
+        die "the namespace file is $((size / 1048576)) MB compressed, above the limit of $((MAX_BYTES / 1048576)) MB (TEDGE_DOT_SCAN_MAX_BYTES); narrow the scan with include or depth"
+    fi
+
+    gateway="${TEDGE_DOT_DEVICE_ID:-$(tedge config get device.id 2>/dev/null)}"
+    [ -n "$gateway" ] || die "cannot read the gateway's device id (tedge config get device.id)"
+    meta="$(metadata "$raw" "$gateway" "$device" "$(basename "$file" .toml)")" ||
+        die "the namespace file has no valid metadata"
+    local gateway_mo
+    gateway_mo="$(managed_object_of "$gateway")"
+    [ -z "$gateway_mo" ] || meta="$(jq -c --arg id "$gateway_mo" '. + {gatewayId: $id}' <<<"$meta")"
+    nodes="$(jq -r '.nodes' <<<"$meta")"
+    name="$device $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+    local response
+    response="$(curl -s -w '\n%{http_code}' -X POST -H 'Accept: application/json' \
+        --form-string "object=$(jq -cn --arg name "$name" '{name: $name, type: "tedge-dot-namespace"}')" \
+        --form-string "filesize=$size" \
+        -F "file=@$gz;type=application/gzip;filename=$device.json.gz" \
+        "${C8Y_PROXY}/inventory/binaries")"
+    code="$(tail -n 1 <<<"$response")"
+    [ "${code:0:1}" = "2" ] || die "uploading the namespace file failed (HTTP $code)"
+    binary_id="$(sed '$d' <<<"$response" | jq -r '.id // empty')"
+    [ -n "$binary_id" ] || die "Cumulocity did not return the namespace file's id"
+
+    c8y PUT "/inventory/managedObjects/$binary_id" \
+        "$(jq -cn --argjson meta "$meta" '{tedgeDotNamespace: $meta}')" >/dev/null ||
+        die "storing the namespace file's metadata failed"
+
+    target="$(managed_object_of "$gateway:device:$device")"
+    [ -n "$target" ] || target="$gateway_mo"
+    if [ -n "$target" ]; then
+        c8y POST "/inventory/managedObjects/$target/childAdditions" \
+            "$(jq -cn --arg id "$binary_id" '{managedObject: {id: $id}}')" \
+            'application/vnd.com.nsn.cumulocity.managedobjectreference+json' >/dev/null ||
+            echo "ot-scan-address-space: could not link the namespace file to the device" >&2
+    fi
+
+    c8y PUT "/devicecontrol/operations/$op_id" \
+        "$(jq -cn --argjson f "$fragment" --arg id "$binary_id" --argjson nodes "$nodes" \
+            '{c8y_ScanAddressSpace: ($f + {binaryId: $id, nodes: $nodes})}')" >/dev/null ||
+        echo "ot-scan-address-space: could not write the result into the operation" >&2
+
+    echo "namespace file $binary_id: $nodes nodes of \"$device\""
+}
+
+case "${1:-}" in
+    --find-device)
+        shift
+        [ $# -ge 1 ] || die "--find-device expects <device> [<connector dir>]"
+        find_device "$@"
+        ;;
+    --scan-args)
+        shift
+        [ $# -eq 3 ] || die "--scan-args expects <fragment json> <connector file> <out file>"
+        scan_args "$@"
+        ;;
+    --metadata)
+        shift
+        [ $# -eq 4 ] || die "--metadata expects <namespace file> <gateway> <device> <connector file>"
+        metadata "$@"
+        ;;
+    *)
+        main "$@"
+        ;;
+esac

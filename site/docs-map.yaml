@@ -60,6 +60,10 @@ pages:
     slug: reference/contract/opcua-struct-vectors
     section: Contract
     label: OPC UA structure vectors
+  - source: doc/contract/test-vectors/namespace-file/README.md
+    slug: reference/contract/namespace-file-vectors
+    section: Contract
+    label: Namespace file vectors
 
   # Configuration
   - source: doc/reducing-data-volume.md
@@ -78,6 +82,10 @@ pages:
     slug: reference/configuration/c8y-connector-files
     section: Configuration
     label: Connector files from Cumulocity
+  - source: doc/namespace-files.md
+    slug: reference/configuration/namespace-files
+    section: Configuration
+    label: Namespace files (OPC UA scans)
   - source: demo/points.d/README.md
     slug: reference/configuration/point-libraries
     section: Configuration

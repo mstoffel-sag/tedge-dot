@@ -149,6 +149,44 @@ A group send stays one bulk operation and adds no files: its check also lists th
 lack a library the file references, and reminds you to send changed libraries to the group
 first.
 
+## Points from a namespace scan
+
+Instead of copying node ids from an OPC UA client, build a library or a device's points from a
+scan of the server. The third list on the OT connectors page, **Namespaces**, holds the scans
+stored in Cumulocity ([namespace files](namespace-files.md)):
+
+- **Scan address space** asks a gateway to scan one of its OPC UA devices, with the device's own
+  connection settings, and adds the result to the list. The gateway needs
+  [opcua-scan](namespace-files.md#install-opcua-scan). A scope (start node, depth, include and
+  exclude patterns, node classes, children per node) keeps large address spaces manageable.
+- **Upload namespace file** stores a file written by
+  `opcua-scan browse ... --output tedge-dot-namespace` elsewhere, such as on a laptop.
+- **Download** saves a file as `.json.gz`, and **Delete** removes it. Libraries made from it stay.
+
+**Create from namespace** opens a file as a tree. Expand it, search by name or path, and filter by
+node class, data type, writable nodes, or nodes with points. Check a variable to take its proposed
+point, or an object to take every point below it; a structure proposes one point per field, a
+method a `call_method` point. A node marked with a ban sign has no point, and its details say why
+(an array, a property, an unsupported type). *truncated* marks a branch the scan did not read in
+full.
+
+The checked points are listed on the right. Change a point's id, name or unit in place, or mark
+several and set subscribe or poll with an interval, the access, and the measurement type and
+fragment at once. Two points with the same id are marked, and the result cannot be created until
+one is renamed.
+
+Choose where the points go:
+
+- **New point library**: a name and an optional device type. The library gets the scan's
+  namespace table.
+- **Existing point library**, or a **device in a connector file**: the points the target already
+  has for nodes in the scan start checked. Unchecking one removes it, checking a node adds its
+  point, and the target's other points, settings and comments stay. New points are written in the
+  target's namespace numbering; a namespace it lacks is appended to its table.
+
+**Open in editor** opens the result unsaved, with a note on what changed. Check it and save it as
+any other entry, then send it to the gateway.
+
 ## The OT connectors tab
 
 Every device that offers the configuration type `tedge-configuration-plugin` gets an **OT
@@ -167,6 +205,9 @@ libraries:
   file, with the libraries it references, or a point library.
 - **Register a file on the gateway** makes a file that is already there, such as a packaged
   `modbus.toml`, a configuration type, so you can take snapshots of it and send new versions.
+
+Below them, **Namespaces** lists the namespace files this gateway's scans produced, with **Scan
+address space** when the gateway offers it ([Points from a namespace scan](#points-from-a-namespace-scan)).
 
 ## Adding a file to a gateway
 

@@ -15,6 +15,9 @@ Cumulocity Device Management, and install them on your gateways without logging 
   help text for every setting, or edit its TOML directly. Changes made in the form keep the file's
   comments. Before you save, the editor checks the file and shows each problem at the setting it
   concerns.
+- **Points from an OPC UA scan**: scan an OPC UA device's address space from its gateway, keep
+  the scan in Cumulocity as a namespace file, pick nodes from a tree, adjust the proposed points,
+  and get a new point library or points added to a library or a device.
 - **An OT connectors tab** on thin-edge.io devices: the device's connector files and point
   libraries, with snapshots, saving to the repository, downloading, and sending, like the
   Configuration tab.
@@ -25,6 +28,9 @@ Cumulocity Device Management, and install them on your gateways without logging 
 
 - Cumulocity with Device Management 1025.
 - Gateways with thin-edge.io 2.x and tedge-dot 0.0.13 or later.
+- To scan from Cumulocity: a tedge-dot version with the `c8y_ScanAddressSpace` operation, and
+  opcua-scan 0.2.0 or later on the gateway. Uploading a namespace file made elsewhere needs
+  neither.
 - Inventory admin to add, change and delete entries, device control admin to send them to a
   gateway, and bulk operation admin to send them to a group. Users who can't add entries don't see
   *Add*, *Upload* and *Duplicate*. The guide lists the finer roles that work too.
@@ -50,6 +56,8 @@ Cumulocity Device Management, and install them on your gateways without logging 
   references. It cannot see what only the gateway knows, such as whether a file a setting names
   exists there. A file that tedge-dot refuses still shows as installed, so check the connector
   after you send a file.
+- A namespace file is a binary of type `tedge-dot-namespace`. The scan connects with the
+  device's settings from its connector file; credentials never leave the gateway.
 - Sending to a group does not add files to gateways. The dialog lists the devices in the group
   that do not have the file or a library it needs yet.
 

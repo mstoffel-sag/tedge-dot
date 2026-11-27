@@ -15,6 +15,7 @@ pub enum Kind {
     Status,
     Config,
     PointLibrary,
+    NamespaceFile,
 }
 
 impl Kind {
@@ -25,13 +26,14 @@ impl Kind {
             Kind::Status => "status",
             Kind::Config => "config",
             Kind::PointLibrary => "point-library",
+            Kind::NamespaceFile => "namespace-file",
         }
     }
 }
 
 const CONFIG_SCHEMA: &str = include_str!("../../../../../doc/contract/schemas/config.schema.json");
 
-const SOURCES: [(Kind, &str); 5] = [
+const SOURCES: [(Kind, &str); 6] = [
     (Kind::Sample, include_str!("../../../../../doc/contract/schemas/sample.schema.json")),
     (Kind::Command, include_str!("../../../../../doc/contract/schemas/command.schema.json")),
     (Kind::Status, include_str!("../../../../../doc/contract/schemas/status.schema.json")),
@@ -39,6 +41,10 @@ const SOURCES: [(Kind, &str); 5] = [
     (
         Kind::PointLibrary,
         include_str!("../../../../../doc/contract/schemas/point-library.schema.json"),
+    ),
+    (
+        Kind::NamespaceFile,
+        include_str!("../../../../../doc/contract/schemas/namespace-file.schema.json"),
     ),
 ];
 
@@ -48,7 +54,7 @@ pub struct Schemas {
 
 impl Schemas {
     pub fn load() -> Result<Schemas, String> {
-        // The point-library schema reuses config.schema.json's point definition rather than
+        // The point-library and namespace-file schemas reuse config.schema.json's point definition rather than
         // restating it, so the config schema must be resolvable by its $id while compiling.
         // Registered from the embedded copy: the harness never reaches the network.
         let config: serde_json::Value = serde_json::from_str(CONFIG_SCHEMA)
