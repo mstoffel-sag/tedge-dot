@@ -157,7 +157,16 @@ case "\$url" in
     */identity/externalIds/c8y_Serial/gw-1:device:plc-7) body='{"managedObject":{"id":"77"}}' ;;
     */identity/externalIds/c8y_Serial/gw-1) body='{"managedObject":{"id":"1"}}' ;;
     */identity/externalIds/c8y_Serial/*) code=404 ;;
+    */inventory/managedObjects\?*query=*)
+        # Namespace files the gateway query finds: the new one, an earlier one of the same device,
+        # one of another device, and (if the query were too wide) one of another gateway.
+        body='{"managedObjects":[
+          {"id":"4711","tedgeDotNamespace":{"gateway":"gw-1","device":"plc-7"}},
+          {"id":"4000","tedgeDotNamespace":{"gateway":"gw-1","device":"plc-7"}},
+          {"id":"4001","tedgeDotNamespace":{"gateway":"gw-1","device":"plc-8"}},
+          {"id":"4002","tedgeDotNamespace":{"gateway":"gw-2","device":"plc-7"}}]}' ;;
 esac
+[ "\$method" = DELETE ] && code=204
 if [ -n "\$outfile" ]; then echo "\$body" >"\$outfile"; else echo "\$body"; fi
 [ -n "\$write" ] && printf '%s' "\${write//%\{http_code\}/\$code}" | sed 's/\\\\n/\n/g'
 exit 0
@@ -180,6 +189,8 @@ expect_contains "run: links the binary to the device" '"id":"4711"' "$(grep 'POS
 expect_contains "run: writes the result into the operation" '"binaryId":"4711","nodes":3' "$(grep 'PUT http://proxy/c8y/devicecontrol/operations/99' "$log")"
 # Cumulocity refuses an operation update without a status (HTTP 422).
 expect_contains "run: the operation update carries a status" '"status":"EXECUTING"' "$(grep 'PUT http://proxy/c8y/devicecontrol/operations/99' "$log")"
+expect_contains "run: queries this gateway's namespace files" 'tedgeDotNamespace.gateway%20eq%20%27gw-1%27' "$(grep 'GET http://proxy/c8y/inventory/managedObjects?' "$log")"
+expect "run: deletes the device's earlier file only" "DELETE http://proxy/c8y/inventory/binaries/4000" "$(grep '^DELETE' "$log" | sed 's/ *$//')"
 expect_contains "run: scans with the device's connector file" "--tedge-dot-config $conf/opcua.toml --device plc-7" "$(cat "$tmp/scan-args")"
 
 out="$(PATH="/usr/bin:/bin" OT_CONFIG_DIR="$conf" OPCUA_SCAN=/nonexistent/opcua-scan "$SHIM" '{"device":"plc-7"}' 99 2>&1)"; code=$?
@@ -196,6 +207,7 @@ out="$(FAKE_SCAN=fail run '{"device":"plc-7"}')"; code=$?
 expect "run: server down (exit)" 1 "$code"
 expect_contains "run: server down (reason)" "BadTimeout: no answer from opc.tcp://plc-7:4840" "$out"
 expect "run: server down uploads nothing" "" "$(grep -c binaries "$log" 2>/dev/null | grep -v '^0$')"
+expect "run: server down keeps the earlier file" "" "$(grep "^DELETE" "$log" 2>/dev/null)"
 out="$(FAKE_SCAN=empty run '{"device":"plc-7"}')"; code=$?
 expect_contains "run: empty scan" "found no node" "$out"
 out="$(FAKE_SCAN=ok TEDGE_DOT_SCAN_MAX_BYTES=10 run '{"device":"plc-7"}')"; code=$?

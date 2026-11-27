@@ -15,7 +15,9 @@
 #      managed object id as `gatewayId`), and adds it as a
 #      child addition of the scanned device (or of the gateway when the device is not
 #      registered),
-#   5. writes `binaryId` and `nodes` into the operation's c8y_ScanAddressSpace fragment.
+#   5. deletes this device's earlier namespace files from this gateway (one file per device; a
+#      failed scan keeps the earlier one),
+#   6. writes `binaryId` and `nodes` into the operation's c8y_ScanAddressSpace fragment.
 # Every failure exits non-zero with one line on stderr, which the mapper reports as the
 # operation's failure reason. No partial file is ever uploaded. The format is documented in
 # doc/namespace-files.md, the design in openspec/changes/opcua-namespace-browser.
@@ -193,6 +195,20 @@ managed_object_of() {
     c8y GET "/identity/externalIds/c8y_Serial/$1" 2>/dev/null | jq -r '.managedObject.id // empty' 2>/dev/null
 }
 
+# The ids of the namespace files of `gateway` and `device` other than `keep`, one per line. The
+# query names the gateway (quotes removed, so it cannot end the string); the device is compared
+# exactly on the returned metadata.
+earlier_files() {
+    local gateway="$1" device="$2" keep="$3" query
+    query="$(jq -rn --arg g "${gateway//\'/}" \
+        '"$filter=(type eq \u0027tedge-dot-namespace\u0027 and tedgeDotNamespace.gateway eq \u0027\($g)\u0027)" | @uri')"
+    c8y GET "/inventory/managedObjects?pageSize=2000&withParents=false&query=$query" 2>/dev/null |
+        jq -r --arg g "$gateway" --arg d "$device" --arg keep "$keep" \
+            '(.managedObjects // [])[]
+             | select(.tedgeDotNamespace.gateway == $g and .tedgeDotNamespace.device == $d and .id != $keep)
+             | .id' 2>/dev/null
+}
+
 main() {
     [ $# -eq 2 ] || die "expected 2 arguments (the c8y_ScanAddressSpace fragment and the operation id), got $#"
     local fragment="$1" op_id="$2" device file raw gz size gateway name meta
@@ -270,6 +286,15 @@ main() {
             'application/vnd.com.nsn.cumulocity.managedobjectreference+json')" ||
             echo "ot-scan-address-space: could not link the namespace file to the device (HTTP $code)" >&2
     fi
+
+    # One namespace file per device: drop this device's earlier files from this gateway, now that
+    # the new one is stored. A failed scan never gets here, so it keeps the earlier file.
+    local older
+    older="$(earlier_files "$gateway" "$device" "$binary_id")"
+    for id in $older; do
+        code="$(c8y DELETE "/inventory/binaries/$id")" ||
+            echo "ot-scan-address-space: could not delete the earlier namespace file $id (HTTP $code)" >&2
+    done
 
     # Cumulocity refuses an operation update without `status` (422). The operation is EXECUTING
     # while this runs; the mapper marks it SUCCESSFUL when the script exits 0.

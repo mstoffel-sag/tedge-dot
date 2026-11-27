@@ -4,11 +4,13 @@ import { gzipSync } from 'node:zlib';
 
 import {
   type NamespaceFile,
+  type NamespaceMetadata,
   NamespaceFileError,
   ancestors,
   checkNamespaceFile,
   indexNamespace,
   metadataOf,
+  predecessors,
   readNamespaceFile,
   subtree,
   treeRows,
@@ -77,6 +79,22 @@ describe('namespace files', () => {
     const meta = metadataOf(vector('valid', 'structure.json'), { gateway: 'gw-1' });
     expect(meta).toMatchObject({ gateway: 'gw-1', device: 'plc-7', connectorFile: 'opcua', nodes: 3, points: 2, truncated: false });
     expect(metadataOf(vector('valid', 'truncated.json')).truncated).toBe(true);
+  });
+
+  it('finds the files a new one replaces', () => {
+    const meta = (m: Partial<NamespaceMetadata>) => ({ ...metadataOf(vector('valid', 'minimal.json')), ...m });
+    const stored = [
+      { id: 'new', meta: meta({ gateway: 'gw-1', device: 'plc-7' }) },
+      { id: 'same-device', meta: meta({ gateway: 'gw-1', device: 'plc-7' }) },
+      { id: 'other-device', meta: meta({ gateway: 'gw-1', device: 'plc-8' }) },
+      { id: 'other-gateway', meta: meta({ gateway: 'gw-2', device: 'plc-7' }) },
+      { id: 'upload', meta: meta({ gateway: undefined, device: 'plc-7' }) },
+      { id: 'upload-other-endpoint', meta: meta({ gateway: undefined, device: 'plc-7', endpoint: 'opc.tcp://other:4840' }) },
+      { id: 'no-metadata' },
+    ];
+    expect(predecessors(stored, stored[0].meta!, 'new').map(e => e.id)).toEqual(['same-device']);
+    const upload = meta({ gateway: undefined, device: 'plc-7' });
+    expect(predecessors(stored, upload, 'newer-upload').map(e => e.id)).toEqual(['upload']);
   });
 
   it('indexes the tree', () => {

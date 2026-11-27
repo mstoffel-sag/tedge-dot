@@ -64,6 +64,8 @@ points, linked to the device, and the operation carried `binaryId` and `nodes` (
 that sends `status` with the operation update, which Cumulocity requires). Picking the device's
 connector file as target checked the 7 points it already had for scanned nodes and kept the 3
 array-element points the scan does not propose; a variable and a method were added.
+One file per device (added after the test, on request): verified on the same gateway; three
+earlier scans of Pump01 were replaced by the new one.
 Open: 3.7 (bench test); 5.1 *Download* (not clicked); 5.4 with a 200 000-node file in the
 browser; 7.1 sending the result and seeing measurements.
 

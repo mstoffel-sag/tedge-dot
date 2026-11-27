@@ -17,9 +17,9 @@ SHALL list the namespace files of its scans the same way.
 ### Requirement: Scan from the plugin
 The Namespaces list and the gateway's tab SHALL offer *Scan address space* for gateways that
 announce `c8y_ScanAddressSpace`. The dialog SHALL ask for the gateway, one of its OPC UA child
-devices, and the scope (root, depth, include and
-exclude patterns, node classes, child limit), send the operation, show its progress, and add the
-new namespace file to the list when the operation succeeds, or show its failure reason.
+devices, and the scope (root, depth, include and exclude patterns, node classes, child limit), say
+that a new scan replaces the device's current file, send the operation, show its progress, and
+show the new namespace file in the list when the operation succeeds, or show its failure reason.
 
 #### Scenario: Successful scan
 - **WHEN** a user scans `plc-7` with the include pattern `Objects/Factory/**`
@@ -42,6 +42,15 @@ refused with its reason.
 #### Scenario: Plain export
 - **WHEN** a user uploads opcua-scan's plain `--output json` export
 - **THEN** the plugin refuses it and says it needs `--output tedge-dot-namespace`
+
+### Requirement: Uploads replace their predecessor
+An uploaded namespace file SHALL replace earlier uploaded files of the same device and server
+endpoint, so the list keeps one per server. The dialog SHALL say that it replaced a file. Files
+that gateway scans produced SHALL NOT be replaced by an upload.
+
+#### Scenario: Upload again
+- **WHEN** a user uploads a new scan of `plc-7` at `opc.tcp://plc-7:4840` and an uploaded file of that device and endpoint exists
+- **THEN** the list shows only the new file, and the dialog says the earlier one was replaced
 
 ### Requirement: Namespace tree
 *Create from namespace* SHALL show the file's nodes as a tree that opens at `Objects`, expands on

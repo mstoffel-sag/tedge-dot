@@ -55,6 +55,23 @@ gateway has registered that device, else of the gateway.
 - **WHEN** the scan of `plc-7` finds 1200 nodes
 - **THEN** the operation is SUCCESSFUL, its fragment holds the new binary's id and `nodes = 1200`, and `plc-7`'s managed object lists the binary as a child addition
 
+### Requirement: One file per device
+After a successful scan and upload, the gateway SHALL delete the earlier namespace files of the
+same gateway and device, so each device has one current namespace file. A scan that fails SHALL
+leave the earlier file in place. Files of other devices and uploaded files SHALL NOT be touched.
+
+#### Scenario: Scan again
+- **WHEN** `plc-7` on gateway `gw-1` has a namespace file and a new scan of `plc-7` succeeds
+- **THEN** Cumulocity holds only the new namespace file of `plc-7` on `gw-1`
+
+#### Scenario: Scan fails
+- **WHEN** `plc-7` has a namespace file and a new scan of `plc-7` fails because the server does not answer
+- **THEN** the earlier namespace file of `plc-7` is still there
+
+#### Scenario: Other device
+- **WHEN** a scan of `plc-7` succeeds on a gateway that also has a namespace file of `plc-8`
+- **THEN** the namespace file of `plc-8` is still there
+
 ### Requirement: Failures
 The operation SHALL fail with a reason a user can act on when opcua-scan is not installed or too
 old, the device is not in any connector file, the server cannot be reached or refuses the session,

@@ -121,8 +121,8 @@ of its connector files. Like `c8y_ModbusDevice` it is a `command` shim, because 
 workflows only for its own entity and the flows that serve child devices cannot run programs or
 call HTTP. [`ot-scan-address-space`](ot-scan-address-space) runs
 [opcua-scan](https://github.com/reubenmiller/opcua-discovery) with the device's settings from its
-connector file, uploads the result as a `tedge-dot-namespace` binary and writes `binaryId` and
-`nodes` into the operation ([doc/namespace-files.md](../doc/namespace-files.md)). Unlike the other
+connector file, uploads the result as a `tedge-dot-namespace` binary, deletes the device's earlier
+namespace files from that gateway, and writes `binaryId` and `nodes` into the operation ([doc/namespace-files.md](../doc/namespace-files.md)). Unlike the other
 shims here, the template and the script are packaged, in `/etc/tedge/operations/c8y/` and
 `/usr/bin/`. The script is tested offline by
 [`tests/test_scan_address_space.sh`](tests/test_scan_address_space.sh).

@@ -3,6 +3,7 @@ import { IManagedObject, InventoryBinaryService, InventoryService, OperationServ
 
 import {
   METADATA_FRAGMENT,
+  predecessors,
   NAMESPACE_TYPE,
   type NamespaceFile,
   NamespaceFileError,
@@ -53,9 +54,10 @@ export class NamespaceService {
 
   /**
    * Stores a namespace file made elsewhere: checked first, then uploaded compressed, with its
-   * metadata. Throws NamespaceFileError with the reason for a file that is not one.
+   * metadata, replacing earlier uploads of the same device and endpoint. Throws
+   * NamespaceFileError with the reason for a file that is not one.
    */
-  async upload(file: File): Promise<string> {
+  async upload(file: File): Promise<{ id: string; replaced: number }> {
     const raw = new Uint8Array(await file.arrayBuffer());
     const parsed = await readNamespaceFile(raw);
     const meta = metadataOf(parsed);
@@ -65,7 +67,12 @@ export class NamespaceService {
     const name = meta.device ? `${meta.device} ${meta.scannedAt}` : `${base} ${meta.scannedAt}`;
     const { data } = await this.binaries.create(blob, { name, type: NAMESPACE_TYPE });
     await this.inventory.update({ id: data.id, [METADATA_FRAGMENT]: meta });
-    return String(data.id);
+    const id = String(data.id);
+    const older = predecessors((await this.list()).map(e => ({ id: String(e.mo.id), meta: e.meta })), meta, id);
+    for (const e of older) {
+      await this.binaries.delete(e.id);
+    }
+    return { id, replaced: older.length };
   }
 
   async delete(id: string): Promise<void> {

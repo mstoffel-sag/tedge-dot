@@ -73,6 +73,10 @@ stores its metadata, adds it as a child addition of the device's managed object 
 gateway, when the device is not registered), and writes `binaryId` and `nodes` into the
 operation's fragment.
 
+Each device keeps **one namespace file**: after a successful scan the script deletes the earlier
+files of the same gateway and device. A scan that fails leaves the earlier file in place, and
+files of other devices and uploaded files are not touched.
+
 ### Settings
 
 The script reads these from its environment, which a systemd drop-in for `tedge-mapper-c8y` sets:
@@ -110,6 +114,7 @@ opcua-scan browse --tedge-dot-config opcua.toml --device plc-7 --depth unlimited
 ```
 
 **Upload namespace file** in the Namespaces list stores it, compressed or not, after checking it.
+It replaces an earlier upload of the same device and endpoint; files from gateway scans stay.
 opcua-scan's plain `--output json` export is not a namespace file and is refused.
 
 ## The format

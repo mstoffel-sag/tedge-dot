@@ -51,7 +51,7 @@ const NODE_CLASSES = ['Variable', 'Method', 'Object'];
                   <option [value]="d['name']">{{ d['name'] }}</option>
                 }
               </select>
-              <c8y-messages [helpMessage]="'The scan connects with this device\\'s settings from its connector file on the gateway.' | translate"></c8y-messages>
+              <c8y-messages [helpMessage]="'The scan connects with this device\\'s settings from its connector file on the gateway. A successful scan replaces the device\\'s current namespace file.' | translate"></c8y-messages>
             </c8y-form-group>
             <div class="row">
               <div class="col-sm-6">

@@ -31,7 +31,7 @@ type State = 'pick' | 'saving' | 'done' | 'error';
               (dropped)="onDropped($event)"
             ></c8y-drop-area>
             <c8y-messages
-              [helpMessage]="'Written by opcua-scan browse ... --output tedge-dot-namespace.' | translate"
+              [helpMessage]="'Written by opcua-scan browse ... --output tedge-dot-namespace. It replaces an earlier upload of the same server.' | translate"
             ></c8y-messages>
           </c8y-form-group>
         }
@@ -39,7 +39,12 @@ type State = 'pick' | 'saving' | 'done' | 'error';
           <p><i c8yIcon="spinner" class="icon-spin"></i> {{ 'Checking and storing the file' | translate }}…</p>
         }
         @case ('done') {
-          <div class="alert alert-success" role="status">{{ 'Namespace file stored.' | translate }}</div>
+          <div class="alert alert-success" role="status">
+            {{ 'Namespace file stored.' | translate }}
+            @if (replaced()) {
+              {{ (replaced() === 1 ? 'It replaced the earlier upload of this server.' : 'It replaced the earlier uploads of this server.') | translate }}
+            }
+          </div>
         }
         @case ('error') {
           <div class="alert alert-danger" role="alert">{{ error() }}</div>
@@ -63,6 +68,8 @@ export class UploadNamespaceComponent {
 
   readonly state = signal<State>('pick');
   readonly error = signal('');
+  /** How many earlier uploads of the same device and endpoint the new file replaced. */
+  readonly replaced = signal(0);
 
   async onDropped(files: DroppedFile[]): Promise<void> {
     const dropped = files?.[0];
@@ -71,7 +78,8 @@ export class UploadNamespaceComponent {
     }
     this.state.set('saving');
     try {
-      await this.namespaces.upload(dropped.file);
+      const { replaced } = await this.namespaces.upload(dropped.file);
+      this.replaced.set(replaced);
       this.state.set('done');
       this.onFinished?.();
     } catch (e) {

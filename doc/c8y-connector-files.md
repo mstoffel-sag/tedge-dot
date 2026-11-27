@@ -158,9 +158,11 @@ stored in Cumulocity ([namespace files](namespace-files.md)):
 - **Scan address space** asks a gateway to scan one of its OPC UA devices, with the device's own
   connection settings, and adds the result to the list. The gateway needs
   [opcua-scan](namespace-files.md#install-opcua-scan). A scope (start node, depth, include and
-  exclude patterns, node classes, children per node) keeps large address spaces manageable.
+  exclude patterns, node classes, children per node) keeps large address spaces manageable. A
+  device keeps one namespace file: a new scan replaces the previous one once it succeeds.
 - **Upload namespace file** stores a file written by
-  `opcua-scan browse ... --output tedge-dot-namespace` elsewhere, such as on a laptop.
+  `opcua-scan browse ... --output tedge-dot-namespace` elsewhere, such as on a laptop. It replaces
+  an earlier upload of the same server.
 - **Download** saves a file as `.json.gz`, and **Delete** removes it. Libraries made from it stay.
 
 **Create from namespace** opens a file as a tree. Expand it, search by name or path, and filter by

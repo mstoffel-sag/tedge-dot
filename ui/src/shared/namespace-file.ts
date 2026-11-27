@@ -242,6 +242,23 @@ export function metadataOf(file: NamespaceFile, where: { gateway?: string; devic
   return JSON.parse(JSON.stringify(meta));
 }
 
+/**
+ * The stored files a new one replaces, so each server keeps one current file: for a gateway scan
+ * the earlier files of that gateway and device (the gateway deletes those itself), for an upload
+ * the earlier uploads of the same device and endpoint. Uploads never replace a gateway's files.
+ */
+export function predecessors<T extends { id: string; meta?: NamespaceMetadata }>(stored: readonly T[], meta: NamespaceMetadata, keepId: string): T[] {
+  return stored.filter(e => {
+    if (e.id === keepId || !e.meta) {
+      return false;
+    }
+    if (meta.gateway) {
+      return e.meta.gateway === meta.gateway && e.meta.device === meta.device;
+    }
+    return !e.meta.gateway && (e.meta.device ?? '') === (meta.device ?? '') && e.meta.endpoint === meta.endpoint;
+  });
+}
+
 /** A namespace file prepared for the tree: nodes by id, children by parent, search keys. */
 export interface NamespaceIndex {
   file: NamespaceFile;
