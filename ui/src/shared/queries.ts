@@ -37,9 +37,9 @@ export function groupsQuery(term: string): string {
   return `$filter=(has(c8y_IsDeviceGroup)${byName}) $orderby=name`;
 }
 
-/** Namespace files (binaries of type `tedge-dot-namespace`), newest first. */
+/** Namespace files (binaries of type `tedge-dot-namespace`), newest first. Binaries have no creationTime. */
 export function namespaceFilesQuery(): string {
-  return `$filter=(type eq '${NAMESPACE_TYPE}') $orderby=creationTime desc`;
+  return `$filter=(type eq '${NAMESPACE_TYPE}') $orderby=lastUpdated desc`;
 }
 
 /** thin-edge.io gateways that can scan (announce c8y_ScanAddressSpace), whose name contains `term`. */

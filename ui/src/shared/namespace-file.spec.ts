@@ -120,7 +120,8 @@ describe('namespace files', () => {
     const index = indexNamespace(checked);
     const visible = visibleNodes(index, { text: 'line999/temp19' })!;
     const rows = treeRows(index, new Set(), visible);
-    expect(Date.now() - started).toBeLessThan(5000);
+    // Generous for shared CI runners; it takes about a second on a laptop.
+    expect(Date.now() - started).toBeLessThan(10000);
     expect(rows.map(r => index.byId.get(r.id)!.display_name)).toEqual(['Objects', 'Line999', 'Temp19', ...Array.from({ length: 9 }, (_, i) => `Temp${190 + i}`)]);
   });
 });

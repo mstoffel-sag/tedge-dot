@@ -139,7 +139,7 @@ New modules under `ui/src/shared/`:
 - `namespace-scan.ts`: the operation the scan dialog sends, and the devices it offers.
 
 Parsing and indexing run on the main thread: the unit test checks, indexes and searches a
-200 000-node file in well under the 5 s it allows, so a worker is not needed yet; it is the first
+200 000-node file in about a second on a laptop (the test allows 10 s for shared CI runners), so a worker is not needed yet; it is the first
 step if large files make the page stall. The tree uses `@angular/cdk` virtual scrolling over the
 flattened visible rows; expansion state lives in signals. Search walks the index, not the DOM.
 

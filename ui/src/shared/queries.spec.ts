@@ -26,7 +26,7 @@ describe('queries', () => {
   });
 
   it('lists namespace files and the gateways that can scan', () => {
-    expect(namespaceFilesQuery()).toBe("$filter=(type eq 'tedge-dot-namespace') $orderby=creationTime desc");
+    expect(namespaceFilesQuery()).toBe("$filter=(type eq 'tedge-dot-namespace') $orderby=lastUpdated desc");
     expect(scanGatewaysQuery(" gw' ")).toBe(
       "$filter=(has(c8y_IsDevice) and c8y_SupportedOperations eq 'c8y_ScanAddressSpace' and name eq '*gw*') $orderby=name"
     );

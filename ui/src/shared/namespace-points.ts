@@ -68,7 +68,12 @@ export function proposedPoint(index: NamespaceIndex, key: string): Config | unde
   const node = index.byId.get(nodeOfKey(key));
   const n = Number(key.slice(key.lastIndexOf('#') + 1));
   const point = node?.points?.[n];
-  return point && orderPointKeys(point);
+  if (!point) {
+    return undefined;
+  }
+  // Some servers set a node's Description to its name, which says nothing about the point.
+  const { description, ...rest } = point;
+  return orderPointKeys(description === undefined || description === point['name'] ? rest : point);
 }
 
 export type CheckState = 'none' | 'some' | 'all';

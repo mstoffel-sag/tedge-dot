@@ -73,6 +73,17 @@ describe('selecting points', () => {
     expect(Object.keys(checkedPoints(index, selection)[0].point)).toEqual(['id', 'name', 'datatype', 'access', 'unit', 'address']);
   });
 
+  it('drops a description that only repeats the name', () => {
+    const file = lineFile();
+    const temp = file.nodes.find(n => n.display_name === 'Temperature')!;
+    temp.points = [{ ...temp.points![0], description: 'Temperature' }];
+    const ix = indexNamespace(file);
+    expect(checkedPoints(ix, toggleNode(ix, new Map(), temp.id))[0].point['description']).toBeUndefined();
+    temp.points = [{ ...temp.points![0], description: 'Line temperature at the outlet' }];
+    const ix2 = indexNamespace(file);
+    expect(checkedPoints(ix2, toggleNode(ix2, new Map(), temp.id))[0].point['description']).toBe('Line temperature at the outlet');
+  });
+
   it('finds clashing ids', () => {
     let selection = toggleNode(index, new Map(), L);
     selection = changePoints(selection, [CURRENT, VOLTAGE], { id: 'motor' });

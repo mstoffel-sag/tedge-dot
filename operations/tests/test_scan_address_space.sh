@@ -178,6 +178,8 @@ expect_contains "run: stores the metadata" '"tedgeDotNamespace"' "$(grep 'PUT ht
 expect_contains "run: records the gateway's managed object" '"gatewayId":"1"' "$(grep 'PUT http://proxy/c8y/inventory/managedObjects/4711' "$log")"
 expect_contains "run: links the binary to the device" '"id":"4711"' "$(grep 'POST http://proxy/c8y/inventory/managedObjects/77/childAdditions' "$log")"
 expect_contains "run: writes the result into the operation" '"binaryId":"4711","nodes":3' "$(grep 'PUT http://proxy/c8y/devicecontrol/operations/99' "$log")"
+# Cumulocity refuses an operation update without a status (HTTP 422).
+expect_contains "run: the operation update carries a status" '"status":"EXECUTING"' "$(grep 'PUT http://proxy/c8y/devicecontrol/operations/99' "$log")"
 expect_contains "run: scans with the device's connector file" "--tedge-dot-config $conf/opcua.toml --device plc-7" "$(cat "$tmp/scan-args")"
 
 out="$(PATH="/usr/bin:/bin" OT_CONFIG_DIR="$conf" OPCUA_SCAN=/nonexistent/opcua-scan "$SHIM" '{"device":"plc-7"}' 99 2>&1)"; code=$?

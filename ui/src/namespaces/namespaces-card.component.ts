@@ -81,7 +81,7 @@ import { UploadNamespaceComponent } from './upload-namespace.component';
                     }
                   </td>
                   <td class="text-right">{{ e.meta?.points }}</td>
-                  <td>{{ (e.meta?.scannedAt ?? e.mo['creationTime']) | c8yDate }}</td>
+                  <td>{{ (e.meta?.scannedAt ?? e.mo['lastUpdated']) | c8yDate }}</td>
                   <td class="text-right text-nowrap">
                     <button class="btn btn-default btn-xs m-r-4" type="button" (click)="open(e)">{{ 'Create from namespace' | translate }}</button>
                     <button class="btn btn-default btn-xs m-r-4" type="button" (click)="download(e)">{{ 'Download' | translate }}</button>
@@ -179,7 +179,7 @@ export class NamespacesCardComponent implements OnInit {
     const confirmed = await this.modal
       .confirm(
         gettext('Delete namespace file'),
-        `The scan of ${entry.meta?.device ?? entry.mo['name']} from ${entry.meta?.scannedAt ?? entry.mo['creationTime']} is deleted. Point libraries made from it stay.`,
+        `The scan of ${entry.meta?.device ?? entry.mo['name']} from ${entry.meta?.scannedAt ?? entry.mo['lastUpdated']} is deleted. Point libraries made from it stay.`,
         Status.DANGER,
         { ok: gettext('Delete'), cancel: gettext('Cancel') }
       )

@@ -93,10 +93,11 @@ export class NamespaceService {
       return binaryId;
     }
     // A gateway that could not write the result into the operation: the newest file of that
-    // device on that gateway, created after the operation.
+    // device on that gateway, stored after the operation was created. Binaries carry no
+    // creationTime; lastUpdated is when the gateway stored the metadata.
     const since = String(created.creationTime ?? '');
     const newest = (await this.list(String(gateway.id))).find(
-      e => e.meta?.device === device && String(e.mo['creationTime'] ?? '') >= since
+      e => e.meta?.device === device && String(e.mo['lastUpdated'] ?? '') >= since
     );
     if (!newest) {
       throw new NamespaceFileError(`The scan of ${device} finished, but its namespace file was not found.`);

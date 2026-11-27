@@ -13,7 +13,7 @@
 
 ## 3. Gateway: scan operation
 
-- [ ] 3.1 Add the `command` template `operations/c8y_ScanAddressSpace` (gateway operation, 600 s timeout, fragment and operation id to the script). Verify the template parses: `tedge` lists `c8y_ScanAddressSpace` among the gateway's supported operations in the bench container.
+- [x] 3.1 Add the `command` template `operations/c8y_ScanAddressSpace` (gateway operation, 600 s timeout, fragment and operation id to the script). Verify the template parses: `tedge` lists `c8y_ScanAddressSpace` among the gateway's supported operations in the bench container.
 - [x] 3.2 Add the `ot-scan-address-space` script (design D5): device lookup in the OPC UA connector files, opcua-scan version check, scan with scope options and the connector's PKI dir, gzip, size check, upload with metadata, child addition, operation update with `binaryId` and `nodes`, cleanup on every path. Verify with shell tests for device lookup (none, one, two matches), argument building and the size check.
 - [x] 3.3 Make every failure in the spec's "Failures" requirement produce its reason. Verify with tests that stub opcua-scan (missing, too old, connection error, empty result) and the proxy (upload error).
 - [x] 3.4 No `ot-registration` change (design D5): verify `flows/test-flows.sh` still passes.
@@ -33,7 +33,7 @@
 
 - [ ] 5.1 Namespaces list on the OT connectors page and on the gateway's tab (child devices' files): columns, *Download* as `.json.gz`, *Delete* with confirmation, permission-based actions. Verify in a local `npm start` session against a tenant with a namespace file.
 - [x] 5.2 *Upload namespace file* dialog: check, refuse with reason, store as binary with metadata. Verify with an opcua-scan file and with a plain `--output json` file (refused).
-- [ ] 5.3 *Scan address space* dialog: device choice limited to devices announcing the operation, scope fields, operation progress, new row on success, failure reason. Verify against the bench gateway.
+- [x] 5.3 *Scan address space* dialog: device choice limited to devices announcing the operation, scope fields, operation progress, new row on success, failure reason. Verify against the bench gateway.
 - [ ] 5.4 Namespace tree (main thread, design D6) with `@angular/cdk` virtual scroll: expand on demand, search, filters, node details, truncated and unmappable markers. Verify responsiveness with the 200 000-node file in the browser.
 - [x] 5.5 Point panel: proposed point fields, edit one or many, clash markers, checked count; target choice (new library, existing library, device of a connector entry) that opens the editor with the result unsaved. Verify the scenarios of "Result of the picker" and "Editing an existing target" by hand.
 - [x] 5.6 Update `ui/README.md` (what you get, requirements: opcua-scan on the gateway) and the plugin description in `package.json`. Verify `npm test`, `npm run typecheck` and `npm run build` pass.
@@ -56,8 +56,16 @@ page, the card on a gateway's tab, uploading the simulator scan and refusing a p
 picker with a 661-node file (search, subtree checks, bulk poll and measurement type, id clash
 blocking, a new library and points added to a device of an existing connector file, both opened
 unsaved with comments kept), and the scan dialog without a gateway that can scan.
-Open: 3.1 and 3.7 (bench container); 5.1 *Download* (not clicked); 5.3 with a gateway that has the
-operation; 5.4 with a 200 000-node file in the browser; 7.1 end to end.
+
+On a gateway (thin-edge.io 2.1.0, Ubuntu x86_64, test install without root in
+/etc/tedge/plugins/tedge-dot-scan): the mapper announced c8y_ScanAddressSpace without a restart;
+a scan of the Cumulocity OPC UA demo server from the plugin produced a 736-node file with 323
+points, linked to the device, and the operation carried `binaryId` and `nodes` (after the fix
+that sends `status` with the operation update, which Cumulocity requires). Picking the device's
+connector file as target checked the 7 points it already had for scanned nodes and kept the 3
+array-element points the scan does not propose; a variable and a method were added.
+Open: 3.7 (bench test); 5.1 *Download* (not clicked); 5.4 with a 200 000-node file in the
+browser; 7.1 sending the result and seeing measurements.
 
 ## Workflow follow-up
 

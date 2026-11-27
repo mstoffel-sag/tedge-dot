@@ -258,23 +258,25 @@ main() {
     binary_id="$(sed '$d' <<<"$response" | jq -r '.id // empty')"
     [ -n "$binary_id" ] || die "Cumulocity did not return the namespace file's id"
 
-    c8y PUT "/inventory/managedObjects/$binary_id" \
-        "$(jq -cn --argjson meta "$meta" '{tedgeDotNamespace: $meta}')" >/dev/null ||
-        die "storing the namespace file's metadata failed"
+    code="$(c8y PUT "/inventory/managedObjects/$binary_id" \
+        "$(jq -cn --argjson meta "$meta" '{tedgeDotNamespace: $meta}')")" ||
+        die "storing the namespace file's metadata failed (HTTP $code)"
 
     target="$(managed_object_of "$gateway:device:$device")"
     [ -n "$target" ] || target="$gateway_mo"
     if [ -n "$target" ]; then
-        c8y POST "/inventory/managedObjects/$target/childAdditions" \
+        code="$(c8y POST "/inventory/managedObjects/$target/childAdditions" \
             "$(jq -cn --arg id "$binary_id" '{managedObject: {id: $id}}')" \
-            'application/vnd.com.nsn.cumulocity.managedobjectreference+json' >/dev/null ||
-            echo "ot-scan-address-space: could not link the namespace file to the device" >&2
+            'application/vnd.com.nsn.cumulocity.managedobjectreference+json')" ||
+            echo "ot-scan-address-space: could not link the namespace file to the device (HTTP $code)" >&2
     fi
 
-    c8y PUT "/devicecontrol/operations/$op_id" \
+    # Cumulocity refuses an operation update without `status` (422). The operation is EXECUTING
+    # while this runs; the mapper marks it SUCCESSFUL when the script exits 0.
+    code="$(c8y PUT "/devicecontrol/operations/$op_id" \
         "$(jq -cn --argjson f "$fragment" --arg id "$binary_id" --argjson nodes "$nodes" \
-            '{c8y_ScanAddressSpace: ($f + {binaryId: $id, nodes: $nodes})}')" >/dev/null ||
-        echo "ot-scan-address-space: could not write the result into the operation" >&2
+            '{status: "EXECUTING", c8y_ScanAddressSpace: ($f + {binaryId: $id, nodes: $nodes})}')")" ||
+        echo "ot-scan-address-space: could not write the result into the operation (HTTP $code)" >&2
 
     echo "namespace file $binary_id: $nodes nodes of \"$device\""
 }

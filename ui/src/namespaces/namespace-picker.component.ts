@@ -520,8 +520,9 @@ export class NamespacePickerComponent {
   }
 
   summary(point: Config): string {
+    // A method point has no datatype; its access says what it is.
     const parts = [point['datatype'] ?? point['access']];
-    if (point['access'] && point['access'] !== 'read') parts.push(point['access']);
+    if (point['datatype'] && point['access'] && point['access'] !== 'read') parts.push(point['access']);
     if (point['subscribe'] === false) parts.push(`poll ${point['poll_interval'] ?? ''}`.trim());
     else if (point['sampling_interval']) parts.push(`subscribe ${point['sampling_interval']}`);
     const m = point['meta']?.['measurement'];
