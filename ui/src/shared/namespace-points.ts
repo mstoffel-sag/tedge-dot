@@ -50,11 +50,25 @@ export function pointKeysUnder(index: NamespaceIndex, nodeId: string): string[] 
   return subtree(index, nodeId).flatMap(id => pointKeysOf(index, id));
 }
 
+/** The order point keys are written in, as the docs and packaged files write them. */
+const KEY_ORDER = ['id', 'name', 'description', 'datatype', 'access', 'unit', 'subscribe', 'poll_interval', 'sampling_interval', 'address', 'map', 'meta'];
+
+/**
+ * A point with its keys in the order files are written in; others keep their order after those.
+ * opcua-scan's JSON lists keys alphabetically, which would put `address` first.
+ */
+export function orderPointKeys(point: Config): Config {
+  const known = KEY_ORDER.filter(k => k in point);
+  const rest = Object.keys(point).filter(k => !KEY_ORDER.includes(k));
+  return Object.fromEntries([...known, ...rest].map(k => [k, point[k]]));
+}
+
 /** The point a key stands for, as proposed, in the file's namespace numbering. */
 export function proposedPoint(index: NamespaceIndex, key: string): Config | undefined {
   const node = index.byId.get(nodeOfKey(key));
   const n = Number(key.slice(key.lastIndexOf('#') + 1));
-  return node?.points?.[n];
+  const point = node?.points?.[n];
+  return point && orderPointKeys(point);
 }
 
 export type CheckState = 'none' | 'some' | 'all';

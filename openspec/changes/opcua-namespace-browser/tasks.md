@@ -32,10 +32,10 @@
 ## 5. Plugin: UI
 
 - [ ] 5.1 Namespaces list on the OT connectors page and on the gateway's tab (child devices' files): columns, *Download* as `.json.gz`, *Delete* with confirmation, permission-based actions. Verify in a local `npm start` session against a tenant with a namespace file.
-- [ ] 5.2 *Upload namespace file* dialog: check, refuse with reason, store as binary with metadata. Verify with an opcua-scan file and with a plain `--output json` file (refused).
+- [x] 5.2 *Upload namespace file* dialog: check, refuse with reason, store as binary with metadata. Verify with an opcua-scan file and with a plain `--output json` file (refused).
 - [ ] 5.3 *Scan address space* dialog: device choice limited to devices announcing the operation, scope fields, operation progress, new row on success, failure reason. Verify against the bench gateway.
 - [ ] 5.4 Namespace tree (main thread, design D6) with `@angular/cdk` virtual scroll: expand on demand, search, filters, node details, truncated and unmappable markers. Verify responsiveness with the 200 000-node file in the browser.
-- [ ] 5.5 Point panel: proposed point fields, edit one or many, clash markers, checked count; target choice (new library, existing library, device of a connector entry) that opens the editor with the result unsaved. Verify the scenarios of "Result of the picker" and "Editing an existing target" by hand.
+- [x] 5.5 Point panel: proposed point fields, edit one or many, clash markers, checked count; target choice (new library, existing library, device of a connector entry) that opens the editor with the result unsaved. Verify the scenarios of "Result of the picker" and "Editing an existing target" by hand.
 - [x] 5.6 Update `ui/README.md` (what you get, requirements: opcua-scan on the gateway) and the plugin description in `package.json`. Verify `npm test`, `npm run typecheck` and `npm run build` pass.
 
 ## 6. Documentation and release
@@ -51,7 +51,13 @@
 Verified without a tenant: the scan script against the local OPC UA simulator with opcua-scan
 0.2.0 and a fake Cumulocity proxy (661 nodes uploaded, metadata, child addition and operation
 result written), and the plugin's reader building a valid 310-point library from that file.
-Open: 3.1 and 3.7 (bench container), 5.1 to 5.5 and 7.1 (a tenant and a gateway).
+In a tenant (dev server against a real tenant, 2026-11-27): the Namespaces list and delete on the
+page, the card on a gateway's tab, uploading the simulator scan and refusing a plain export, the
+picker with a 661-node file (search, subtree checks, bulk poll and measurement type, id clash
+blocking, a new library and points added to a device of an existing connector file, both opened
+unsaved with comments kept), and the scan dialog without a gateway that can scan.
+Open: 3.1 and 3.7 (bench container); 5.1 *Download* (not clicked); 5.3 with a gateway that has the
+operation; 5.4 with a 200 000-node file in the browser; 7.1 end to end.
 
 ## Workflow follow-up
 

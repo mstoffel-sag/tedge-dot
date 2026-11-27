@@ -159,7 +159,7 @@ interface ConnectorChoice {
           }
           @if (outsideCount()) {
             <p class="text-muted m-b-0">
-              {{ outsideCount() }} {{ 'points of the target are not in this scan. They stay as they are.' | translate }}
+              {{ outsideCount() }} {{ (outsideCount() === 1 ? 'point of the target is not in this scan. It stays as it is.' : 'points of the target are not in this scan. They stay as they are.') | translate }}
             </p>
           }
         </div>
@@ -243,7 +243,7 @@ interface ConnectorChoice {
         <div class="col-md-6">
           <div class="card">
             <div class="card-header separator d-flex a-i-center">
-              <div class="card-title flex-grow">{{ checked().length }} {{ 'points checked' | translate }}</div>
+              <div class="card-title flex-grow">{{ checked().length }} {{ (checked().length === 1 ? 'point checked' : 'points checked') | translate }}</div>
               <label class="c8y-checkbox checkbox-inline m-0">
                 <input type="checkbox" [checked]="allMarked()" (change)="markAll()" /><span></span>
                 <span>{{ 'Mark all' | translate }}</span>
@@ -251,7 +251,7 @@ interface ConnectorChoice {
             </div>
             @if (marked().size) {
               <div class="card-block p-b-0">
-                <p class="small m-b-4">{{ 'Change the' | translate }} {{ marked().size }} {{ 'marked points' | translate }}:</p>
+                <p class="small m-b-4">{{ 'Change the' | translate }} {{ marked().size }} {{ (marked().size === 1 ? 'marked point' : 'marked points') | translate }}:</p>
                 <div class="d-flex gap-8 m-b-8 flex-wrap">
                   <select class="form-control input-sm" style="max-width: 9em" [(ngModel)]="bulk.mode">
                     <option value="">{{ 'Mode' | translate }}</option>
@@ -413,7 +413,7 @@ export class NamespacePickerComponent {
     if (!index) return '';
     const target = this.target() ?? { points: [] };
     const r = resultPoints(index, this.selection(), target, this.match() ?? matchTarget(index, target));
-    return `${r.added} new, ${r.points.length - r.added - r.outside} kept, ${r.removed} removed.`;
+    return `${plural(r.added, 'new point')}, ${r.points.length - r.added - r.outside} kept, ${r.removed} removed.`;
   });
 
   bulk: PointChange & { mode?: '' | 'subscribe' | 'poll'; access?: '' | 'read' | 'write' | 'read_write' } = {};
@@ -602,7 +602,7 @@ export class NamespacePickerComponent {
     const target = this.target() ?? { points: [] };
     const result = resultPoints(index, this.selection(), target, this.match() ?? matchTarget(index, target));
     const from = `${index.file.scan.device ?? index.file.server.endpoint} (scan of ${index.file.scan.time})`;
-    const counts = `${result.added} points added, ${result.removed} removed`;
+    const counts = `${plural(result.added, 'point')} added, ${result.removed} removed`;
     try {
       switch (this.targetKind()) {
         case 'new-library': {
@@ -613,7 +613,7 @@ export class NamespacePickerComponent {
             name: fileName,
             text: newLibraryText(result.points, result.namespaces, { type: this.libraryType().trim() || undefined }),
             description: `From the namespace of ${from}`,
-            note: `A new library with ${result.points.length} points from the namespace of ${from}. Not saved yet.`,
+            note: `A new library with ${plural(result.points.length, 'point')} from the namespace of ${from}. Not saved yet.`,
           });
           void this.router.navigate(['/ot-connectors', 'new-library']);
           return;
@@ -656,6 +656,10 @@ export class NamespacePickerComponent {
   get id(): string {
     return this.namespaceId;
   }
+}
+
+function plural(n: number, word: string): string {
+  return `${n} ${word}${n === 1 ? '' : 's'}`;
 }
 
 function toggled(set: ReadonlySet<string>, key: string, on: boolean): Set<string> {

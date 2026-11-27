@@ -37,7 +37,7 @@ import { UploadNamespaceComponent } from './upload-namespace.component';
         <c8y-ui-empty-state
           [icon]="'sitemap'"
           [title]="'No namespace files.' | translate"
-          [subtitle]="'Scan an OPC UA device from a gateway, or upload a file from opcua-scan, then pick nodes to build a point library.' | translate"
+          [subtitle]="emptyText() | translate"
           [horizontal]="true"
         ></c8y-ui-empty-state>
       } @else {
@@ -113,6 +113,17 @@ export class NamespacesCardComponent implements OnInit {
   readonly scanAllowed = () => {
     const gateway = this.gateway();
     return this.permissions.hasAnyRole(['ROLE_DEVICE_CONTROL_ADMIN']) && (!gateway || canScan(gateway));
+  };
+
+  /** What to do next, for the context: the page, a gateway that can scan, or one that cannot. */
+  readonly emptyText = () => {
+    const gateway = this.gateway();
+    if (!gateway) {
+      return 'Scan an OPC UA device from a gateway, or upload a file from opcua-scan, then pick nodes to build a point library.';
+    }
+    return canScan(gateway)
+      ? 'Scan an OPC UA device of this gateway, then pick nodes to build a point library.'
+      : 'This gateway cannot scan yet: it needs a tedge-dot version with the c8y_ScanAddressSpace operation, and opcua-scan.';
   };
 
   ngOnInit(): void {

@@ -68,6 +68,11 @@ describe('selecting points', () => {
     expect(checkedPoints(index, selection)[0].point['unit']).toBeUndefined();
   });
 
+  it('writes proposed points in the usual key order', () => {
+    const selection = toggleNode(index, new Map(), `${L}.Temperature`);
+    expect(Object.keys(checkedPoints(index, selection)[0].point)).toEqual(['id', 'name', 'datatype', 'access', 'unit', 'address']);
+  });
+
   it('finds clashing ids', () => {
     let selection = toggleNode(index, new Map(), L);
     selection = changePoints(selection, [CURRENT, VOLTAGE], { id: 'motor' });
