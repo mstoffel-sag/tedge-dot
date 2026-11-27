@@ -7,6 +7,8 @@ import { AlertService, CoreModule } from '@c8y/ngx-components';
 import { SharedRepositoryModule } from '@c8y/ngx-components/repository/shared';
 
 import { type Config, parseToml } from '../generated/config-builder';
+import { FormHelpComponent } from '../connectors/connector-form.component';
+import { HELP } from '../generated/help';
 import { ConnectorOperationsService } from '../shared/connector-operations.service';
 import { packagedLibraries } from '../shared/libraries';
 import { NODE_CLASSES, type NamespaceIndex, type NodeClass, type TreeFilter, indexNamespace, treeRows, visibleNodes, whyNoPoints } from '../shared/namespace-file';
@@ -49,7 +51,7 @@ interface ConnectorChoice {
  */
 @Component({
   selector: 'tdot-namespace-picker',
-  imports: [CoreModule, SharedRepositoryModule, ScrollingModule],
+  imports: [CoreModule, SharedRepositoryModule, ScrollingModule, FormHelpComponent],
   providers: [ConnectorOperationsService],
   styles: `
     .tdot-tree, .tdot-points { height: 60vh; }
@@ -59,6 +61,17 @@ interface ConnectorChoice {
     .tdot-point { height: 40px; display: flex; align-items: center; gap: 4px; }
     .tdot-point input, .tdot-point select { height: 28px; padding: 2px 6px; }
     .tdot-clash input.tdot-id { border-color: var(--c8y-palette-status-danger, #d00); }
+    .tdot-point-head { height: 28px; border-bottom: 1px solid var(--c8y-root-component-border-color, #e0e0e0); }
+    .tdot-col-mark { flex: 0 0 24px; }
+    .tdot-col-id { flex: 0 0 30%; }
+    .tdot-col-name { flex: 0 0 25%; }
+    .tdot-col-unit { flex: 0 0 10%; }
+    .tdot-col-info { flex: 1 1 auto; min-width: 0; }
+    .tdot-col-x { flex: 0 0 28px; }
+    .tdot-bulk-field { display: flex; flex-direction: column; }
+    .tdot-bulk-label { display: flex; align-items: center; gap: 2px; margin-bottom: 2px; }
+    .tdot-bulk-label label { margin: 0; font-size: 12px; }
+    .tdot-bulk-field select, .tdot-bulk-field input { width: 9em; }
   `,
   template: `
     <c8y-title>{{ 'Create from namespace' | translate }}</c8y-title>
@@ -251,36 +264,66 @@ interface ConnectorChoice {
             </div>
             @if (marked().size) {
               <div class="card-block p-b-0">
-                <p class="small m-b-4">{{ 'Change the' | translate }} {{ marked().size }} {{ (marked().size === 1 ? 'marked point' : 'marked points') | translate }}:</p>
-                <div class="d-flex gap-8 m-b-8 flex-wrap">
-                  <select class="form-control input-sm" style="max-width: 9em" [(ngModel)]="bulk.mode">
-                    <option value="">{{ 'Mode' | translate }}</option>
-                    <option value="subscribe">{{ 'Subscribe' | translate }}</option>
-                    <option value="poll">{{ 'Poll' | translate }}</option>
-                  </select>
-                  <input class="form-control input-sm" style="max-width: 7em" [placeholder]="'Interval' | translate" [(ngModel)]="bulk.interval" />
-                  <select class="form-control input-sm" style="max-width: 9em" [(ngModel)]="bulk.access">
-                    <option value="">{{ 'Access' | translate }}</option>
-                    <option value="read">read</option>
-                    <option value="read_write">read_write</option>
-                    <option value="write">write</option>
-                  </select>
-                  <input class="form-control input-sm" style="max-width: 10em" [placeholder]="'Measurement type' | translate" [(ngModel)]="bulk.measurementType" />
-                  <input class="form-control input-sm" style="max-width: 10em" [placeholder]="'Fragment' | translate" [(ngModel)]="bulk.measurementFragment" />
+                <p class="small m-b-4">
+                  {{ 'Change the' | translate }} {{ marked().size }} {{ (marked().size === 1 ? 'marked point' : 'marked points') | translate }}.
+                  {{ 'Fields left empty stay as they are.' | translate }}
+                </p>
+                <div class="d-flex gap-8 m-b-8 flex-wrap a-i-end">
+                  <div class="tdot-bulk-field">
+                    <div class="tdot-bulk-label"><label for="tdot-bulk-mode">{{ 'Mode' | translate }}</label><tdot-help [text]="help.mode" [label]="'Mode' | translate" title="subscribe" /></div>
+                    <select id="tdot-bulk-mode" class="form-control input-sm" [(ngModel)]="bulk.mode">
+                      <option value="">{{ 'unchanged' | translate }}</option>
+                      <option value="subscribe">{{ 'Subscribe' | translate }}</option>
+                      <option value="poll">{{ 'Poll' | translate }}</option>
+                    </select>
+                  </div>
+                  <div class="tdot-bulk-field">
+                    <div class="tdot-bulk-label"><label for="tdot-bulk-interval">{{ 'Interval' | translate }}</label><tdot-help [text]="help.interval" [label]="'Interval' | translate" title="sampling_interval / poll_interval" /></div>
+                    <input id="tdot-bulk-interval" class="form-control input-sm" [placeholder]="('e.g.' | translate) + ' 5s'" [(ngModel)]="bulk.interval" />
+                  </div>
+                  <div class="tdot-bulk-field">
+                    <div class="tdot-bulk-label"><label for="tdot-bulk-access">{{ 'Access' | translate }}</label><tdot-help [text]="help.access" [label]="'Access' | translate" title="access" /></div>
+                    <select id="tdot-bulk-access" class="form-control input-sm" [(ngModel)]="bulk.access">
+                      <option value="">{{ 'unchanged' | translate }}</option>
+                      <option value="read">read</option>
+                      <option value="read_write">read_write</option>
+                      <option value="write">write</option>
+                    </select>
+                  </div>
+                  <div class="tdot-bulk-field">
+                    <div class="tdot-bulk-label"><label for="tdot-bulk-type">{{ 'Measurement type' | translate }}</label><tdot-help [text]="help.measurementType" [label]="'Measurement type' | translate" title="meta.measurement.type" /></div>
+                    <input id="tdot-bulk-type" class="form-control input-sm" [placeholder]="('e.g.' | translate) + ' Pump'" [(ngModel)]="bulk.measurementType" />
+                  </div>
+                  <div class="tdot-bulk-field">
+                    <div class="tdot-bulk-label"><label for="tdot-bulk-fragment">{{ 'Fragment' | translate }}</label><tdot-help [text]="help.fragment" [label]="'Fragment' | translate" title="meta.measurement.fragment" /></div>
+                    <input id="tdot-bulk-fragment" class="form-control input-sm" [placeholder]="('e.g.' | translate) + ' c8y_Pump'" [(ngModel)]="bulk.measurementFragment" />
+                  </div>
                   <button class="btn btn-default btn-sm" type="button" (click)="applyBulk()">{{ 'Apply' | translate }}</button>
                 </div>
               </div>
             }
+            @if (checked().length) {
+              <div class="tdot-point tdot-point-head p-l-8 p-r-8 small text-muted">
+                <span class="tdot-col-mark" [title]="'Mark points to change them together' | translate"></span>
+                <span class="tdot-col-id">{{ 'Point id' | translate }} <tdot-help [text]="help.id" [label]="'Point id' | translate" title="id" /></span>
+                <span class="tdot-col-name">{{ 'Name' | translate }} <tdot-help [text]="help.name" [label]="'Name' | translate" title="name" /></span>
+                <span class="tdot-col-unit">{{ 'Unit' | translate }} <tdot-help [text]="help.unit" [label]="'Unit' | translate" title="unit" /></span>
+                <span class="tdot-col-info">{{ 'Type and settings' | translate }} <tdot-help [text]="help.summary" [label]="'Type and settings' | translate" /></span>
+                <span class="tdot-col-x"></span>
+              </div>
+            } @else {
+              <p class="text-muted p-16 m-0">{{ 'Check nodes in the address space to take their points.' | translate }}</p>
+            }
             <cdk-virtual-scroll-viewport class="tdot-points" itemSize="40">
               <div *cdkVirtualFor="let p of checked(); trackBy: trackPoint" class="tdot-point p-l-8 p-r-8" [class.tdot-clash]="clashes().has(p.point['id'])">
-                <label class="c8y-checkbox m-0">
-                  <input type="checkbox" [checked]="marked().has(p.key)" (change)="mark(p.key)" /><span></span>
+                <label class="c8y-checkbox m-0 tdot-col-mark" [title]="'Mark for a change of several points' | translate">
+                  <input type="checkbox" [checked]="marked().has(p.key)" (change)="mark(p.key)" [attr.aria-label]="('Mark' | translate) + ' ' + p.point['id']" /><span></span>
                 </label>
-                <input class="form-control tdot-id" style="width: 30%" [title]="clashes().has(p.point['id']) ? 'This id is used twice' : 'Point id'" [ngModel]="p.point['id']" (change)="edit(p.key, { id: $any($event.target).value })" />
-                <input class="form-control" style="width: 25%" [title]="'Name'" [ngModel]="p.point['name']" (change)="edit(p.key, { name: $any($event.target).value })" />
-                <input class="form-control" style="width: 10%" [title]="'Unit'" [ngModel]="p.point['unit']" (change)="edit(p.key, { unit: $any($event.target).value })" />
-                <span class="small text-muted text-truncate" style="width: 25%" [title]="summary(p.point)">{{ summary(p.point) }}</span>
-                <button class="btn btn-link btn-xs" type="button" [title]="'Uncheck' | translate" (click)="uncheck(p.key)"><i c8yIcon="times"></i></button>
+                <input class="form-control tdot-id tdot-col-id" [attr.aria-label]="'Point id' | translate" [title]="clashes().has(p.point['id']) ? ('This id is used twice' | translate) : ''" [ngModel]="p.point['id']" (change)="edit(p.key, { id: $any($event.target).value })" />
+                <input class="form-control tdot-col-name" [attr.aria-label]="'Name' | translate" [ngModel]="p.point['name']" (change)="edit(p.key, { name: $any($event.target).value })" />
+                <input class="form-control tdot-col-unit" [attr.aria-label]="'Unit' | translate" placeholder="—" [ngModel]="p.point['unit']" (change)="edit(p.key, { unit: $any($event.target).value })" />
+                <span class="small text-muted text-truncate tdot-col-info" [title]="summary(p.point)">{{ summary(p.point) }}</span>
+                <button class="btn btn-link btn-xs tdot-col-x" type="button" [title]="'Uncheck' | translate" [attr.aria-label]="('Uncheck' | translate) + ' ' + p.point['id']" (click)="uncheck(p.key)"><i c8yIcon="times"></i></button>
               </div>
             </cdk-virtual-scroll-viewport>
           </div>
@@ -416,7 +459,27 @@ export class NamespacePickerComponent {
     return `${plural(r.added, 'new point')}, ${r.points.length - r.added - r.outside} kept, ${r.removed} removed.`;
   });
 
-  bulk: PointChange & { mode?: '' | 'subscribe' | 'poll'; access?: '' | 'read' | 'write' | 'read_write' } = {};
+  /** The change of several points; empty fields stay as they are. */
+  bulk: {
+    mode: '' | 'subscribe' | 'poll';
+    interval?: string;
+    access: '' | 'read' | 'write' | 'read_write';
+    measurementType?: string;
+    measurementFragment?: string;
+  } = { mode: '', access: '' };
+
+  /** Help for the point list and the change of several points, from the form's texts where they exist. */
+  readonly help = {
+    id: 'The point id: the series name in Cumulocity and the MQTT topic segment. It must be unique in the file.',
+    name: 'A readable name for the point. The series and the MQTT topic use the id.',
+    unit: HELP['point.unit'],
+    summary: 'The data type and the settings that differ from the defaults: as opcua-scan proposed them, or as you changed them.',
+    mode: 'Subscribe: the server pushes the value when it changes. Poll: the connector reads it every interval (subscribe = false).',
+    interval: `With Subscribe, the sampling interval: ${HELP['point.sampling_interval']} With Poll, the poll interval: ${HELP['point.poll_interval']} A duration such as 500ms, 5s or 1m.`,
+    access: HELP['point.access'],
+    measurementType: HELP['measurement.type'],
+    fragment: HELP['measurement.fragment'],
+  };
 
   constructor() {
     this.route.paramMap.pipe(takeUntilDestroyed()).subscribe(params => void this.load(params.get('id') ?? ''));
