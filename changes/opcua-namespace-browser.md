@@ -13,6 +13,9 @@ server, instead of node ids copied from another client:
   write them into a new library, an existing library or a device of a connector file. Existing
   points, settings and comments stay, and node ids follow the target's namespace table.
 - A scan made with opcua-scan elsewhere can be uploaded to the same list.
+- Methods are picked one by one, not with their object, and take only an id and a name. The
+  editor, the docs site's config builder and the contract schema now refuse value settings on a
+  `call_method` point, and OPC UA method address keys on other points, as the connectors do.
 
 See [Namespace files](https://github.com/thin-edge/tedge-dot/blob/main/doc/namespace-files.md)
 and [Points from a namespace scan](https://github.com/thin-edge/tedge-dot/blob/main/doc/c8y-connector-files.md#points-from-a-namespace-scan).

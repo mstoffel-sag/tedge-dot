@@ -102,6 +102,12 @@ protocol: one in the repository, or one the tedge-dot packages install (see
 [Point libraries](#point-libraries)). A path is refused, because Cumulocity can neither deliver
 nor check the file it names. Like a schema error, an unknown reference keeps *Save* disabled.
 
+A method point (`access = "call_method"`) takes no value settings: `datatype`, `poll_interval`,
+`subscribe` and the other fields that describe a value are refused with "does not apply to a
+call_method point", as the connectors refuse them. For OPC UA, the method address keys
+(`object_id`, `method_id`, `inputs`) apply only to a method point, and the variable keys not to
+one.
+
 The check cannot see what only the gateway knows, such as whether a file named by a setting can
 be read. **A file that tedge-dot refuses still counts as installed in Cumulocity**: the connector
 logs the problem and keeps its previous configuration until the next restart, after which it
@@ -167,14 +173,17 @@ stored in Cumulocity ([namespace files](namespace-files.md)):
 
 **Create from namespace** opens a file as a tree. Expand it, search by name or path, and filter by
 node class, data type, writable nodes, or nodes with points. Check a variable to take its proposed
-point, or an object to take every point below it; a structure proposes one point per field, a
-method a `call_method` point. A node marked with a ban sign has no point, and its details say why
+point, or an object to take the points of the variables below it; a structure proposes one point
+per field. Methods are actions, not values: check a method itself to add its `call_method` point,
+which Cumulocity can then trigger with a `c8y_CallMethod` operation (an object with nothing but
+methods below it takes those). A node marked with a ban sign has no point, and its details say why
 (an array, a property, an unsupported type). *truncated* marks a branch the scan did not read in
 full.
 
 The checked points are listed on the right. Change a point's id, name or unit in place, or mark
 several and set subscribe or poll with an interval, the access, and the measurement type and
-fragment at once. Two points with the same id are marked, and the result cannot be created until
+fragment at once. Method points take only an id and a name: a change of several points leaves
+their other settings alone and says so. Two points with the same id are marked, and the result cannot be created until
 one is renamed.
 
 Choose where the points go:

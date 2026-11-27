@@ -63,6 +63,33 @@
         "index": { "type": "integer", "minimum": 0 }
       }
     },
+    "$pointRules": "OPC UA method points (connector spec §3.10): the method keys apply only to a call_method point, the variable keys not to one. Applied by config-builder's overlay to each point.",
+    "pointRules": [
+      {
+        "if": { "required": ["access"], "properties": { "access": { "const": "call_method" } } },
+        "then": {
+          "properties": {
+            "address": {
+              "required": ["object_id", "method_id"],
+              "properties": {
+                "object_id": { "type": "string", "description": "e.g. ns=2;s=Machine" },
+                "method_id": { "type": "string", "description": "e.g. ns=2;s=Machine.Reset" },
+                "inputs": { "type": "array", "items": { "enum": ["bool", "int8", "uint8", "int16", "uint16", "int32", "uint32", "int64", "uint64", "float32", "float64", "string"] } },
+                "node_id": false, "namespace": false, "identifier": false, "field": false, "index": false, "queue_size": false
+              }
+            }
+          }
+        },
+        "else": {
+          "if": { "required": ["access"] },
+          "then": {
+            "properties": {
+              "address": { "properties": { "object_id": false, "method_id": false, "inputs": false } }
+            }
+          }
+        }
+      }
+    ],
     "connection": {
       "type": "object",
       "properties": {

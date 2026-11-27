@@ -68,21 +68,36 @@ that have no proposed point, with the reason.
 
 ### Requirement: Selecting nodes
 Users SHALL check a node to take its proposed points, or check an object to take the proposed
-points of every node below it. The picker SHALL show the number of checked points at all times.
+points of the variables below it. A method SHALL be taken only when it is checked itself, or when
+an object has nothing but methods below it. The picker SHALL show the number of checked points at
+all times.
 
 #### Scenario: Check a subtree
 - **WHEN** a user checks the object `Line1`, which has 12 variables with proposed points below it
 - **THEN** 12 points are checked
 
+#### Scenario: Methods below an object
+- **WHEN** a user checks the object `Pump01`, which has 20 variables and 3 methods with proposed points below it
+- **THEN** the 20 variable points are checked and the 3 methods are not
+
+#### Scenario: Method checked itself
+- **WHEN** a user checks the method `resetFilter`
+- **THEN** its `call_method` point is checked
+
 ### Requirement: Configuring points
 For each checked point the picker SHALL show and let users change its `id`, `name`, `unit`,
 `access`, subscribe or poll, the sampling or poll interval, and the measurement type and fragment.
-A change SHALL apply to one point or to all selected points. Point ids SHALL be unique in the
-result; the picker SHALL report a clash at the points that clash.
+A change SHALL apply to one point or to all selected points; a method point SHALL take only its
+`id` and `name`. Point ids SHALL be unique in the result; the picker SHALL report a clash at the
+points that clash.
 
 #### Scenario: Change several points
 - **WHEN** a user selects 12 checked points and sets poll with a 5 s interval
 - **THEN** all 12 points get `subscribe = false` and `poll_interval = "5s"`
+
+#### Scenario: Method among the selected points
+- **WHEN** a user selects 12 variable points and a method point and sets poll with a 5 s interval, access `read` and the unit `A`
+- **THEN** the 12 variable points take the change, the method point keeps its proposed settings, and the picker says that it was left alone
 
 #### Scenario: Id clash
 - **WHEN** two checked points end up with the id `temperature`
@@ -113,3 +128,17 @@ not in the namespace file, and the target's comments and other settings, SHALL b
 #### Scenario: Point outside the scan
 - **WHEN** the target has a point whose node is not in the namespace file
 - **THEN** the point stays in the result and the picker lists it as not in this scan
+
+### Requirement: Method points in the editor check
+The editor SHALL report, at the field concerned, a value setting on a `call_method` point (the
+fields the contract excludes, such as `datatype`, `poll_interval`, `subscribe` or
+`meta.parameter`) and, for OPC UA, a method address key on another point or a variable address
+key on a method point, with the connectors' messages. Such a file SHALL NOT be saved.
+
+#### Scenario: Interval on a method
+- **WHEN** a method point declares `poll_interval = "5s"`
+- **THEN** the editor shows "does not apply to a call_method point" at that point's `poll_interval`, and Save stays disabled
+
+#### Scenario: Method address on a read point
+- **WHEN** a point with `access = "read"` has `address = { object_id = "...", method_id = "..." }`
+- **THEN** the editor shows "applies only to a call_method point" at its `object_id`

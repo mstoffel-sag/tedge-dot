@@ -50,6 +50,26 @@ export function pointKeysUnder(index: NamespaceIndex, nodeId: string): string[] 
   return subtree(index, nodeId).flatMap(id => pointKeysOf(index, id));
 }
 
+/**
+ * The points ticking a node takes: a variable's or method's own; for an object, the points of the
+ * variables below it, not its methods, which are actions to pick one by one. An object with
+ * nothing but methods below it takes those.
+ */
+export function pointKeysTaken(index: NamespaceIndex, nodeId: string): string[] {
+  const nodeClass = index.byId.get(nodeId)?.node_class;
+  if (nodeClass === 'Variable' || nodeClass === 'Method') {
+    return pointKeysOf(index, nodeId);
+  }
+  const below = subtree(index, nodeId);
+  const variables = below.filter(id => index.byId.get(id)?.node_class !== 'Method').flatMap(id => pointKeysOf(index, id));
+  return variables.length ? variables : below.flatMap(id => pointKeysOf(index, id));
+}
+
+/** Whether a point is a method (`access = "call_method"`), which takes no value settings. */
+export function isMethodPoint(point: Config | undefined): boolean {
+  return point?.['access'] === 'call_method';
+}
+
 /** The order point keys are written in, as the docs and packaged files write them. */
 const KEY_ORDER = ['id', 'name', 'description', 'datatype', 'access', 'unit', 'subscribe', 'poll_interval', 'sampling_interval', 'address', 'map', 'meta'];
 
@@ -78,17 +98,22 @@ export function proposedPoint(index: NamespaceIndex, key: string): Config | unde
 
 export type CheckState = 'none' | 'some' | 'all';
 
-/** Whether none, some or all of the points at or below a node are checked. */
+/**
+ * The node's checkbox: all when every point ticking it takes is checked, none when no point at or
+ * below it is, else some (also when only methods below an object are checked).
+ */
 export function checkState(index: NamespaceIndex, selection: Selection, nodeId: string): CheckState {
-  const keys = pointKeysUnder(index, nodeId);
-  const checked = keys.filter(k => selection.has(k)).length;
-  return checked === 0 ? 'none' : checked === keys.length ? 'all' : 'some';
+  if (!pointKeysUnder(index, nodeId).some(k => selection.has(k))) {
+    return 'none';
+  }
+  const taken = pointKeysTaken(index, nodeId);
+  return taken.length && taken.every(k => selection.has(k)) ? 'all' : 'some';
 }
 
-/** Checks every point at or below a node, or unchecks them all when all are checked already. */
+/** Checks the points ticking a node takes, or unchecks them when all are checked already. */
 export function toggleNode(index: NamespaceIndex, selection: Selection, nodeId: string): Map<string, PointChange> {
   const next = new Map(selection);
-  const keys = pointKeysUnder(index, nodeId);
+  const keys = pointKeysTaken(index, nodeId);
   if (keys.length && keys.every(k => next.has(k))) {
     keys.forEach(k => next.delete(k));
   } else {
@@ -116,7 +141,11 @@ export function changePoints(selection: Selection, keys: Iterable<string>, chang
   return next;
 }
 
-/** A point with a change applied. */
+/**
+ * A point with a change applied. A method point takes only its id and name: the value settings
+ * (unit, access, subscribe or poll, intervals, measurement naming) do not apply to an action, and
+ * the connector refuses a method point that declares them.
+ */
 export function applyChange(point: Config, change: PointChange | undefined): Config {
   const out: Config = structuredClone(point);
   if (!change) {
@@ -124,6 +153,9 @@ export function applyChange(point: Config, change: PointChange | undefined): Con
   }
   if (change.id) out['id'] = change.id;
   if (change.name !== undefined) out['name'] = change.name;
+  if (isMethodPoint(point)) {
+    return out;
+  }
   if (change.unit !== undefined) {
     if (change.unit) out['unit'] = change.unit;
     else delete out['unit'];

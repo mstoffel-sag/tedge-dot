@@ -30,7 +30,8 @@ ajv.addSchema(librarySchema);
 function overlay(protocol: string, forLibrary: boolean) {
   const p = (protocols as any)[protocol];
   if (!p) return {};
-  const point = { properties: { address: p.address } };
+  // Rules that tie a point's keys together, such as OPC UA's method addressing.
+  const point = { properties: { address: p.address }, ...(p.pointRules ? { allOf: p.pointRules } : {}) };
   if (forLibrary) return { properties: { point: { items: point } } };
   return {
     properties: {
@@ -69,6 +70,9 @@ export function validateLibrary(library: Config): FieldError[] {
   return v(library) ? [] : toFieldErrors(v.errors ?? []);
 }
 
+/** Address keys that only a method point has (OPC UA, connector spec §3.10). */
+const METHOD_ADDRESS_KEYS = ['object_id', 'method_id', 'inputs'];
+
 function toFieldErrors(errors: ErrorObject[]): FieldError[] {
   const out: FieldError[] = [];
   const seen = new Set<string>();
@@ -83,6 +87,11 @@ function toFieldErrors(errors: ErrorObject[]): FieldError[] {
     } else if (e.keyword === 'additionalProperties') {
       path = `${path}/${(e.params as any).additionalProperty}`;
       message = 'is not a known key here';
+    } else if (e.keyword === 'false schema') {
+      // Only the call_method rules use `false`: the contract schema's value fields and the
+      // protocol's address keys. The messages are the connectors' own.
+      const key = path.split('/').pop() ?? '';
+      message = METHOD_ADDRESS_KEYS.includes(key) ? 'applies only to a call_method point' : 'does not apply to a call_method point';
     } else if (e.keyword === 'enum') {
       message = `must be one of ${(e.params as any).allowedValues.map((v: unknown) => JSON.stringify(v)).join(', ')}`;
     }

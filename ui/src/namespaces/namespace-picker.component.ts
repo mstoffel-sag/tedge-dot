@@ -23,6 +23,7 @@ import {
   clashingIds,
   deviceTarget,
   initialSelection,
+  isMethodPoint,
   libraryTarget,
   matchTarget,
   newLibraryText,
@@ -267,6 +268,9 @@ interface ConnectorChoice {
                 <p class="small m-b-4">
                   {{ 'Change the' | translate }} {{ marked().size }} {{ (marked().size === 1 ? 'marked point' : 'marked points') | translate }}.
                   {{ 'Fields left empty stay as they are.' | translate }}
+                  @if (markedMethods(); as n) {
+                    <br />{{ n }} {{ (n === 1 ? 'of them is a method: it takes no value settings and stays as it is.' : 'of them are methods: they take no value settings and stay as they are.') | translate }}
+                  }
                 </p>
                 <div class="d-flex gap-8 m-b-8 flex-wrap a-i-end">
                   <div class="tdot-bulk-field">
@@ -321,7 +325,7 @@ interface ConnectorChoice {
                 </label>
                 <input class="form-control tdot-id tdot-col-id" [attr.aria-label]="'Point id' | translate" [title]="clashes().has(p.point['id']) ? ('This id is used twice' | translate) : ''" [ngModel]="p.point['id']" (change)="edit(p.key, { id: $any($event.target).value })" />
                 <input class="form-control tdot-col-name" [attr.aria-label]="'Name' | translate" [ngModel]="p.point['name']" (change)="edit(p.key, { name: $any($event.target).value })" />
-                <input class="form-control tdot-col-unit" [attr.aria-label]="'Unit' | translate" placeholder="—" [ngModel]="p.point['unit']" (change)="edit(p.key, { unit: $any($event.target).value })" />
+                <input class="form-control tdot-col-unit" [attr.aria-label]="'Unit' | translate" placeholder="—" [disabled]="isMethod(p.point)" [title]="isMethod(p.point) ? ('A method has no unit' | translate) : ''" [ngModel]="p.point['unit']" (change)="edit(p.key, { unit: $any($event.target).value })" />
                 <span class="small text-muted text-truncate tdot-col-info" [title]="summary(p.point)">{{ summary(p.point) }}</span>
                 <button class="btn btn-link btn-xs tdot-col-x" type="button" [title]="'Uncheck' | translate" [attr.aria-label]="('Uncheck' | translate) + ' ' + p.point['id']" (click)="uncheck(p.key)"><i c8yIcon="times"></i></button>
               </div>
@@ -428,6 +432,9 @@ export class NamespacePickerComponent {
     const match = this.match() ?? matchTarget(index, target);
     return clashingIds(resultPoints(index, this.selection(), target, match).points);
   });
+  /** How many of the marked points are methods, which a change of several points leaves alone. */
+  readonly markedMethods = computed(() => this.checked().filter(p => this.marked().has(p.key) && isMethodPoint(p.point)).length);
+  readonly isMethod = isMethodPoint;
   readonly allMarked = computed(() => this.checked().length > 0 && this.checked().every(p => this.marked().has(p.key)));
   readonly libraryNameProblem = computed(() => {
     const name = normalizeName(this.libraryName());

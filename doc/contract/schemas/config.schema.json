@@ -467,6 +467,20 @@
         "id"
       ],
       "additionalProperties": false,
+      "allOf": [
+        {
+          "$comment": "A call_method point is not a value (§3.1): the fields that describe a value or how it is read do not apply. Both loaders refuse them with '<field> does not apply to a call_method point'.",
+          "if": { "required": ["access"], "properties": { "access": { "const": "call_method" } } },
+          "then": {
+            "properties": {
+              "mode": false, "datatype": false, "endianness": false, "word_order": false,
+              "transform": false, "map": false, "poll_interval": false, "sampling_interval": false,
+              "subscribe": false, "report": false, "grouping": false, "sample": false,
+              "meta": { "properties": { "parameter": false } }
+            }
+          }
+        }
+      ],
       "properties": {
         "id": {
           "type": "string",

@@ -77,3 +77,55 @@ describe('unknown protocols', () => {
     expect(protocolInfo(undefined as unknown as string).newPoint.id).toBe('point1');
   });
 });
+
+// A method point is not a value (contract §3.1, OPC UA connector spec §3.10): the builder must
+// refuse what the connectors refuse, with their messages, at the field concerned.
+describe('call_method points', () => {
+  const config = (point: Record<string, unknown>) => ({
+    connector: { protocol: 'opcua' },
+    device: [{ name: 'plc', protocol_address: { endpoint: 'opc.tcp://plc:4840' }, point: [point] }],
+  });
+  const method = { id: 'reset', access: 'call_method', address: { object_id: 'ns=2;s=Pump', method_id: 'ns=2;s=Pump.Reset' } };
+
+  it('accepts a method point', () => {
+    expect(validateConfig(config({ ...method, address: { ...method.address, inputs: ['uint32'] } }))).toEqual([]);
+  });
+
+  for (const [field, value] of [
+    ['datatype', 'int32'], ['poll_interval', '5s'], ['sampling_interval', '1s'], ['subscribe', false],
+    ['report', { on_change: true }], ['map', { cases: [{ eq: 1, to: 'on' }] }], ['transform', { multiplier: 2 }],
+  ] as const) {
+    it(`refuses ${field} on a method point`, () => {
+      expect(validateConfig(config({ ...method, [field]: value }))).toContainEqual({
+        path: `/device/0/point/0/${field}`,
+        message: 'does not apply to a call_method point',
+      });
+    });
+  }
+
+  it('refuses meta.parameter on a method point, and keeps other meta', () => {
+    expect(validateConfig(config({ ...method, meta: { parameter: true } }))).toContainEqual({
+      path: '/device/0/point/0/meta/parameter',
+      message: 'does not apply to a call_method point',
+    });
+    expect(validateConfig(config({ ...method, meta: { measurement: { type: 'Pump' } } }))).toEqual([]);
+  });
+
+  it('needs the method keys and refuses variable keys on a method point', () => {
+    const errors = validateConfig(config({ id: 'reset', access: 'call_method', address: { node_id: 'ns=2;s=X' } }));
+    expect(errors).toContainEqual({ path: '/device/0/point/0/address/object_id', message: 'is required' });
+    expect(errors).toContainEqual({ path: '/device/0/point/0/address/node_id', message: 'does not apply to a call_method point' });
+  });
+
+  it('refuses method keys on a point with another access', () => {
+    expect(validateConfig(config({ ...method, access: 'read' }))).toContainEqual({
+      path: '/device/0/point/0/address/object_id',
+      message: 'applies only to a call_method point',
+    });
+  });
+
+  it('applies to point libraries too', () => {
+    const library = { library: { protocol: 'opcua' }, point: [{ ...method, poll_interval: '5s' }] };
+    expect(validateLibrary(library)).toContainEqual({ path: '/point/0/poll_interval', message: 'does not apply to a call_method point' });
+  });
+});

@@ -15,6 +15,7 @@ import {
   matchTarget,
   newLibraryText,
   pointKey,
+  proposedPoint,
   resultPoints,
   toggleNode,
   translateNodeId,
@@ -43,15 +44,63 @@ const RESET = pointKey(`${L}.Reset`, 0);
 describe('selecting points', () => {
   const index = indexNamespace(lineFile());
 
-  it('checks and unchecks a subtree', () => {
+  it('checks and unchecks a subtree: its variables, not its methods', () => {
     let selection = toggleNode(index, new Map(), L);
-    expect([...selection.keys()].sort()).toEqual([CURRENT, RESET, TEMP, VOLTAGE].sort());
+    expect([...selection.keys()].sort()).toEqual([CURRENT, TEMP, VOLTAGE].sort());
     expect(checkState(index, selection, 'i=85')).toBe('all');
     selection = toggleNode(index, selection, `${L}.Motor`);
     expect(checkState(index, selection, L)).toBe('some');
     expect(checkState(index, selection, `${L}.Motor`)).toBe('none');
     selection = toggleNode(index, toggleNode(index, selection, L), L);
     expect(selection.size).toBe(0);
+  });
+
+  it('takes a method only when it is ticked itself', () => {
+    let selection = toggleNode(index, new Map(), `${L}.Reset`);
+    expect([...selection.keys()]).toEqual([RESET]);
+    expect(checkState(index, selection, L)).toBe('some');
+    selection = toggleNode(index, selection, L);
+    expect([...selection.keys()].sort()).toEqual([CURRENT, RESET, TEMP, VOLTAGE].sort());
+    expect(checkState(index, selection, L)).toBe('all');
+    // Unticking the object drops its variables and leaves the method the user picked.
+    expect([...toggleNode(index, selection, L).keys()]).toEqual([RESET]);
+  });
+
+  it('takes the methods of an object that has nothing else', () => {
+    const file = lineFile();
+    const reset = file.nodes.find(n => n.display_name === 'Reset')!;
+    const ix = indexNamespace(
+      checkNamespaceFile({
+        ...file,
+        nodes: [
+          ...file.nodes,
+          { id: 'nsu=urn:acme:line;s=Service', parent: 'i=85', browse_name: 'Service', display_name: 'Service', node_class: 'Object' },
+          { ...reset, id: 'nsu=urn:acme:line;s=Service.Reset', parent: 'nsu=urn:acme:line;s=Service', points: [{ ...reset.points![0], id: 'service_reset' }] },
+        ],
+      })
+    );
+    expect([...toggleNode(ix, new Map(), 'nsu=urn:acme:line;s=Service').keys()]).toEqual([pointKey('nsu=urn:acme:line;s=Service.Reset', 0)]);
+  });
+
+  it('changes only the id and name of a method point', () => {
+    let selection = toggleNode(index, new Map(), L);
+    selection = toggleNode(index, selection, `${L}.Reset`);
+    selection = changePoints(selection, [...selection.keys()], {
+      mode: 'poll', interval: '5s', access: 'read', unit: 'A', measurementType: 'Pump', name: 'Line reset',
+    });
+    const reset = checkedPoints(index, selection).find(p => p.key === RESET)!.point;
+    expect(reset).toEqual({ ...proposedPoint(index, RESET), name: 'Line reset' });
+    // The variables took the change, and the result passes the editor's check.
+    expect(checkedPoints(index, selection).find(p => p.key === TEMP)!.point).toMatchObject({ subscribe: false, poll_interval: '5s', access: 'read' });
+    const result = resultPoints(index, selection, { points: [] }, matchTarget(index, { points: [] }));
+    expect(validateLibraryFile(newLibraryText(result.points, result.namespaces)).fields).toEqual([]);
+  });
+
+  it('the editor refuses value settings on a method point', () => {
+    const text = newLibraryText([{ ...proposedPoint(index, RESET), access: 'read', poll_interval: '5s' }], index.file.namespaces);
+    expect(validateLibraryFile(text).fields.map(f => f.message)).toContain('applies only to a call_method point');
+    const method = newLibraryText([{ ...proposedPoint(index, RESET), poll_interval: '5s' }], index.file.namespaces);
+    expect(validateLibraryFile(method).fields.map(f => f.message)).toContain('does not apply to a call_method point');
   });
 
   it('changes several points at once', () => {
@@ -112,7 +161,7 @@ describe('the result', () => {
   const index = indexNamespace(lineFile());
 
   it('is a valid new library', () => {
-    const selection = toggleNode(index, new Map(), L);
+    const selection = toggleNode(index, toggleNode(index, new Map(), L), `${L}.Reset`);
     const result = resultPoints(index, selection, { points: [] }, matchTarget(index, { points: [] }));
     const text = newLibraryText(result.points, result.namespaces, { type: 'acme-line' });
     expect(validateLibraryFile(text).fields).toEqual([]);

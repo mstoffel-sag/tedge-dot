@@ -230,3 +230,31 @@ fn the_schema_accepts_grouped_output_by_new_and_deprecated_names() {
     accepts(config(serde_json::json!({}), serde_json::json!({ "measurement": { "point_separator": "." } })))
         .expect_err("point_separator is connector-wide");
 }
+
+/// A call_method point declaring a value field is refused by both loaders
+/// (`<field> does not apply to a call_method point`); the schema says the same, so tooling
+/// catches it before the gateway does. Free-form `meta` stays allowed.
+#[test]
+fn a_call_method_point_takes_no_value_fields() {
+    let method = |extra: serde_json::Value| {
+        let mut p = serde_json::json!({ "id": "reset", "access": "call_method", "address": { "method": 1 } });
+        for (k, v) in extra.as_object().unwrap() {
+            p.as_object_mut().unwrap().insert(k.clone(), v.clone());
+        }
+        device(serde_json::json!({ "point": [p] }))
+    };
+    accepts(method(serde_json::json!({}))).expect("a bare method point is legal");
+    accepts(method(serde_json::json!({ "meta": { "measurement": { "type": "Pump" } } })))
+        .expect("free-form meta is not a value field");
+    for (field, value) in [
+        ("datatype", serde_json::json!("int32")),
+        ("poll_interval", serde_json::json!("5s")),
+        ("subscribe", serde_json::json!(false)),
+        ("report", serde_json::json!({ "on_change": true })),
+        ("meta", serde_json::json!({ "parameter": true })),
+    ] {
+        let err = accepts(method(serde_json::json!({ field: value })))
+            .expect_err("a value field on a method point must be refused");
+        assert!(err.contains(field), "{field}: {err}");
+    }
+}
