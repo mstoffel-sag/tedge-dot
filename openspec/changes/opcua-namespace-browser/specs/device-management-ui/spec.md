@@ -2,13 +2,14 @@
 
 ### Requirement: Namespaces list
 The OT connectors page SHALL list, in a third list, the `tedge-dot-namespace` binaries with their
-name, server endpoint, device, gateway, node count, whether the scan was truncated, and scan time.
+device, protocol, server endpoint, gateway, node count, whether the scan was truncated, and scan
+time.
 It SHALL offer *Create from namespace*, *Download* and *Delete*. The gateway's OT connectors tab
 SHALL list the namespace files of its scans the same way.
 
 #### Scenario: Page with namespace files
 - **WHEN** Cumulocity holds a namespace file of `plc-7` with 1200 nodes
-- **THEN** the Namespaces list shows a row with `plc-7`, its endpoint, `1200` and the scan time
+- **THEN** the Namespaces list shows a row with `plc-7`, the protocol OPC UA, its endpoint, `1200` and the scan time
 
 #### Scenario: Download
 - **WHEN** a user downloads a namespace file
@@ -180,3 +181,17 @@ library.
 #### Scenario: No matching entry
 - **WHEN** the repository has no entry for the scan's connector file
 - **THEN** the picker starts with *New point library*
+
+### Requirement: Same protocol only
+The picker SHALL offer as targets only point libraries and connector files of the scan's protocol,
+and SHALL write a new library with that protocol. The editor's *Add points from namespace* SHALL
+offer only scans of the file's protocol. A namespace file without a protocol in its metadata
+SHALL count as OPC UA.
+
+#### Scenario: Libraries of another protocol
+- **WHEN** the repository holds the OPC UA library `acme-line` and the Modbus library `acme-meter`, and a user opens an OPC UA scan
+- **THEN** *Existing point library* offers `acme-line` and not `acme-meter`
+
+#### Scenario: Scans of another protocol
+- **WHEN** a device `plc-7` has an OPC UA scan and a CANopen scan, and a user selects *Add points from namespace* on `plc-7` in an OPC UA connector file
+- **THEN** the picker offers only the OPC UA scan

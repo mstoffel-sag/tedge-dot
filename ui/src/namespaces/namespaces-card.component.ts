@@ -5,6 +5,7 @@ import { AlertService, CoreModule, ModalService, Permissions, Status } from '@c8
 import { gettext } from '@c8y/ngx-components/gettext';
 import { BsModalService } from 'ngx-bootstrap/modal';
 
+import { protocolInfo } from '../generated/config-builder';
 import { canScan } from '../shared/namespace-scan';
 import { type NamespaceEntry, NamespaceService } from '../shared/namespace.service';
 import { canAddEntries } from '../shared/permissions';
@@ -46,6 +47,7 @@ import { UploadNamespaceComponent } from './upload-namespace.component';
             <thead>
               <tr>
                 <th>{{ 'Device' | translate }}</th>
+                <th>{{ 'Protocol' | translate }}</th>
                 <th>{{ 'Server' | translate }}</th>
                 @if (!gateway()) {
                   <th>{{ 'Gateway' | translate }}</th>
@@ -65,6 +67,7 @@ import { UploadNamespaceComponent } from './upload-namespace.component';
                       <span class="text-muted small"> · {{ e.meta?.connectorFile }}.toml</span>
                     }
                   </td>
+                  <td>{{ protocolLabel(e.meta?.protocol) }}</td>
                   <td>
                     {{ e.meta?.endpoint }}
                     @if (e.meta?.productName) {
@@ -125,6 +128,11 @@ export class NamespacesCardComponent implements OnInit {
       ? 'Scan an OPC UA device of this gateway, then pick nodes to build a point library.'
       : 'This gateway cannot scan yet: it needs a tedge-dot version with the c8y_ScanAddressSpace operation, and opcua-scan.';
   };
+
+  /** The protocol's name as the forms show it, e.g. "OPC UA"; files without metadata are OPC UA scans. */
+  protocolLabel(protocol: string | undefined): string {
+    return protocolInfo(protocol ?? 'opcua').label;
+  }
 
   ngOnInit(): void {
     void this.load();

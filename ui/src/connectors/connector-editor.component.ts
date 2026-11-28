@@ -472,6 +472,7 @@ export class ConnectorEditorComponent {
     const device = d === undefined ? undefined : String(config?.['device']?.[d]?.['name'] ?? '') || undefined;
     this.pickerContext.set({
       kind: this.kind(),
+      protocol: String((this.isLibrary() ? config?.['library']?.['protocol'] : config?.['connector']?.['protocol']) ?? ''),
       entryId: this.isNew() ? undefined : String(this.entry()?.id ?? '') || undefined,
       name: this.name(),
       description: this.description(),

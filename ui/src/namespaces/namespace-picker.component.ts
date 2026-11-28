@@ -6,7 +6,7 @@ import { IManagedObject, InventoryService } from '@c8y/client';
 import { AlertService, CoreModule } from '@c8y/ngx-components';
 import { SharedRepositoryModule } from '@c8y/ngx-components/repository/shared';
 
-import { type Config, parseToml } from '../generated/config-builder';
+import { type Config, parseToml, protocolInfo } from '../generated/config-builder';
 import { FormHelpComponent } from '../connectors/connector-form.component';
 import { HELP } from '../generated/help';
 import { ConnectorOperationsService } from '../shared/connector-operations.service';
@@ -192,7 +192,7 @@ interface ConnectorChoice {
               <c8y-form-group>
                 <label for="tdot-ns-target-lib">{{ 'Point library' | translate }}</label>
                 <select id="tdot-ns-target-lib" class="form-control" [ngModel]="targetEntryId()" (ngModelChange)="chooseLibrary($event)">
-                  <option value="">{{ 'Choose an OPC UA library' | translate }}</option>
+                  <option value="">{{ ('Choose a library of this protocol' | translate) + ' (' + protocolLabel() + ')' }}</option>
                   @for (e of libraryEntries(); track e.id) {
                     <option [value]="e.id">{{ e['name'] }} ({{ fileOfType(e['configurationType'])?.name }})</option>
                   }
@@ -205,7 +205,7 @@ interface ConnectorChoice {
                   <c8y-form-group>
                     <label for="tdot-ns-target-file">{{ 'Connector file' | translate }}</label>
                     <select id="tdot-ns-target-file" class="form-control" [ngModel]="targetEntryId()" (ngModelChange)="chooseConnector($event)">
-                      <option value="">{{ 'Choose an OPC UA connector file' | translate }}</option>
+                      <option value="">{{ ('Choose a connector file of this protocol' | translate) + ' (' + protocolLabel() + ')' }}</option>
                       @for (e of connectorEntries(); track e.id) {
                         <option [value]="e.id">{{ e['name'] }} ({{ fileOfType(e['configurationType'])?.name }}.toml)</option>
                       }
@@ -472,7 +472,10 @@ export class NamespacePickerComponent {
   readonly libraryName = signal('');
   readonly libraryType = signal('');
   readonly entries = signal<IManagedObject[]>([]);
-  readonly libraryEntries = computed(() => entriesOfKind(this.entries(), 'library').filter(e => fileOfType(e['configurationType'])?.protocol === 'opcua'));
+  /** The scan's protocol: targets must be of the same protocol. */
+  readonly protocol = computed(() => this.index()?.file.protocol ?? 'opcua');
+  readonly protocolLabel = computed(() => protocolInfo(this.protocol()).label);
+  readonly libraryEntries = computed(() => entriesOfKind(this.entries(), 'library').filter(e => fileOfType(e['configurationType'])?.protocol === this.protocol()));
   readonly connectorCandidates = computed(() => entriesOfKind(this.entries(), 'connector'));
   readonly connectorEntries = signal<IManagedObject[]>([]);
   readonly targetEntryId = signal('');
@@ -508,7 +511,7 @@ export class NamespacePickerComponent {
     if (!isValidName(name)) return 'Letters, digits, ".", "_" and "-" only, starting with a letter or digit.';
     const taken = [
       ...this.libraryEntries().map(e => fileOfType(e['configurationType'])?.name),
-      ...packagedLibraries().filter(l => l.protocol === 'opcua').map(l => l.name),
+      ...packagedLibraries().filter(l => l.protocol === this.protocol()).map(l => l.name),
     ];
     return taken.includes(name) ? 'A library of that name exists; choose "Existing point library" to add to it.' : undefined;
   });
@@ -680,13 +683,13 @@ export class NamespacePickerComponent {
   /** Device names of the OPC UA connector entries, by entry id. */
   private readonly connectorDevices = new Map<string, string[]>();
 
-  /** The repository's connector files whose protocol is OPC UA. */
+  /** The repository's connector files of the scan's protocol. */
   private async loadConnectorEntries(): Promise<void> {
     const opcua: IManagedObject[] = [];
     for (const entry of this.connectorCandidates()) {
       try {
         const config = parseToml(await this.ops.entryText(entry));
-        if (config['connector']?.['protocol'] !== 'opcua') continue;
+        if (config['connector']?.['protocol'] !== this.protocol()) continue;
         opcua.push(entry);
         this.connectorDevices.set(
           String(entry.id),
@@ -854,7 +857,7 @@ export class NamespacePickerComponent {
             kind: 'library',
             fileName,
             name: fileName,
-            text: newLibraryText(result.points, result.namespaces, { type: this.libraryType().trim() || undefined }),
+            text: newLibraryText(result.points, result.namespaces, { type: this.libraryType().trim() || undefined, protocol: this.protocol() }),
             description: `From the namespace of ${from}`,
             note: `A new library with ${plural(result.points.length, 'point')} from the namespace of ${from}. Not saved yet.`,
           });

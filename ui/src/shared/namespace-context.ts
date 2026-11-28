@@ -12,6 +12,8 @@ import type { FileKind } from './naming';
 /** The editor's file, handed to the picker so the points land in it and the editor gets it back. */
 export interface PickerContext {
   kind: FileKind;
+  /** The file's protocol: only scans of that protocol fit. */
+  protocol: string;
   /** The saved entry's id; undefined for a file not saved yet. */
   entryId?: string;
   /** The editor's fields, so a new file comes back as it was. */
@@ -33,15 +35,20 @@ export interface StoredNamespace {
 }
 
 /**
- * The namespace files that fit an editor's file, best first. For a device: the scans of that
- * device, those of the same connector file first, newest first. For a library: every OPC UA
- * file, newest first.
+ * The namespace files that fit an editor's file, best first: only scans of the file's protocol.
+ * For a device: the scans of that device, those of the same connector file first, newest first.
+ * For a library: every scan of the protocol, newest first.
  */
-export function scansFor(stored: readonly StoredNamespace[], context: Pick<PickerContext, 'kind' | 'device' | 'fileName'>): StoredNamespace[] {
-  const opcua = stored.filter(s => (s.meta?.protocol ?? 'opcua') === 'opcua');
-  const fits = context.kind === 'connector' && context.device ? opcua.filter(s => s.meta?.device === context.device) : opcua;
+export function scansFor(stored: readonly StoredNamespace[], context: Pick<PickerContext, 'kind' | 'device' | 'fileName' | 'protocol'>): StoredNamespace[] {
+  const sameProtocol = stored.filter(s => scanProtocol(s.meta) === context.protocol);
+  const fits = context.kind === 'connector' && context.device ? sameProtocol.filter(s => s.meta?.device === context.device) : sameProtocol;
   const rank = (s: StoredNamespace) => (context.kind === 'connector' && s.meta?.connectorFile === context.fileName ? 0 : 1);
   return [...fits].sort((a, b) => rank(a) - rank(b) || String(b.lastUpdated ?? '').localeCompare(String(a.lastUpdated ?? '')));
+}
+
+/** The protocol of a stored namespace file; files without metadata are OPC UA scans (format 1). */
+export function scanProtocol(meta: Pick<NamespaceMetadata, 'protocol'> | undefined): string {
+  return meta?.protocol ?? 'opcua';
 }
 
 /** A repository connector entry as the picker knows it: its file name and its devices. */

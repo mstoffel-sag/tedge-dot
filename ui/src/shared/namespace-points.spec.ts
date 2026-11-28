@@ -96,6 +96,11 @@ describe('selecting points', () => {
     expect(validateLibraryFile(newLibraryText(result.points, result.namespaces)).fields).toEqual([]);
   });
 
+  it('writes a new library of the given protocol', () => {
+    expect(parseToml(newLibraryText([], ['http://opcfoundation.org/UA/'], { protocol: 'canopen' }))['library']['protocol']).toBe('canopen');
+    expect(parseToml(newLibraryText([], ['http://opcfoundation.org/UA/']))['library']['protocol']).toBe('opcua');
+  });
+
   it('the editor refuses value settings on a method point', () => {
     const text = newLibraryText([{ ...proposedPoint(index, RESET), access: 'read', poll_interval: '5s' }], index.file.namespaces);
     expect(validateLibraryFile(text).fields.map(f => f.message)).toContain('applies only to a call_method point');

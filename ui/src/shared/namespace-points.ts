@@ -384,9 +384,13 @@ export function resultPoints(index: NamespaceIndex, selection: Selection, target
 
 // --- writing -------------------------------------------------------------------------------
 
-/** A new OPC UA library with the given points. */
-export function newLibraryText(points: readonly Config[], namespaces: readonly string[], options: { type?: string; description?: string } = {}): string {
-  const library: Config = { protocol: 'opcua' };
+/** A new library of the scan's protocol (OPC UA unless given) with the given points. */
+export function newLibraryText(
+  points: readonly Config[],
+  namespaces: readonly string[],
+  options: { type?: string; description?: string; protocol?: string } = {}
+): string {
+  const library: Config = { protocol: options.protocol ?? 'opcua' };
   if (options.type) library['type'] = options.type;
   if (options.description) library['description'] = options.description;
   library['namespaces'] = [...namespaces];
