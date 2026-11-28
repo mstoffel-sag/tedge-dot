@@ -28,6 +28,7 @@ import { thinEdgeGatewayGuard } from './device-tab/thin-edge-gateway.guard';
     ),
     hookRoute([
       { path: 'ot-connectors', component: ConnectorsPageComponent },
+      { path: 'ot-connectors/namespace', component: NamespacePickerComponent },
       { path: 'ot-connectors/namespace/:id', component: NamespacePickerComponent },
       { path: 'ot-connectors/:id', component: ConnectorEditorComponent },
       {

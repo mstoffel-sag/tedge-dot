@@ -867,6 +867,17 @@ export class FormLibrariesComponent {
         <button type="button" class="btn btn-link" (click)="state.edit(addPointTo(d))">
           <i c8yIcon="plus-circle"></i> {{ 'Add point' | translate }}
         </button>
+        @if (protocol() === 'opcua') {
+          <button
+            type="button"
+            class="btn btn-link"
+            [tooltip]="'Pick nodes from a scan of this device\\'s server; the points are added to this device' | translate"
+            [delay]="500"
+            (click)="pointsFromNamespace.emit(d)"
+          >
+            <i c8yIcon="sitemap"></i> {{ 'Add points from namespace' | translate }}
+          </button>
+        }
       </fieldset>
     }
     <button type="button" class="btn btn-link m-t-8" (click)="state.edit(addDeviceFn)">
@@ -884,6 +895,8 @@ export class ConnectorFormComponent {
   /** The point libraries devices may reference; without it, the form shows no inherited points. */
   readonly catalog = input<LibraryCatalog>();
   readonly configChange = output<Config>();
+  /** "Add points from namespace" on device `d` (OPC UA). */
+  readonly pointsFromNamespace = output<number>();
 
   readonly protocols = PROTOCOL_IDS;
   readonly protocolHelp = HELP['connector.protocol'];

@@ -142,3 +142,41 @@ key on a method point, with the connectors' messages. Such a file SHALL NOT be s
 #### Scenario: Method address on a read point
 - **WHEN** a point with `access = "read"` has `address = { object_id = "...", method_id = "..." }`
 - **THEN** the editor shows "applies only to a call_method point" at its `object_id`
+
+### Requirement: Points from the editor
+The editor SHALL offer *Add points from namespace* on each device of an OPC UA connector file and
+on an OPC UA point library. It SHALL open the picker with the file's current text, unsaved edits
+included, as the target, and the device's scan chosen: one of the same connector file first, then
+the newest. Users SHALL be able to choose another scan, or scan or upload one when none fits.
+
+#### Scenario: Device with a scan
+- **WHEN** a user edits `opcua-demo.toml`, has an unsaved change, and selects *Add points from namespace* on device `Pump01`, which has a scan
+- **THEN** the picker opens Pump01's scan with `opcua-demo.toml` and `Pump01` as the target
+
+#### Scenario: Device without a scan
+- **WHEN** a user selects *Add points from namespace* on a device that has no scan
+- **THEN** the picker says so and offers to scan the device or upload a namespace file
+
+### Requirement: Back to the editor
+From the editor's context, *Open in editor* SHALL return to the editor with the points written
+into its text, unsaved, with a note; *Back to the editor* SHALL return with the editor's text as it
+was, unsaved edits included. A new file SHALL come back with its name, description, file name and
+device type.
+
+#### Scenario: Unsaved edit survives
+- **WHEN** a user changes a setting in the editor, adds two points from a namespace and opens the result in the editor
+- **THEN** the editor shows the changed setting and the two new points, unsaved
+
+### Requirement: Target from the scan
+When the picker opens a scan from the Namespaces list or after a scan, it SHALL preselect as the
+target the repository connector entry whose file name is the scan's connector file and the scanned
+device, when that entry defines the device. Otherwise the target SHALL start as a new point
+library.
+
+#### Scenario: Matching entry
+- **WHEN** a user opens the scan of `Pump01` from `opcua-demo.toml` and the repository has the entry `tedge-dot-opcua-demo` with device `Pump01`
+- **THEN** the picker starts with *Device in a connector file*, `opcua-demo.toml` and `Pump01`
+
+#### Scenario: No matching entry
+- **WHEN** the repository has no entry for the scan's connector file
+- **THEN** the picker starts with *New point library*

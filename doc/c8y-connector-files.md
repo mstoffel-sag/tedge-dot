@@ -198,6 +198,16 @@ Choose where the points go:
 **Open in editor** opens the result unsaved, with a note on what changed. Check it and save it as
 any other entry, then send it to the gateway.
 
+When a scan's connector file and device are in the repository, the picker starts with that device
+as the target, so a scan made from a gateway lands in the right file without choosing it.
+
+You can also start from the file: in the editor of an OPC UA connector file, each device has
+**Add points from namespace** next to *Add point*; an OPC UA library has it too. The picker opens
+with the device's scan (one made from the same connector file first, then the newest; choose
+another at the top) and the file you are editing as the target, unsaved changes included. If the
+device has no scan yet, scan it or upload a file from there. **Open in editor** brings you back
+with the points added; **Back to the editor** brings you back unchanged.
+
 ## The OT connectors tab
 
 Every device that offers the configuration type `tedge-configuration-plugin` gets an **OT

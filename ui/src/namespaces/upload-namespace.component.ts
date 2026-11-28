@@ -65,6 +65,8 @@ export class UploadNamespaceComponent {
 
   /** Set by the opener: called after the file was stored. */
   onFinished?: () => void;
+  /** Set by the opener: called with the stored file's id, and the dialog closes. */
+  onStored?: (id: string) => void;
 
   readonly state = signal<State>('pick');
   readonly error = signal('');
@@ -78,8 +80,13 @@ export class UploadNamespaceComponent {
     }
     this.state.set('saving');
     try {
-      const { replaced } = await this.namespaces.upload(dropped.file);
+      const { id, replaced } = await this.namespaces.upload(dropped.file);
       this.replaced.set(replaced);
+      if (this.onStored) {
+        this.modalRef.hide();
+        this.onStored(id);
+        return;
+      }
       this.state.set('done');
       this.onFinished?.();
     } catch (e) {

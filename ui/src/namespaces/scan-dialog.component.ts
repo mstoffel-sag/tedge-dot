@@ -139,6 +139,8 @@ export class ScanDialogComponent implements OnInit {
 
   /** Set by the opener: the gateway to scan on; else the dialog asks. */
   gateway?: IManagedObject;
+  /** Set by the opener: the device to preselect when the gateway has it. */
+  preferredDevice?: string;
   /** Set by the opener: called with the new namespace file's id. */
   onScanned?: (id: string) => void;
   /** Set by the opener: opens a namespace file in the picker. */
@@ -177,7 +179,8 @@ export class ScanDialogComponent implements OnInit {
     const { data } = await this.inventory.childDevicesList(gateway.id, { pageSize: 2000 });
     const devices = scanDevices(data as (IManagedObject & { name?: string })[]);
     this.devices.set(devices);
-    this.device.set(devices[0]?.['name'] ?? '');
+    const preferred = devices.find(d => d['name'] === this.preferredDevice);
+    this.device.set((preferred ?? devices[0])?.['name'] ?? '');
   }
 
   toggleType(c: string): void {

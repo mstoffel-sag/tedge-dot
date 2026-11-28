@@ -86,6 +86,11 @@ const KNOWN = {
       <button type="button" class="btn btn-link" (click)="state.edit(addPointFn)">
         <i class="m-r-4" c8yIcon="plus-circle"></i>{{ 'Add point' | translate }}
       </button>
+      @if (protocol() === 'opcua') {
+        <button type="button" class="btn btn-link" (click)="pointsFromNamespace.emit()">
+          <i class="m-r-4" c8yIcon="sitemap"></i>{{ 'Add points from namespace' | translate }}
+        </button>
+      }
     </fieldset>
     @if (extra('', known.file).length) {
       <p class="text-muted small">{{ 'Also set, kept as is:' | translate }} @for (k of extra('', known.file); track k) {<code>{{ k }}</code> }</p>
@@ -99,6 +104,8 @@ export class LibraryFormComponent {
   /** Whether the protocol can no longer change: once the library is saved, its type names it. */
   readonly protocolFixed = input(false);
   readonly configChange = output<Config>();
+  /** "Add points from namespace" (OPC UA libraries). */
+  readonly pointsFromNamespace = output<void>();
 
   readonly protocols = PROTOCOL_IDS;
   readonly known = KNOWN;

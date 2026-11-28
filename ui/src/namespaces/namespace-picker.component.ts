@@ -35,9 +35,15 @@ import {
 import { NamespaceService } from '../shared/namespace.service';
 import { entriesOfKind, fileOfType, isValidName, normalizeName } from '../shared/naming';
 import { PendingFileService } from '../shared/pending-file.service';
+import { type PickerContext, type StoredNamespace, scansFor, targetForScan } from '../shared/namespace-context';
+import { METADATA_FRAGMENT, type NamespaceMetadata } from '../shared/namespace-file';
+import { PickerContextService } from '../shared/picker-context.service';
+import { ScanDialogComponent } from './scan-dialog.component';
+import { UploadNamespaceComponent } from './upload-namespace.component';
+import { BsModalService } from 'ngx-bootstrap/modal';
 import { managedEntriesQuery } from '../shared/queries';
 
-type TargetKind = 'new-library' | 'library' | 'device';
+type TargetKind = 'new-library' | 'library' | 'device' | 'editor';
 
 interface ConnectorChoice {
   entry: IManagedObject;
@@ -84,6 +90,39 @@ interface ConnectorChoice {
     @if (loadError(); as e) {
       <div class="alert alert-danger" role="alert">{{ e }}</div>
     }
+    @if (context(); as ctx) {
+      <div class="card">
+        <div class="card-block d-flex a-i-center gap-16 flex-wrap">
+          <span class="flex-grow">
+            {{ 'Adding points to' | translate }} <strong>{{ ctx.name || ctx.fileName }}</strong>&nbsp;<span class="text-muted">({{ ctx.fileName }}.toml{{ ctx.device ? ', device ' + ctx.device : '' }})</span>.
+            {{ 'Your unsaved changes in the editor are kept.' | translate }}
+          </span>
+          @if (scans().length) {
+            <label for="tdot-ns-scan" class="m-0">{{ 'Namespace file' | translate }}</label>
+            <select id="tdot-ns-scan" class="form-control" style="max-width: 24em" [ngModel]="id" (ngModelChange)="openScan($event)">
+              @for (s of scans(); track s.id) {
+                <option [value]="s.id">{{ scanLabel(s) }}</option>
+              }
+            </select>
+          }
+          <button class="btn btn-default btn-sm" type="button" (click)="scan()"><i c8yIcon="search"></i> {{ 'Scan address space' | translate }}</button>
+          <button class="btn btn-default btn-sm" type="button" (click)="upload()"><i c8yIcon="upload"></i> {{ 'Upload namespace file' | translate }}</button>
+        </div>
+      </div>
+      @if (noScan()) {
+        <div class="card">
+          <c8y-ui-empty-state
+            [icon]="'sitemap'"
+            [title]="(ctx.device ? 'No namespace file of this device yet.' : 'No namespace files yet.') | translate"
+            [subtitle]="'Scan the device\\'s server from its gateway, or upload a file from opcua-scan.' | translate"
+            [horizontal]="true"
+          ></c8y-ui-empty-state>
+          <div class="card-block">
+            <button class="btn btn-default" type="button" (click)="cancel()">{{ 'Back to the editor' | translate }}</button>
+          </div>
+        </div>
+      }
+    }
     @if (index(); as ix) {
       <div class="card">
         <div class="card-block">
@@ -101,6 +140,21 @@ interface ConnectorChoice {
       <div class="card">
         <div class="card-header separator"><div class="card-title">{{ 'Target' | translate }}</div></div>
         <div class="card-block">
+          @if (context(); as ctx) {
+            <p>
+              {{ 'The file you are editing' | translate }}: <strong>{{ ctx.name || ctx.fileName }}</strong>&nbsp;<span class="text-muted">({{ ctx.fileName }}.toml)</span>
+            </p>
+            @if (ctx.kind === 'connector') {
+              <c8y-form-group>
+                <label for="tdot-ns-ctx-device">{{ 'Device' | translate }}</label>
+                <select id="tdot-ns-ctx-device" class="form-control" style="max-width: 24em" [ngModel]="targetDevice()" (ngModelChange)="chooseContextDevice(+$event)">
+                  @for (d of contextDevices(); track $index) {
+                    <option [value]="$index">{{ d }}</option>
+                  }
+                </select>
+              </c8y-form-group>
+            }
+          } @else {
           <div class="form-group">
             <label class="c8y-radio radio-inline">
               <input type="radio" name="tdot-target" [checked]="targetKind() === 'new-library'" (change)="setTargetKind('new-library')" />
@@ -170,6 +224,7 @@ interface ConnectorChoice {
                 </div>
               </div>
             }
+          }
           }
           @if (outsideCount()) {
             <p class="text-muted m-b-0">
@@ -345,11 +400,11 @@ interface ConnectorChoice {
               {{ summaryLine() }}
             }
           </span>
-          <button class="btn btn-default" type="button" (click)="cancel()">{{ 'Cancel' | translate }}</button>
+          <button class="btn btn-default" type="button" (click)="cancel()">{{ (context() ? 'Back to the editor' : 'Cancel') | translate }}</button>
           <button class="btn btn-primary" type="button" [disabled]="!!clashes().size || !!problem()" (click)="create()">{{ 'Open in editor' | translate }}</button>
         </div>
       </div>
-    } @else if (!loadError()) {
+    } @else if (!loadError() && !noScan()) {
       <p><i c8yIcon="spinner" class="icon-spin"></i> {{ 'Loading the namespace file' | translate }}…</p>
     }
   `,
@@ -362,6 +417,17 @@ export class NamespacePickerComponent {
   private readonly ops = inject(ConnectorOperationsService);
   private readonly pending = inject(PendingFileService);
   private readonly alert = inject(AlertService);
+  private readonly pickerContext = inject(PickerContextService);
+  private readonly bsModal = inject(BsModalService);
+
+  /** Opened from the editor (`?from=editor`): the file and device the points go to. */
+  readonly context = signal<PickerContext | undefined>(undefined);
+  /** In the editor's context: the namespace files that fit, best first. */
+  readonly scans = signal<StoredNamespace[]>([]);
+  /** In the editor's context: no namespace file fits yet. */
+  readonly noScan = signal(false);
+  /** The devices of the editor's connector file. */
+  readonly contextDevices = signal<string[]>([]);
 
   readonly nodeClasses = NODE_CLASSES;
   readonly fileOfType = fileOfType;
@@ -456,6 +522,8 @@ export class NamespacePickerComponent {
         return this.target() ? undefined : 'Choose the library to change.';
       case 'device':
         return this.target() ? undefined : 'Choose the connector file and the device.';
+      case 'editor':
+        return this.target() ? undefined : 'The file in the editor has no device to add points to.';
     }
   });
   readonly summaryLine = computed(() => {
@@ -496,22 +564,121 @@ export class NamespacePickerComponent {
     this.namespaceId = id;
     this.index.set(undefined);
     this.loadError.set(undefined);
+    this.noScan.set(false);
+    // The editor's context counts only when the editor sent us here; a stale one never hijacks
+    // a picker opened from the Namespaces list.
+    const context = this.route.snapshot.queryParamMap.get('from') === 'editor' ? this.pickerContext.get() : undefined;
+    this.context.set(context);
     try {
-      const [file, entries] = await Promise.all([
+      if (context) {
+        const stored = (await this.namespaces.list()).map(e => ({ id: String(e.mo.id), meta: e.meta, lastUpdated: e.mo['lastUpdated'] }));
+        const fitting = scansFor(stored, context);
+        this.scans.set(fitting);
+        if (!id) {
+          if (fitting.length) {
+            this.openScan(fitting[0].id);
+          } else {
+            this.noScan.set(true);
+          }
+          return;
+        }
+      }
+      if (!id) {
+        throw new Error('Choose a namespace file in the Namespaces list.');
+      }
+      const [file, entries, mo] = await Promise.all([
         this.namespaces.read(id),
         this.inventory.list({ query: managedEntriesQuery(), pageSize: 2000 }).then(r => r.data),
+        this.inventory.detail(id).then(r => r.data).catch(() => undefined),
       ]);
+      this.metadata = mo?.[METADATA_FRAGMENT] as NamespaceMetadata | undefined;
       const index = indexNamespace(file);
       this.index.set(index);
       this.entries.set(entries);
       this.expanded.set(new Set(index.roots));
       this.libraryType.set('');
       this.libraryName.set(file.scan.device ? normalizeName(file.scan.device).replace(/[^A-Za-z0-9._-]/g, '-') : '');
-      void this.loadConnectorEntries();
+      if (context) {
+        this.useContext(context);
+      } else {
+        void this.loadConnectorEntries().then(() => this.preselectTarget());
+      }
     } catch (e) {
       this.loadError.set(e instanceof Error ? e.message : String(e));
     }
   }
+
+  private metadata?: NamespaceMetadata;
+
+  /** Targets the editor's text: its device for a connector file, else the library. */
+  private useContext(context: PickerContext): void {
+    this.targetKind.set('editor');
+    try {
+      const config = parseToml(context.text);
+      if (context.kind === 'library') {
+        this.setTarget(libraryTarget(config), context.text);
+        return;
+      }
+      const devices = (Array.isArray(config['device']) ? config['device'] : []).map((d: Config, i: number) => String(d['name'] ?? `device ${i + 1}`));
+      this.contextDevices.set(devices);
+      this.chooseContextDevice(Math.max(0, devices.indexOf(context.device ?? '')));
+    } catch (e) {
+      this.loadError.set(`The file in the editor cannot be read: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+
+  chooseContextDevice(d: number): void {
+    const context = this.context();
+    if (!context) return;
+    this.targetDevice.set(d);
+    const device = parseToml(context.text)['device']?.[d];
+    this.setTarget(device ? deviceTarget(device) : undefined, context.text);
+  }
+
+  /**
+   * A scan whose metadata names a connector file and device that the repository has starts with
+   * that device as the target. Only while the user has not chosen anything yet.
+   */
+  private async preselectTarget(): Promise<void> {
+    const meta = { connectorFile: this.metadata?.connectorFile ?? this.index()?.file.scan.connector_file, device: this.metadata?.device ?? this.index()?.file.scan.device };
+    const candidates = this.connectorEntries().map(e => ({
+      id: String(e.id),
+      fileName: fileOfType(e['configurationType'])?.name ?? '',
+      devices: this.connectorDevices.get(String(e.id)) ?? [],
+    }));
+    const found = targetForScan(meta, candidates);
+    if (!found || this.targetKind() !== 'new-library' || this.selection().size) return;
+    this.targetKind.set('device');
+    await this.chooseConnector(found.entryId);
+  }
+
+  /** In the editor's context: shows another namespace file, keeping the context. */
+  openScan(id: string): void {
+    void this.router.navigate(['/ot-connectors', 'namespace', id], { queryParams: { from: 'editor' } });
+  }
+
+  scanLabel(s: StoredNamespace): string {
+    const m = s.meta;
+    return [m?.device, m?.connectorFile ? `${m.connectorFile}.toml` : undefined, m?.gateway, m?.scannedAt].filter(Boolean).join(' · ') || s.id;
+  }
+
+  scan(): void {
+    this.bsModal.show(ScanDialogComponent, {
+      initialState: { preferredDevice: this.context()?.device, onScanned: (id: string) => this.openScan(id), onOpen: (id: string) => this.openScan(id) },
+      class: 'modal-lg',
+      ignoreBackdropClick: true,
+    });
+  }
+
+  upload(): void {
+    this.bsModal.show(UploadNamespaceComponent, {
+      initialState: { onStored: (id: string) => this.openScan(id) },
+      ignoreBackdropClick: true,
+    });
+  }
+
+  /** Device names of the OPC UA connector entries, by entry id. */
+  private readonly connectorDevices = new Map<string, string[]>();
 
   /** The repository's connector files whose protocol is OPC UA. */
   private async loadConnectorEntries(): Promise<void> {
@@ -519,7 +686,12 @@ export class NamespacePickerComponent {
     for (const entry of this.connectorCandidates()) {
       try {
         const config = parseToml(await this.ops.entryText(entry));
-        if (config['connector']?.['protocol'] === 'opcua') opcua.push(entry);
+        if (config['connector']?.['protocol'] !== 'opcua') continue;
+        opcua.push(entry);
+        this.connectorDevices.set(
+          String(entry.id),
+          (Array.isArray(config['device']) ? config['device'] : []).map((d: Config) => String(d['name'] ?? ''))
+        );
       } catch {
         // Not readable: not offered.
       }
@@ -700,6 +872,18 @@ export class NamespacePickerComponent {
           this.handChanges('connector', written, `${counts} on device ${device}, from the namespace of ${from}.`);
           return;
         }
+        case 'editor': {
+          const context = this.context()!;
+          if (context.kind === 'library') {
+            const written = writeLibrary(this.targetText, result);
+            this.handBack(written.text, `${counts} from the namespace of ${from}.`, written.keptLayout);
+          } else {
+            const written = writeDevice(this.targetText, this.targetDevice(), result);
+            const device = this.contextDevices()[this.targetDevice()];
+            this.handBack(written.text, `${counts} on device ${device}, from the namespace of ${from}.`, written.keptLayout);
+          }
+          return;
+        }
       }
     } catch (e) {
       this.alert.danger(e instanceof Error ? e.message : String(e));
@@ -719,7 +903,34 @@ export class NamespacePickerComponent {
     void this.router.navigate(['/ot-connectors', entryId]);
   }
 
+  /**
+   * Back to the editor with `text`: the saved entry it was editing, or the new file with its
+   * fields. Without a note it is the editor's own text, unsaved edits included.
+   */
+  private handBack(text: string, what?: string, keptLayout = true): void {
+    const context = this.context();
+    if (!context) return;
+    this.pending.hand({
+      kind: context.kind,
+      entryId: context.entryId,
+      fileName: context.fileName,
+      name: context.name,
+      description: context.description,
+      deviceType: context.deviceType,
+      text,
+      note: what
+        ? `${what} Not saved yet.${keptLayout ? '' : ' The file could not keep its layout and comments, so it was written anew; check it before saving.'}`
+        : undefined,
+    });
+    this.pickerContext.clear();
+    void this.router.navigate(['/ot-connectors', context.entryId ?? (context.kind === 'library' ? 'new-library' : 'new')]);
+  }
+
   cancel(): void {
+    if (this.context()) {
+      this.handBack(this.context()!.text);
+      return;
+    }
     void this.router.navigate(['/ot-connectors']);
   }
 
