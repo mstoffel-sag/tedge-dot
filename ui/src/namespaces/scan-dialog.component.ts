@@ -3,7 +3,7 @@ import { IManagedObject, InventoryService } from '@c8y/client';
 import { CoreModule } from '@c8y/ngx-components';
 import { BsModalRef } from 'ngx-bootstrap/modal';
 
-import { type ScanScope, canScan, scanDevices, scopeProblem } from '../shared/namespace-scan';
+import { type ExistingScan, type ScanScope, canScan, currentScan, scanDevices, scopeProblem } from '../shared/namespace-scan';
 import { NamespaceService } from '../shared/namespace.service';
 import { scanGatewaysQuery } from '../shared/queries';
 
@@ -53,6 +53,16 @@ const NODE_CLASSES = ['Variable', 'Method', 'Object'];
               </select>
               <c8y-messages [helpMessage]="'The scan connects with this device\\'s settings from its connector file on the gateway. A successful scan replaces the device\\'s current namespace file.' | translate"></c8y-messages>
             </c8y-form-group>
+            @if (existing(); as e) {
+              <div class="alert alert-info d-flex a-i-center gap-16" role="status">
+                <span class="flex-grow">
+                  {{ device() }} {{ 'already has a namespace file from this gateway' | translate }}:
+                  {{ 'scanned' | translate }} {{ (e.meta?.scannedAt ?? e.lastUpdated) | c8yDate }}@if (e.meta?.nodes !== undefined) {, {{ e.meta?.nodes }} {{ 'nodes' | translate }}}@if (e.meta?.points !== undefined) {, {{ e.meta?.points }} {{ 'points' | translate }}}.
+                  {{ 'Scanning again replaces it once the new scan succeeds; a failed scan keeps it.' | translate }}
+                </span>
+                <button type="button" class="btn btn-default btn-sm" (click)="openExisting(e.id)">{{ 'Open it instead' | translate }}</button>
+              </div>
+            }
             <div class="row">
               <div class="col-sm-6">
                 <c8y-form-group>
@@ -122,7 +132,7 @@ const NODE_CLASSES = ['Variable', 'Method', 'Object'];
     <div class="modal-footer">
       @if (state() === 'pick') {
         <button type="button" class="btn btn-default" (click)="close()">{{ 'Cancel' | translate }}</button>
-        <button type="button" class="btn btn-primary" [disabled]="!canStart()" (click)="start()">{{ 'Scan' | translate }}</button>
+        <button type="button" class="btn btn-primary" [disabled]="!canStart()" (click)="start()">{{ (existing() ? 'Scan again' : 'Scan') | translate }}</button>
       } @else if (state() === 'done') {
         <button type="button" class="btn btn-default" (click)="close()">{{ 'Close' | translate }}</button>
         <button type="button" class="btn btn-primary" (click)="open()">{{ 'Create from namespace' | translate }}</button>
@@ -160,6 +170,13 @@ export class ScanDialogComponent implements OnInit {
   readonly resultId = signal<string | undefined>(undefined);
   readonly problem = signal<string | undefined>(undefined);
   readonly canStart = computed(() => !!this.picked() && !!this.device());
+  /** The picked gateway's namespace files, to tell when the device already has one. */
+  readonly stored = signal<ExistingScan[]>([]);
+  /** The namespace file a scan of the selected device would replace. */
+  readonly existing = computed(() => {
+    const gateway = this.picked();
+    return gateway ? currentScan(this.stored(), String(gateway.id), this.device()) : undefined;
+  });
 
   ngOnInit(): void {
     if (this.gateway) {
@@ -176,6 +193,15 @@ export class ScanDialogComponent implements OnInit {
 
   async pick(gateway: IManagedObject): Promise<void> {
     this.picked.set(gateway);
+    this.stored.set([]);
+    void this.namespaces
+      .list(String(gateway.id))
+      .then(entries => {
+        if (this.picked()?.id === gateway.id) {
+          this.stored.set(entries.map(e => ({ id: String(e.mo.id), lastUpdated: e.mo['lastUpdated'], meta: e.meta })));
+        }
+      })
+      .catch(() => undefined);
     const { data } = await this.inventory.childDevicesList(gateway.id, { pageSize: 2000 });
     const devices = scanDevices(data as (IManagedObject & { name?: string })[]);
     this.devices.set(devices);
@@ -204,6 +230,11 @@ export class ScanDialogComponent implements OnInit {
       this.error.set(e instanceof Error ? e.message : String(e));
       this.state.set('error');
     }
+  }
+
+  openExisting(id: string): void {
+    this.modalRef.hide();
+    this.onOpen?.(id);
   }
 
   open(): void {

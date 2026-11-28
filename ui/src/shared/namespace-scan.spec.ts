@@ -1,4 +1,4 @@
-import { canScan, lines, scanDevices, scanOperation, scanResult, scopeProblem } from './namespace-scan';
+import { canScan, currentScan, lines, scanDevices, scanOperation, scanResult, scopeProblem } from './namespace-scan';
 
 describe('scan operation', () => {
   it('builds the operation from the dialog', () => {
@@ -41,5 +41,17 @@ describe('scan operation', () => {
   it('reads the result from the operation', () => {
     expect(scanResult({ c8y_ScanAddressSpace: { device: 'plc-7', binaryId: '4711', nodes: 3 } })).toEqual({ binaryId: '4711', nodes: 3 });
     expect(scanResult({})).toEqual({});
+  });
+
+  it('finds the scan a new one would replace', () => {
+    const stored = [
+      { id: 'old', meta: { gatewayId: '1', device: 'plc-7', scannedAt: '2026-11-01T00:00:00Z' } },
+      { id: 'new', meta: { gatewayId: '1', device: 'plc-7', scannedAt: '2026-11-20T00:00:00Z' } },
+      { id: 'other-gateway', meta: { gatewayId: '2', device: 'plc-7', scannedAt: '2026-11-25T00:00:00Z' } },
+      { id: 'other-device', meta: { gatewayId: '1', device: 'plc-8', scannedAt: '2026-11-25T00:00:00Z' } },
+      { id: 'upload', meta: { device: 'plc-7', scannedAt: '2026-11-26T00:00:00Z' } },
+    ];
+    expect(currentScan(stored, '1', 'plc-7')?.id).toBe('new');
+    expect(currentScan(stored, '1', 'plc-9')).toBeUndefined();
   });
 });

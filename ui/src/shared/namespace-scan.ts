@@ -89,3 +89,20 @@ export function scanResult(operation: Record<string, unknown>): { binaryId?: str
     nodes: typeof fragment?.nodes === 'number' ? fragment.nodes : undefined,
   };
 }
+
+/** The part of a stored namespace file the scan dialog needs. */
+export interface ExistingScan {
+  id: string;
+  lastUpdated?: string;
+  meta?: { gatewayId?: string; device?: string; scannedAt?: string; nodes?: number; points?: number };
+}
+
+/**
+ * The namespace file a new scan of `device` on `gatewayId` would replace, newest first if
+ * several are left over; undefined when the device has none from that gateway.
+ */
+export function currentScan<T extends ExistingScan>(stored: readonly T[], gatewayId: string, device: string): T | undefined {
+  return stored
+    .filter(s => s.meta?.gatewayId === gatewayId && s.meta?.device === device)
+    .sort((a, b) => String(b.meta?.scannedAt ?? b.lastUpdated ?? '').localeCompare(String(a.meta?.scannedAt ?? a.lastUpdated ?? '')))[0];
+}

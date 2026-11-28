@@ -18,9 +18,9 @@ SHALL list the namespace files of its scans the same way.
 ### Requirement: Scan from the plugin
 The Namespaces list and the gateway's tab SHALL offer *Scan address space* for gateways that
 announce `c8y_ScanAddressSpace`. The dialog SHALL ask for the gateway, one of its OPC UA child
-devices, and the scope (root, depth, include and exclude patterns, node classes, child limit), say
-that a new scan replaces the device's current file, send the operation, show its progress, and
-show the new namespace file in the list when the operation succeeds, or show its failure reason.
+devices, and the scope (root, depth, include and exclude patterns, node classes, child limit), send
+the operation, show its progress, and show the new namespace file in the list when the operation
+succeeds, or show its failure reason.
 
 #### Scenario: Successful scan
 - **WHEN** a user scans `plc-7` with the include pattern `Objects/Factory/**`
@@ -29,6 +29,15 @@ show the new namespace file in the list when the operation succeeds, or show its
 #### Scenario: Gateway without the operation
 - **WHEN** a gateway does not announce `c8y_ScanAddressSpace`
 - **THEN** its tab does not offer *Scan address space*, and the dialog does not list it
+
+### Requirement: Scanning a device that has a namespace file
+When the user picks a device that already has a namespace file from that gateway, the scan dialog
+SHALL say so, with the file's scan time and size, say that a successful scan replaces it and a
+failed one keeps it, offer to open the existing file instead, and label the button *Scan again*.
+
+#### Scenario: Device already scanned
+- **WHEN** a user picks `plc-7` on `gw-1`, which has a namespace file of `plc-7` from 2026-11-27
+- **THEN** the dialog says that `plc-7` already has a namespace file from that gateway, scanned 2026-11-27, that scanning again replaces it once the new scan succeeds, offers to open it instead, and labels the button *Scan again*
 
 ### Requirement: Upload a namespace file
 The Namespaces list SHALL accept a namespace file made elsewhere, compressed or not, check its
