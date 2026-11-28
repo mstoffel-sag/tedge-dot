@@ -71,5 +71,5 @@ browser; 7.1 sending the result and seeing measurements.
 
 ## Workflow follow-up
 
-- Open the opcua-scan PR upstream (reubenmiller/opcua-discovery) once 2.x is reviewed on the fork.
+- opcua-scan's namespace output is proposed upstream in reubenmiller/opcua-discovery#2: once it is merged and released, point the install guide (doc/namespace-files.md) at that release.
 - Archive the change after the PR is merged.
